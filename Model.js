@@ -30,7 +30,9 @@ function num(value, fallback) {
 function normalizeSnapshot(obj) {
   var o = obj && typeof obj === "object" ? obj : {}
   var state = str(o.state)
-  if (STATES.indexOf(state) === -1) state = "disconnected"
+  // Output the helper could not parse says nothing about the tunnel; reading
+  // it as "disconnected" would fire the drop path on a CLI wording change.
+  if (STATES.indexOf(state) === -1) state = "unknown"
   var endpoint = null
   if (o.endpoint && typeof o.endpoint === "object") {
     endpoint = {
@@ -426,8 +428,33 @@ function formatAppList(list) {
   return toList(list).map(str).join(", ")
 }
 
-function isUnexpectedDrop(prevState, nextState, desired) {
-  return prevState === "connected" && nextState === "disconnected" && desired !== 0
+// A tunnel that was up and is now down: a "disconnect" when the user asked
+// for it (Disconnect or logout), a "drop" otherwise; "" for anything else.
+// Logged out without a request is left alone, as before.
+function tunnelLoss(prevState, nextState, requested) {
+  if (prevState !== "connected") return ""
+  if (nextState === "disconnected") return requested === true ? "disconnect" : "drop"
+  if (nextState === "logged_out" && requested === true) return "disconnect"
+  return ""
+}
+
+// One definite status arriving, decided in a fixed order: the loss is judged
+// from the pending toggle as it was when the status came in, before that
+// toggle settles (settling first turned every Disconnect into a drop).
+//   ctx: { prevState, nextState, desired: -1|0|1, requested, wasConnected }
+//   → { desired, loss, wasConnected: true | false | null (leave it) }
+// wasConnected is only set while no disconnect is pending, and cleared by a
+// requested disconnect, never by a drop, so reconnect-at-login survives drops.
+function settleStatus(ctx) {
+  var c = ctx && typeof ctx === "object" ? ctx : {}
+  var next = str(c.nextState)
+  var pending = c.desired === 0 || c.desired === 1 ? c.desired : -1
+  var loss = tunnelLoss(c.prevState, next, pending === 0 || c.requested === true)
+  var desired = (pending === 1 && next === "connected") || (pending === 0 && next === "disconnected") ? -1 : pending
+  var was = null
+  if (next === "connected" && pending !== 0 && c.wasConnected !== true) was = true
+  if (loss === "disconnect" && c.wasConnected === true) was = false
+  return { desired: desired, loss: loss, wasConnected: was }
 }
 
 function shouldAutoConnect(ctx) {
@@ -458,6 +485,27 @@ function dnsLabel(dns) {
 function describeDrop(location) {
   var where = str(location).trim()
   return where === "" ? "Tunnel dropped" : "Tunnel to " + where + " dropped"
+}
+
+function describeDisconnect(location) {
+  var where = str(location).trim()
+  return where === "" ? "Disconnected" : "Disconnected from " + where
+}
+
+// What a tunnel loss does. A drop always alerts (critical) and closes the
+// apps when the kill switch is armed; a requested disconnect closes them, with
+// a normal notice, only when killOnDisconnect is on too. null: stay quiet.
+//   ctx: { location, killSwitch, killOnDisconnect, apps }
+//   → { kill: [names], title, body, urgency }
+function lossResponse(kind, ctx) {
+  var c = ctx && typeof ctx === "object" ? ctx : {}
+  var apps = c.killSwitch === true ? toList(c.apps).map(str) : []
+  var closed = apps.length > 0 ? " · closed " + formatAppList(apps) : ""
+  if (kind === "drop")
+    return { kill: apps, title: "VPN dropped", body: describeDrop(c.location) + closed, urgency: "critical" }
+  if (kind === "disconnect" && c.killOnDisconnect === true && apps.length > 0)
+    return { kill: apps, title: "VPN disconnected", body: describeDisconnect(c.location) + closed, urgency: "normal" }
+  return null
 }
 
 function filterProcs(procs, query, chosen, limit) {
@@ -596,12 +644,15 @@ if (typeof module !== "undefined") {
     normalizeUpdate: normalizeUpdate,
     parseAppList: parseAppList,
     formatAppList: formatAppList,
-    isUnexpectedDrop: isUnexpectedDrop,
+    tunnelLoss: tunnelLoss,
+    settleStatus: settleStatus,
     shouldAutoConnect: shouldAutoConnect,
     updateCheckDue: updateCheckDue,
     protocolLabel: protocolLabel,
     dnsLabel: dnsLabel,
     describeDrop: describeDrop,
+    describeDisconnect: describeDisconnect,
+    lossResponse: lossResponse,
     filterProcs: filterProcs,
     addApp: addApp,
     removeApp: removeApp,

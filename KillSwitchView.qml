@@ -4,23 +4,40 @@ import qs.Commons
 import qs.Ui
 import "Model.js" as Model
 
-// Kill switch: arm it, and pick the apps to close when the tunnel drops.
+// Kill switch: arm it, pick the apps to close when the tunnel drops, and
+// optionally close them on your own disconnects too.
 Column {
   id: root
   property var panel: null
   property var vpn: null
 
-  readonly property int count: 1
-  readonly property bool editing: appsField.activeFocus
   readonly property bool armed: vpn ? vpn.killSwitch : false
+  // Keyboard cursor targets, top to bottom; the on-disconnect toggle only
+  // exists while armed. The apps field is reached by mouse.
+  readonly property var targets: armed ? ["killSwitch", "killOnDisconnect"] : ["killSwitch"]
+  readonly property int count: targets.length
+  readonly property bool editing: appsField.activeFocus
 
   spacing: Style.space(8)
 
-  function hasCursor(name) { return panel.cursorActive && panel.focusSection === "list" && panel.cursorIndex === 0 }
+  function hasCursor(name) {
+    return panel.cursorActive && panel.focusSection === "list" && targets[panel.cursorIndex] === name
+  }
+
+  function setCursor(name) {
+    var i = targets.indexOf(name)
+    if (i !== -1) panel.setListCursor(i)
+  }
+
   function activate(index) {
-    var on = !armed
-    panel.persistSettings({ killSwitch: on })
-    if (on) Qt.callLater(function() { appsField.forceActiveFocus() })
+    var name = targets[index]
+    if (name === "killSwitch") {
+      var on = !armed
+      panel.persistSettings({ killSwitch: on })
+      if (on) Qt.callLater(function() { appsField.forceActiveFocus() })
+    } else if (name === "killOnDisconnect") {
+      panel.persistSettings({ killOnDisconnect: !vpn.killOnDisconnect })
+    }
   }
 
   PanelSectionHeader {
@@ -37,8 +54,21 @@ Column {
     hasCursor: root.hasCursor("killSwitch")
     foreground: panel.foreground
     fontFamily: panel.fontFamily
-    onHovered: function(on) { if (on) panel.setListCursor(0) }
-    onClicked: root.activate(0)
+    onHovered: function(on) { if (on) root.setCursor("killSwitch") }
+    onClicked: root.activate(root.targets.indexOf("killSwitch"))
+  }
+
+  Toggle {
+    visible: root.armed
+    width: parent.width
+    label: "Also on disconnect"
+    description: "Close them when you disconnect or log out too, not just on drops"
+    checked: vpn ? vpn.killOnDisconnect : false
+    hasCursor: root.hasCursor("killOnDisconnect")
+    foreground: panel.foreground
+    fontFamily: panel.fontFamily
+    onHovered: function(on) { if (on) root.setCursor("killOnDisconnect") }
+    onClicked: root.activate(root.targets.indexOf("killOnDisconnect"))
   }
 
   Column {
@@ -154,7 +184,7 @@ Column {
   Text {
     visible: !root.armed
     width: parent.width
-    text: "When armed, the apps listed here are closed the moment the tunnel drops unexpectedly, and you get a notification."
+    text: "When armed, the apps listed here are closed the moment the tunnel drops unexpectedly, and you get a notification. You can also have them closed when you disconnect yourself."
     color: panel.dim
     font.family: panel.fontFamily
     font.pixelSize: Style.font.caption

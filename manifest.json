@@ -32,6 +32,7 @@
       "refreshIntervalSec": 30,
       "autoConnect": true,
       "killSwitch": false,
+      "killOnDisconnect": false,
       "killApps": ""
     },
     "schema": [
@@ -65,6 +66,12 @@
         "key": "killSwitch",
         "type": "boolean",
         "label": "Kill switch: close apps if the tunnel drops",
+        "defaultValue": false
+      },
+      {
+        "key": "killOnDisconnect",
+        "type": "boolean",
+        "label": "Kill switch: also close apps when you disconnect or log out",
         "defaultValue": false
       },
       {

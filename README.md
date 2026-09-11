@@ -16,7 +16,8 @@ location, it connects. That is the whole interface.
 - Settings: TUN or SOCKS mode (with host, port and auth), protocol, post-quantum,
   DNS upstream and system DNS, all through the CLI's own config
 - Reconnects at login if the VPN was on when the session ended, crashes included
-- Kill switch: closes the apps you pick (suggested from what is running) if the tunnel drops, and tells you
+- Kill switch: closes the apps you pick (suggested from what is running) if the tunnel drops, and tells you;
+  optionally also when you disconnect or log out yourself
 - Exclusions can be paused and resumed without retyping them
 - Hover the map: the nearest city lights up with its name, click to connect
 - The row under your cursor rings its city on the map
@@ -101,7 +102,8 @@ Settings live inline on the widget's entry in `~/.config/omarchy/shell.json`:
 | `lastLocation` | `""` | what the switch reconnects to |
 | `autoConnect` | `true` | reconnect at login when `wasConnected` is still set |
 | `wasConnected` | internal | set while connected, cleared only by a disconnect or logout you make; survives crashes and reboots |
-| `killSwitch` | `false` | close `killApps` when the tunnel drops unexpectedly |
+| `killSwitch` | `false` | close `killApps` when the tunnel drops unexpectedly (critical notification) |
+| `killOnDisconnect` | `false` | with `killSwitch` on, also close `killApps` when you disconnect or log out (normal notification); off, your own disconnects close nothing and send no alert |
 | `killApps` | `""` | comma separated process names, each killed with `pkill -x`; pick them from the suggestions of running processes |
 | `pausedExclusions` | internal | `{general: [], selective: []}` domains you paused; they are removed from the CLI list and re-added on resume |
 | `lastUpdateCheck` | internal | epoch seconds of the last `check-update`; checked again after 24 h |

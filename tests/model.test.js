@@ -19,7 +19,7 @@ test("toList handles null, arrays and array-likes", () => {
 test("normalizeSnapshot fills safe defaults and keeps known fields", () => {
   const empty = Model.normalizeSnapshot(null)
   assert.equal(empty.ok, false)
-  assert.equal(empty.state, "disconnected")
+  assert.equal(empty.state, "unknown")
   assert.equal(empty.location, "")
   assert.equal(empty.iso, "")
   assert.equal(empty.iface, "")
@@ -47,7 +47,15 @@ test("normalizeSnapshot fills safe defaults and keeps known fields", () => {
   assert.equal(err.ok, false)
   assert.equal(err.error, "boom")
   assert.equal(err.code, "timeout")
-  assert.equal(Model.normalizeSnapshot({ ok: true, state: "bogus" }).state, "disconnected")
+  assert.equal(Model.normalizeSnapshot({ ok: true, state: "bogus" }).state, "unknown")
+})
+
+test("normalizeSnapshot never reads unparseable status as disconnected", () => {
+  // agvpn.py emits state "unknown" when the CLI exits 0 with output it cannot parse.
+  assert.equal(Model.normalizeSnapshot({ ok: true, state: "unknown" }).state, "unknown")
+  assert.equal(Model.normalizeSnapshot({ ok: true }).state, "unknown")
+  for (const s of ["connected", "connecting", "disconnected", "logged_out"])
+    assert.equal(Model.normalizeSnapshot({ ok: true, state: s }).state, s)
 })
 
 test("normalizeLocations sorts by ping with nulls last and copies fields", () => {
@@ -292,13 +300,69 @@ test("parseAppList splits, trims, dedupes and drops invalid names; formatAppList
   assert.equal(Model.formatAppList(null), "")
 })
 
-test("isUnexpectedDrop is true only for connected→disconnected without a user disconnect", () => {
-  assert.equal(Model.isUnexpectedDrop("connected", "disconnected", -1), true)
-  assert.equal(Model.isUnexpectedDrop("connected", "disconnected", 1), true)
-  assert.equal(Model.isUnexpectedDrop("connected", "disconnected", 0), false)
-  assert.equal(Model.isUnexpectedDrop("connecting", "disconnected", -1), false)
-  assert.equal(Model.isUnexpectedDrop("connected", "connected", -1), false)
-  assert.equal(Model.isUnexpectedDrop("disconnected", "disconnected", -1), false)
+test("tunnelLoss splits connected→down into drop vs requested disconnect", () => {
+  assert.equal(Model.tunnelLoss("connected", "disconnected", false), "drop")
+  assert.equal(Model.tunnelLoss("connected", "disconnected", undefined), "drop")
+  assert.equal(Model.tunnelLoss("connected", "disconnected", true), "disconnect")
+  assert.equal(Model.tunnelLoss("connected", "logged_out", true), "disconnect")
+  assert.equal(Model.tunnelLoss("connected", "logged_out", false), "")
+  assert.equal(Model.tunnelLoss("connecting", "disconnected", false), "")
+  assert.equal(Model.tunnelLoss("logged_out", "logged_out", true), "")
+  assert.equal(Model.tunnelLoss("connected", "connected", false), "")
+  assert.equal(Model.tunnelLoss("disconnected", "disconnected", true), "")
+  assert.equal(Model.tunnelLoss("unknown", "disconnected", false), "")
+})
+
+test("settleStatus judges a Disconnect before settling the toggle (the old order reported a drop)", () => {
+  const ctx = { prevState: "connected", nextState: "disconnected", desired: 0, requested: false, wasConnected: false }
+  // Old applySnapshot: reset desired to -1 on the disconnected status, then asked about the drop.
+  const settledFirst = ctx.desired === 0 && ctx.nextState === "disconnected" ? -1 : ctx.desired
+  assert.equal(Model.tunnelLoss(ctx.prevState, ctx.nextState, settledFirst === 0), "drop")
+  const step = Model.settleStatus(ctx)
+  assert.equal(step.loss, "disconnect")
+  assert.equal(step.desired, -1)
+  assert.equal(step.wasConnected, null)
+})
+
+test("settleStatus classifies drops, settles the pending toggle and leaves unrelated states alone", () => {
+  const drop = Model.settleStatus({ prevState: "connected", nextState: "disconnected", desired: -1, wasConnected: true })
+  assert.deepEqual(drop, { desired: -1, loss: "drop", wasConnected: null }, "a drop keeps wasConnected for reconnect-at-login")
+  // Disconnect result arriving after the user already asked to connect again.
+  const retoggle = Model.settleStatus({ prevState: "connected", nextState: "disconnected", desired: 1, requested: true, wasConnected: false })
+  assert.deepEqual(retoggle, { desired: 1, loss: "disconnect", wasConnected: null })
+  const up = Model.settleStatus({ prevState: "connecting", nextState: "connected", desired: 1, wasConnected: false })
+  assert.deepEqual(up, { desired: -1, loss: "", wasConnected: true })
+  const still = Model.settleStatus({ prevState: "connected", nextState: "connected", desired: -1, wasConnected: true })
+  assert.deepEqual(still, { desired: -1, loss: "", wasConnected: null })
+  assert.deepEqual(Model.settleStatus({ prevState: "unknown", nextState: "disconnected", desired: 7 }),
+    { desired: -1, loss: "", wasConnected: null })
+  assert.deepEqual(Model.settleStatus(null), { desired: -1, loss: "", wasConnected: null })
+})
+
+test("settleStatus never re-sets wasConnected while a disconnect is pending, and a requested disconnect clears it", () => {
+  // Queued connect lands "connected" after the user already toggled off.
+  const late = Model.settleStatus({ prevState: "disconnected", nextState: "connected", desired: 0, wasConnected: false })
+  assert.deepEqual(late, { desired: 0, loss: "", wasConnected: null })
+  const off = Model.settleStatus({ prevState: "connected", nextState: "disconnected", desired: 0, requested: true, wasConnected: true })
+  assert.deepEqual(off, { desired: -1, loss: "disconnect", wasConnected: false })
+})
+
+test("lossResponse: drops always alert, disconnects close apps only with killOnDisconnect", () => {
+  const apps = ["firefox", "foot"]
+  assert.deepEqual(Model.lossResponse("drop", { location: "Tokyo", killSwitch: true, apps }),
+    { kill: apps, title: "VPN dropped", body: "Tunnel to Tokyo dropped · closed firefox, foot", urgency: "critical" })
+  assert.deepEqual(Model.lossResponse("drop", { location: "Tokyo", killSwitch: false, killOnDisconnect: true, apps }),
+    { kill: [], title: "VPN dropped", body: "Tunnel to Tokyo dropped", urgency: "critical" })
+  assert.deepEqual(Model.lossResponse("drop", { location: "", killSwitch: true, apps: [] }),
+    { kill: [], title: "VPN dropped", body: "Tunnel dropped", urgency: "critical" })
+  assert.deepEqual(Model.lossResponse("disconnect", { location: "Tokyo", killSwitch: true, killOnDisconnect: true, apps }),
+    { kill: apps, title: "VPN disconnected", body: "Disconnected from Tokyo · closed firefox, foot", urgency: "normal" })
+  assert.equal(Model.lossResponse("disconnect", { location: "Tokyo", killSwitch: true, killOnDisconnect: false, apps }), null)
+  assert.equal(Model.lossResponse("disconnect", { location: "Tokyo", killSwitch: false, killOnDisconnect: true, apps }), null)
+  assert.equal(Model.lossResponse("disconnect", { location: "Tokyo", killSwitch: true, killOnDisconnect: true, apps: [] }), null)
+  assert.equal(Model.lossResponse("", { killSwitch: true, killOnDisconnect: true, apps }), null)
+  const arrayLike = { length: 1, 0: "firefox" }
+  assert.deepEqual(Model.lossResponse("drop", { killSwitch: true, apps: arrayLike }).kill, ["firefox"])
 })
 
 test("shouldAutoConnect requires every precondition", () => {
@@ -339,6 +403,8 @@ test("describeDrop names the location when known", () => {
   assert.equal(Model.describeDrop("Tokyo"), "Tunnel to Tokyo dropped")
   assert.equal(Model.describeDrop(""), "Tunnel dropped")
   assert.equal(Model.describeDrop(null), "Tunnel dropped")
+  assert.equal(Model.describeDisconnect(" Tokyo "), "Disconnected from Tokyo")
+  assert.equal(Model.describeDisconnect(null), "Disconnected")
 })
 
 test("filterProcs ranks prefix matches before substring matches, skips chosen, caps at limit", () => {

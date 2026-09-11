@@ -15,7 +15,7 @@ Item {
 
   // --- state ------------------------------------------------------------------
   property bool installed: true
-  property string vpnState: "unknown"       // connected | connecting | disconnected | logged_out | unknown
+  property string vpnState: "unknown"       // connected | connecting | disconnected | logged_out | unknown (until the first recognised status)
   property string location: ""
   property string iso: ""
   property string iface: ""
@@ -51,6 +51,7 @@ Item {
   readonly property bool autoConnect: String(setting("autoConnect", true)) === "true"
   readonly property bool wasConnected: String(setting("wasConnected", false)) === "true"
   readonly property bool killSwitch: String(setting("killSwitch", false)) === "true"
+  readonly property bool killOnDisconnect: String(setting("killOnDisconnect", false)) === "true"
   readonly property var killApps: Model.parseAppList(setting("killApps", ""))
   readonly property real lastUpdateCheck: Number(setting("lastUpdateCheck", 0)) || 0
 
@@ -195,14 +196,16 @@ Item {
     connectTo(last ? last.cliName : lastLocation, lastLocation)
   }
 
-  function onUnexpectedDrop(fromLocation) {
-    var body = Model.describeDrop(fromLocation)
-    if (killSwitch && killApps.length > 0) {
-      killProcess.command = helper(["kill"].concat(killApps))
+  // kind is "drop" or "disconnect" (see Model.tunnelLoss / lossResponse).
+  function onTunnelLoss(kind, fromLocation) {
+    var response = Model.lossResponse(kind, { location: fromLocation, killSwitch: killSwitch,
+      killOnDisconnect: killOnDisconnect, apps: killApps })
+    if (!response) return
+    if (response.kill.length > 0) {
+      killProcess.command = helper(["kill"].concat(response.kill))
       killProcess.running = true
-      body += " · closed " + Model.formatAppList(killApps)
     }
-    notify("VPN dropped", body, "critical")
+    notify(response.title, response.body, response.urgency)
   }
 
   function login() {
@@ -254,8 +257,15 @@ Item {
     else if (verb === "config") applyConfig(obj)
     else if (verb === "update") applyUpdate(obj, _notifyUpdate)
     else if (verb === "procs") applyProcs(obj)
-    else if (verb === "connect" || verb === "disconnect") applySnapshot(obj)
-    else if (verb === "logout") { account = Model.loggedOutAccount(); vpnState = "logged_out" }
+    else if (verb === "connect" || verb === "disconnect") applySnapshot(obj, verb === "disconnect")
+    else if (verb === "logout") {
+      // Logging out takes the tunnel down on request: an intentional
+      // disconnect (kill switch only with killOnDisconnect), never a drop.
+      var loss = Model.tunnelLoss(vpnState, "logged_out", true)
+      account = Model.loggedOutAccount()
+      vpnState = "logged_out"
+      if (loss !== "") onTunnelLoss(loss, location)
+    }
   }
 
   // --- parsing -------------------------------------------------------------------
@@ -280,12 +290,22 @@ Item {
     if (errorCode === "sudo_password") lastError = "sudo needs a password · see README"
   }
 
-  function applySnapshot(obj) {
+  // `requested`: the status came back from a disconnect the user asked for.
+  function applySnapshot(obj, requested) {
     if (obj.ok === false) { noteError(obj); return }
     installed = true
     var snap = Model.normalizeSnapshot(obj)
-    var prevState = vpnState
+    // Status the helper could not parse proves nothing about the tunnel: keep
+    // the last known state instead of running the drop path, the kill switch
+    // or startup auto-connect on it.
+    if (snap.state === "unknown") {
+      if (errorCode !== "sudo_password") { lastError = "Unrecognised adguardvpn-cli status output"; errorCode = "parse" }
+      return
+    }
     var prevLocation = location
+    // Judged before the pending toggle settles; see Model.settleStatus.
+    var step = Model.settleStatus({ prevState: vpnState, nextState: snap.state, desired: _desired,
+      requested: requested === true, wasConnected: wasConnected })
     vpnState = snap.state
     location = snap.location
     iso = snap.iso
@@ -295,8 +315,7 @@ Item {
     endpoint = snap.endpoint
     sinceEpoch = snap.sinceEpoch
     // Reality caught up with the pending toggle.
-    if (_desired === 1 && snap.state === "connected") _desired = -1
-    if (_desired === 0 && snap.state === "disconnected") _desired = -1
+    _desired = step.desired
     if (snap.state === "connected") pendingLocation = ""
     if (snap.state === "logged_out") {
       account = Model.loggedOutAccount()
@@ -305,8 +324,8 @@ Item {
     if (snap.state !== "connected") rates = { down: 0, up: 0 }
     if (snap.state === "disconnected" && homeStale) refreshHome()
     if (errorCode !== "sudo_password") { lastError = ""; errorCode = "" }
-    if (snap.state === "connected" && !wasConnected) persist({ wasConnected: true })
-    if (Model.isUnexpectedDrop(prevState, snap.state, _desired)) onUnexpectedDrop(prevLocation)
+    if (step.wasConnected !== null) persist({ wasConnected: step.wasConnected })
+    if (step.loss !== "") onTunnelLoss(step.loss, prevLocation)
     if (!startupSettled && snap.state !== "connecting") {
       startupSettled = true
       maybeAutoConnect(snap.state)
