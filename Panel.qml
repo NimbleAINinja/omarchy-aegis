@@ -56,7 +56,11 @@ Panel {
   }
 
   // --- ui state --------------------------------------------------------------------
-  property string view: "list"            // list | exclusions | account
+  // list | exclusions | account | settings | killswitch. Remembered for as
+  // long as the shell runs, so closing the panel on the settings tab and
+  // reopening it lands back on the settings tab; never persisted, so every
+  // shell start opens on the list.
+  property string view: "list"
   property string focusSection: "header"  // header | list | footer
   property int cursorIndex: 0
   property int footerIndex: 0
@@ -233,6 +237,9 @@ Panel {
       orderLast = lastLocation
       nowMs = Date.now()
       if (panelFlick) panelFlick.contentY = 0
+      // `view` is deliberately not reset: the panel reopens on the tab it was
+      // closed on. Being signed out is the exception — the account tab is the
+      // only one worth anything then.
       if (vpn.vpnState === "logged_out") view = "account"
       // Build the popup content, if this is the first open — after the resets
       // above, so the rows and the view Loader are built once, already showing
@@ -382,7 +389,11 @@ Panel {
         root.moveCursor(dx, dy)
       }
       onActivateRequested: if (root.cursorActive) root.activateCursor()
-      onCloseRequested: { if (root.view !== "list") root.switchView("list"); else root.close() }
+      // Esc closes from every view. It used to walk back to the list first,
+      // which cost a keypress to leave a tab and threw away the view the next
+      // open should have come back to. A focused search field still gets Esc
+      // to itself (it clears the text): `blocked` is true while it is editing.
+      onCloseRequested: root.close()
       onTabRequested: function(direction) { root.switchPanel(direction) }
       onDeleteRequested: if (root.focusSection === "list" && root.viewItem && typeof root.viewItem.removeAt === "function") root.viewItem.removeAt(root.cursorIndex)
       onTextKey: function(t) { root.handleTextKey(t) }

@@ -25,6 +25,7 @@ location, it connects. That is the whole interface.
 - Hover the map: the nearest city lights up with its name, click to connect
 - The row under your cursor rings its city on the map
 - Kill switch has its own tab (skull in the footer, filled and lit while armed)
+- Reopens on the tab you left it on; `Esc` just closes, from any tab
 - Daily CLI update check with a one-click update
 - Fully keyboard driven
 
@@ -82,7 +83,7 @@ then `omarchy plugin enable io.github.nimbleaininja.aegis --section right`.
 | `Tab` (in the kill-switch field) | add the highlighted running app |
 | `Enter` (in the kill-switch field) | add exactly what you typed, or the highlighted app if you've arrowed to one |
 | `r` | refresh |
-| `Esc` | back, then close |
+| `Esc` | close the panel (in the search field: clear it) |
 | `Tab` | next bar panel |
 
 Bar icon: left click opens the panel, right click toggles the VPN, middle click refreshes.

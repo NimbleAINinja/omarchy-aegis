@@ -335,6 +335,26 @@ test("Panel.qml looks a country up in a map, not by walking the location list", 
   assert.match(panel, /function countryFor\(iso\) \{ return Model\.countryFrom\(countryByIso, iso\) \}/)
 })
 
+test("Panel.qml closes on Esc from any view and remembers the view in memory only", () => {
+  const fs = require("node:fs"), path = require("node:path")
+  const panel = fs.readFileSync(path.join(__dirname, "..", "Panel.qml"), "utf8")
+  // Esc is a close, not a walk back to the list: leaving a tab costs one
+  // keypress, and the view survives for the next open.
+  assert.match(panel, /onCloseRequested: root\.close\(\)/)
+  assert.doesNotMatch(panel, /onCloseRequested: \{/)
+  // In memory only — nothing reads or writes a "view" setting, so a shell
+  // start always opens on the list.
+  assert.match(panel, /\n  property string view: "list"\n/)
+  assert.doesNotMatch(panel, /setting\("view"/)
+  assert.doesNotMatch(panel, /persistSettings\(\{ view/)
+  // The open handler resets the cursor and the query but never the view, and
+  // keeps the logged-out override.
+  const open = /onOpenedChanged:\s*\{[\s\S]*?\n  \}/.exec(panel)
+  assert.ok(open, "onOpenedChanged present")
+  assert.doesNotMatch(open[0], /\n\s*view = "list"/)
+  assert.match(open[0], /if \(vpn\.vpnState === "logged_out"\) view = "account"/)
+})
+
 test("Panel.qml leaves the view alone when a connect finishes", () => {
   const fs = require("node:fs"), path = require("node:path")
   const panel = fs.readFileSync(path.join(__dirname, "..", "Panel.qml"), "utf8")
