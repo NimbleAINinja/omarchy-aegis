@@ -32,8 +32,10 @@ fi
 
 lint=/usr/lib/qt6/bin/qmllint
 if [[ -x $lint ]]; then
-  # WorldMap.qml imports only QtQuick and local JS, so it must lint clean.
+  # WorldMap.qml and TrafficGraph.qml import only QtQuick and local JS, so they
+  # must lint clean.
   "$lint" WorldMap.qml
+  "$lint" TrafficGraph.qml
   # The rest import Quickshell and the shell's own modules; only hard errors matter there.
   for f in Panel.qml Service.qml LocationList.qml ExclusionsView.qml AccountView.qml SettingsView.qml KillSwitchView.qml; do
     [[ -s $f ]] || continue
