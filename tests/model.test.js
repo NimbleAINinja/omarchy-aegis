@@ -1081,6 +1081,55 @@ test("pollIntervalMs slows the closed-panel poll only where the tunnel.log watch
   assert.equal(Model.pollIntervalMs(null), 60000)
 })
 
+test("loginPollIntervalMs checks fast while the user is logging in, then backs off", () => {
+  assert.equal(Model.LOGIN_POLL_FAST_MS, 3000)
+  assert.equal(Model.LOGIN_POLL_SLOW_MS, 10000)
+  assert.equal(Model.LOGIN_POLL_FAST_TICKS, 10)
+  assert.equal(Model.LOGIN_POLL_MAX_TICKS, 40)
+  for (let t = 0; t < Model.LOGIN_POLL_FAST_TICKS; t++) assert.equal(Model.loginPollIntervalMs(t), 3000, "tick " + t)
+  for (const t of [10, 11, 25, 39]) assert.equal(Model.loginPollIntervalMs(t), 10000, "tick " + t)
+  assert.equal(Model.loginPollIntervalMs(undefined), 3000)
+  assert.equal(Model.loginPollIntervalMs("nope"), 3000)
+  // The whole poll: 40 calls over ~5.5 minutes, where it used to be 100
+  // over 5, and it still covers at least as long a login.
+  let total = 0
+  for (let t = 0; t < Model.LOGIN_POLL_MAX_TICKS; t++) total += Model.loginPollIntervalMs(t)
+  assert.equal(total, 10 * 3000 + 30 * 10000)
+  assert.ok(total >= 100 * 3000 / 2, "still waits minutes, not seconds")
+  assert.ok(Model.LOGIN_POLL_MAX_TICKS < 100, "fewer license calls than before")
+})
+
+test("pollIntervalMs stops hammering a CLI that isn't installed", () => {
+  assert.equal(Model.POLL_MISSING_MS, 600000)
+  const ctx = extra => Object.assign({ intervalSec: 30, panelOpen: true, connected: false,
+    watchingTunnelLog: false, barMode: "icon", installed: false }, extra)
+  // installed: false wins over every other input, panel open included.
+  assert.equal(Model.pollIntervalMs(ctx()), 600000)
+  assert.equal(Model.pollIntervalMs(ctx({ panelOpen: false })), 600000)
+  assert.equal(Model.pollIntervalMs(ctx({ barMode: "rate" })), 600000)
+  // Only an explicit false, so an unset key keeps the normal cadence.
+  assert.equal(Model.pollIntervalMs(ctx({ installed: true })), 30000)
+  assert.equal(Model.pollIntervalMs(ctx({ installed: undefined })), 30000)
+})
+
+test("Service.qml gates the situational timers on what they are waiting for", () => {
+  const src = require("node:fs").readFileSync(require("node:path").join(__dirname, "..", "Service.qml"), "utf8")
+  const timer = id => {
+    const at = src.indexOf("id: " + id)
+    assert.notEqual(at, -1, id)
+    return src.slice(src.lastIndexOf("Timer {", at), src.indexOf("\n  }", at))
+  }
+  assert.match(timer("loginPoll"), /interval: Model\.loginPollIntervalMs\(ticks\)/)
+  assert.match(timer("loginPoll"), /ticks >= Model\.LOGIN_POLL_MAX_TICKS/)
+  // The ramp is a shell-startup catch-up; a missing CLI ends it.
+  assert.match(timer("startupRamp"), /running: root\.installed/)
+  assert.match(timer("rateTimer"), /interval: root\.panelOpen \? 2000 : 5000/)
+  assert.match(timer("refreshTimer"), /installed: root\.installed/)
+  // Closing the panel while still logged out ends the login poll.
+  assert.match(src, /if \(loginPoll\.running\) loginPoll\.stop\(\)/)
+  assert.match(src, /onPanelOpenChanged: \{\n\s*if \(panelOpen\) \{ refreshAll\(\); return \}/)
+})
+
 test("queueAppend folds repeated connects into the last one and leaves everything else alone", () => {
   const tokyo = { verb: "connect", args: ["connect", "Tokyo"] }
   const paris = { verb: "connect", args: ["connect", "Paris"] }
@@ -1189,7 +1238,7 @@ test("Service.qml skips a fresh locations refresh but never one that was asked f
   const calls = panel.match(/refreshAll\([^)]*\)/g) || []
   assert.equal(calls.length, 4)
   for (const call of calls) assert.equal(call, "refreshAll(true)")
-  assert.match(src, /onPanelOpenChanged: if \(panelOpen\) refreshAll\(\)/)
+  assert.match(src, /if \(panelOpen\) \{ refreshAll\(\); return \}/)
 })
 
 test("Service.qml starts up with the snapshot first in the queue", () => {

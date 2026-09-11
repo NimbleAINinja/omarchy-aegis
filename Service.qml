@@ -778,7 +778,8 @@ Item {
     // tunnel.log watch arming, or a bar-mode change — never anything that
     // moves on its own. See Model.pollIntervalMs for what each one means.
     interval: Model.pollIntervalMs({ intervalSec: root.refreshIntervalSec, panelOpen: root.panelOpen,
-      connected: root.connected, watchingTunnelLog: root.watchingTunnelLog, barMode: root.barMode })
+      connected: root.connected, watchingTunnelLog: root.watchingTunnelLog, barMode: root.barMode,
+      installed: root.installed })
     running: true
     repeat: true
     triggeredOnStart: true
@@ -800,7 +801,12 @@ Item {
     property int ticks: 0
     interval: 2000
     repeat: true
-    running: true
+    // Stops the moment the helper reports cli_missing: there is nothing for
+    // the ramp to catch up with then, and it would otherwise spend all 15
+    // ticks re-asking a question already answered. (The imperative stop
+    // below replaces this binding when the ramp finishes normally, which is
+    // fine — it never starts again either way.)
+    running: root.installed
     onTriggered: {
       ticks += 1
       if (root.vpnState !== "unknown" || ticks >= 15) { startupRamp.running = false; return }
@@ -861,7 +867,11 @@ Item {
 
   Timer {
     id: rateTimer
-    interval: 2000
+    // 2 s while the panel is open, where the hero shows a live rate; 5 s when
+    // only the bar's "rate" label needs it, which is the round-the-clock
+    // case. Changing the interval restarts the countdown, but panelOpen is
+    // the only input, so that happens on an open or a close and nowhere else.
+    interval: root.panelOpen ? 2000 : 5000
     repeat: true
     running: root.connected && root.iface !== "" && (root.panelOpen || root.barMode === "rate")
     triggeredOnStart: true
@@ -877,16 +887,26 @@ Item {
   Timer {
     id: loginPoll
     property int ticks: 0
-    interval: 3000
+    // Fast while the user is plausibly still typing in the login terminal,
+    // then slower (Model.loginPollIntervalMs). The interval change restarts
+    // the countdown, which is what we want: the new cadence runs from the
+    // tick that just happened.
+    interval: Model.loginPollIntervalMs(ticks)
     repeat: true
     onTriggered: {
       ticks += 1
       root.refreshAccount()
-      if (root.account.loggedIn || ticks >= 100) { loginPoll.stop(); root.refresh() }
+      if (root.account.loggedIn || ticks >= Model.LOGIN_POLL_MAX_TICKS) { loginPoll.stop(); root.refresh() }
     }
   }
 
-  onPanelOpenChanged: if (panelOpen) refreshAll()
+  onPanelOpenChanged: {
+    if (panelOpen) { refreshAll(); return }
+    // Waiting for a login nobody can be watching: the Log in button that
+    // started this poll lives in the panel, and the ordinary status poll
+    // notices a login on its own once the panel comes back.
+    if (loginPoll.running) loginPoll.stop()
+  }
   // Every path that sets vpnState (snapshots, logout, noteError, account)
   // moves the loss base with it.
   onVpnStateChanged: _lossBase = Model.lossBase(_lossBase, vpnState)

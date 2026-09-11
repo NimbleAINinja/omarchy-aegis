@@ -795,9 +795,15 @@ function lossBase(prevBase, state) {
 // that died without writing anything to tunnel.log — the one failure the
 // watch cannot see — where the poll used to be the only detector at all.
 var POLL_SLOW_MIN_MS = 180000
+// The poll's interval once the helper has reported cli_missing. The CLI
+// being installed is the one thing a status call could discover, and that
+// only changes when the user installs it — worth noticing eventually, not
+// worth a helper spawn a minute forever.
+var POLL_MISSING_MS = 600000
 
 // Service's refreshTimer interval.
-//   ctx: { intervalSec, panelOpen, connected, watchingTunnelLog, barMode }
+//   ctx: { intervalSec, panelOpen, connected, watchingTunnelLog, barMode,
+//     installed }
 // Panel open: the configured cadence, since what the poll fetches (uptime,
 // ping, endpoint) is on screen. Panel closed: twice that, as before — while
 // the tunnel is down, polling is the only way an external connect is ever
@@ -812,12 +818,34 @@ var POLL_SLOW_MIN_MS = 180000
 // it keeps live counters on the bar with the panel closed.
 function pollIntervalMs(ctx) {
   var c = ctx && typeof ctx === "object" ? ctx : {}
+  // adguardvpn-cli isn't there. Keep looking — the user may install it — but
+  // slowly; nothing else about the panel can change until they do.
+  if (c.installed === false) return POLL_MISSING_MS
   var base = num(c.intervalSec, 30) * 1000
   if (c.panelOpen === true) return base
   var closed = base * 2
   if (c.connected === true && c.watchingTunnelLog === true && str(c.barMode) !== "rate")
     return Math.max(closed, POLL_SLOW_MIN_MS)
   return closed
+}
+
+// The login poll (Service's loginPoll, started when the user opens
+// `adguardvpn-cli login` in a terminal) used to run a `license` call every 3
+// seconds for five minutes — 100 CLI spawns, all but the last few asking a
+// question whose answer cannot change until the user has finished typing in
+// another window. It now checks quickly while they are plausibly mid-login
+// and backs off afterwards, and gives up at LOGIN_POLL_MAX_TICKS (40 ticks,
+// about 5.5 minutes, 40 calls instead of 100). Service stops it sooner than
+// that whenever the panel closes while still logged out: the login button
+// lives in the panel, and the ordinary status poll notices a login anyway.
+var LOGIN_POLL_FAST_MS = 3000
+var LOGIN_POLL_SLOW_MS = 10000
+var LOGIN_POLL_FAST_TICKS = 10
+var LOGIN_POLL_MAX_TICKS = 40
+
+// The interval to use after `tick` ticks have run (0 before the first).
+function loginPollIntervalMs(tick) {
+  return num(tick, 0) < LOGIN_POLL_FAST_TICKS ? LOGIN_POLL_FAST_MS : LOGIN_POLL_SLOW_MS
 }
 
 // tunnel.log is written by the root VPN daemon (the user can read it) the
@@ -1243,7 +1271,13 @@ if (typeof module !== "undefined") {
     lossResponse: lossResponse,
     lossBase: lossBase,
     POLL_SLOW_MIN_MS: POLL_SLOW_MIN_MS,
+    POLL_MISSING_MS: POLL_MISSING_MS,
     pollIntervalMs: pollIntervalMs,
+    LOGIN_POLL_FAST_MS: LOGIN_POLL_FAST_MS,
+    LOGIN_POLL_SLOW_MS: LOGIN_POLL_SLOW_MS,
+    LOGIN_POLL_FAST_TICKS: LOGIN_POLL_FAST_TICKS,
+    LOGIN_POLL_MAX_TICKS: LOGIN_POLL_MAX_TICKS,
+    loginPollIntervalMs: loginPollIntervalMs,
     tunnelLogPath: tunnelLogPath,
     TUNNEL_TAIL_BYTES: TUNNEL_TAIL_BYTES,
     TUNNEL_SCAN_DELAY_MS: TUNNEL_SCAN_DELAY_MS,
