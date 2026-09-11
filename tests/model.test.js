@@ -347,6 +347,14 @@ test("settleStatus never re-sets wasConnected while a disconnect is pending, and
   assert.deepEqual(off, { desired: -1, loss: "disconnect", wasConnected: false })
 })
 
+test("errorProtected shields action and sudo errors from routine background outcomes", () => {
+  assert.equal(Model.errorProtected("action"), true)
+  assert.equal(Model.errorProtected("sudo"), true)
+  assert.equal(Model.errorProtected("parse"), false)
+  assert.equal(Model.errorProtected(""), false)
+  assert.equal(Model.errorProtected(undefined), false)
+})
+
 test("lossResponse: drops always alert, disconnects close apps only with killOnDisconnect", () => {
   const apps = ["firefox", "foot"]
   assert.deepEqual(Model.lossResponse("drop", { location: "Tokyo", killSwitch: true, apps }),

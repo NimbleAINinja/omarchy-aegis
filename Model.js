@@ -457,6 +457,17 @@ function settleStatus(ctx) {
   return { desired: desired, loss: loss, wasConnected: was }
 }
 
+// Whether the standing lastError/errorCode should survive a routine/
+// background outcome (a status snapshot that parsed fine, or one that
+// didn't) instead of being cleared or papered over by it. "action": raised
+// by a user-initiated action (connect/disconnect/exclusion/config change).
+// "sudo": the sudo-password warning. Both are only replaced by the user
+// starting a new action (Service clears eagerly there) or by dismissal;
+// anything else ("" or "parse") a good background snapshot is free to clear.
+function errorProtected(source) {
+  return source === "action" || source === "sudo"
+}
+
 function shouldAutoConnect(ctx) {
   if (!ctx || typeof ctx !== "object") return false
   return ctx.autoConnect === true && ctx.wasConnected === true && !ctx.attempted
@@ -646,6 +657,7 @@ if (typeof module !== "undefined") {
     formatAppList: formatAppList,
     tunnelLoss: tunnelLoss,
     settleStatus: settleStatus,
+    errorProtected: errorProtected,
     shouldAutoConnect: shouldAutoConnect,
     updateCheckDue: updateCheckDue,
     protocolLabel: protocolLabel,
