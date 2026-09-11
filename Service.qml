@@ -651,7 +651,9 @@ Item {
       account = Model.loggedOutAccount()
       accountLoaded = true
     }
-    if (snap.state !== "connected") rates = { down: 0, up: 0 }
+    // Already zero: assigning a fresh { 0, 0 } would signal the bar's rate
+    // label and every binding on it for no change at all.
+    if (snap.state !== "connected" && (rates.down !== 0 || rates.up !== 0)) rates = { down: 0, up: 0 }
     // An unexpected drop holds off any home lookup until the user acts
     // again (dropHold, cleared by connectTo/down/logout) — right after a
     // drop is exactly when the user expects to be protected, not queried.
@@ -684,14 +686,18 @@ Item {
 
   function applyProcs(obj) {
     if (obj.ok === false) return
-    procs = Model.toList(obj.procs)
+    var list = Model.toList(obj.procs)
+    // Same list, same object: assigning would signal anyway and rebuild the
+    // kill-switch suggestions. See Model.sameProcs.
+    if (!Model.sameProcs(procs, list)) procs = list
     // Only a successful answer starts the TTL, so a failed one retries.
     _procsAt = Date.now()
   }
 
   function applyConfig(obj) {
     if (obj.ok === false) { noteError(obj); return }
-    config = Model.normalizeConfig(obj)
+    var nextConfig = Model.normalizeConfig(obj)
+    if (!Model.sameConfig(config, nextConfig)) config = nextConfig
     configLoaded = true
   }
 
@@ -704,7 +710,9 @@ Item {
     if (obj.ok === false) { noteError(obj); return }
     var info = Model.normalizeUpdate(obj)
     info.checkedAt = Date.now()
-    update = info
+    // An unchanged answer keeps the object already on screen; checkedAt is
+    // only ever read as "has a check succeeded" (Model.sameUpdate).
+    if (!Model.sameUpdate(update, info)) update = info
     root._updateRetryAt = 0
     persist({ lastUpdateCheck: Math.floor(Date.now() / 1000) })
     if (notifyIfAvailable && !info.upToDate && info.latest)
@@ -713,7 +721,10 @@ Item {
 
   function applyLocations(obj) {
     if (obj.ok === false) { noteError(obj); return }
-    locations = Model.normalizeLocations(obj)
+    var list = Model.normalizeLocations(obj)
+    // An identical list would still signal and rebuild every list delegate
+    // 1-3 s after each panel open; see Model.sameLocations.
+    if (!Model.sameLocations(locations, list)) locations = list
     // Stamped even for an empty answer; locationsFresh's own count check is
     // what keeps an empty list from being treated as fresh.
     _locationsAt = Date.now()
@@ -721,7 +732,8 @@ Item {
 
   function applyAccount(obj) {
     if (obj.ok === false) { noteError(obj); return }
-    account = Model.normalizeAccount(obj)
+    var nextAccount = Model.normalizeAccount(obj)
+    if (!Model.sameAccount(account, nextAccount)) account = nextAccount
     accountLoaded = true
     if (account.loggedIn && vpnState === "logged_out") vpnState = "disconnected"
     if (!account.loggedIn) vpnState = "logged_out"

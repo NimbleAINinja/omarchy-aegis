@@ -110,6 +110,62 @@ function locationsFresh(count, appliedAtMs, nowMs, maxAgeMs) {
   return age < num(maxAgeMs, LOCATIONS_TTL_MS)
 }
 
+// Assigning a QML var property always emits its change signal, even when the
+// new value is byte-identical to the old one, and every one of these signals
+// rebuilds something: a fresh `locations` array re-runs orderLocations and
+// filterLocations, replaces the ListView's model and rebuilds every visible
+// delegate — 1-3 seconds after each panel open, for a list that is the same
+// list. The comparators below let Service keep the object it already has.
+// Each one compares exactly the fields anything renders or decides on, so a
+// change that would show up on screen is never swallowed.
+
+function sameLocations(a, b) {
+  var x = toList(a), y = toList(b)
+  if (x.length !== y.length) return false
+  for (var i = 0; i < x.length; i++) {
+    var p = x[i] || {}, q = y[i] || {}
+    // `favorite` is added by orderLocations, so it is absent on both sides of
+    // a normalizeLocations comparison and undefined === undefined there.
+    if (p.iso !== q.iso || p.city !== q.city || p.country !== q.country || p.cliName !== q.cliName
+      || p.pingMs !== q.pingMs || p.virtual !== q.virtual || p.lat !== q.lat || p.lon !== q.lon
+      || p.favorite !== q.favorite) return false
+  }
+  return true
+}
+
+// Process names cannot contain whitespace (agvpn.py's PROCESS_NAME), so one
+// joined string is a faithful comparison.
+function sameProcs(a, b) {
+  return toList(a).map(str).join("\n") === toList(b).map(str).join("\n")
+}
+
+function sameAccount(a, b) {
+  var p = a && typeof a === "object" ? a : {}
+  var q = b && typeof b === "object" ? b : {}
+  return p.loggedIn === q.loggedIn && p.email === q.email && p.plan === q.plan
+    && p.devices === q.devices && p.validUntil === q.validUntil
+}
+
+function sameConfig(a, b) {
+  var p = a && typeof a === "object" ? a : {}
+  var q = b && typeof b === "object" ? b : {}
+  return p.mode === q.mode && p.socksHost === q.socksHost && p.socksPort === q.socksPort
+    && p.socksUsername === q.socksUsername && p.dns === q.dns && p.changeSystemDns === q.changeSystemDns
+    && p.protocol === q.protocol && p.postQuantum === q.postQuantum && p.showHints === q.showHints
+}
+
+// checkedAt is when the check ran, not what it found, so comparing it exactly
+// would make every 24-hourly check a change. Nothing reads the value itself —
+// SettingsView only asks whether it is 0, i.e. whether a check has ever
+// succeeded — so that is what is compared. Keeping the older object therefore
+// keeps an equally true "yes, we have checked".
+function sameUpdate(a, b) {
+  var p = a && typeof a === "object" ? a : {}
+  var q = b && typeof b === "object" ? b : {}
+  return p.upToDate === q.upToDate && p.current === q.current && p.latest === q.latest
+    && (num(p.checkedAt, 0) > 0) === (num(q.checkedAt, 0) > 0)
+}
+
 function locationKey(loc) {
   if (!loc) return ""
   return str(loc.iso) + "|" + str(loc.city)
@@ -1133,6 +1189,11 @@ if (typeof module !== "undefined") {
     toList: toList,
     normalizeSnapshot: normalizeSnapshot,
     normalizeLocations: normalizeLocations,
+    sameLocations: sameLocations,
+    sameProcs: sameProcs,
+    sameAccount: sameAccount,
+    sameConfig: sameConfig,
+    sameUpdate: sameUpdate,
     LOCATIONS_TTL_MS: LOCATIONS_TTL_MS,
     locationsFresh: locationsFresh,
     locationKey: locationKey,

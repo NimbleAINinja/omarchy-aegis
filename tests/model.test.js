@@ -901,6 +901,82 @@ test("queueFront puts one snapshot first without reordering anything else", () =
   assert.deepEqual(Model.queueFront([write], { verb: "config" }), [{ verb: "config" }, write])
 })
 
+test("sameLocations compares every rendered field", () => {
+  const list = () => [loc("US", "United States", "New York", 21), loc("JP", "Japan", "Tokyo", 140)]
+  assert.equal(Model.sameLocations(list(), list()), true)
+  assert.equal(Model.sameLocations([], []), true)
+  assert.equal(Model.sameLocations(null, []), true)
+  assert.equal(Model.sameLocations(list(), list().slice(1)), false)
+  // Order is part of it: the list is sorted by ping and rendered in order.
+  assert.equal(Model.sameLocations(list(), list().reverse()), false)
+  for (const [field, value] of [["iso", "GB"], ["country", "USA"], ["city", "Newark"],
+    ["cliName", "new-york"], ["pingMs", 22], ["pingMs", null], ["virtual", true],
+    ["lat", 40.7], ["lon", -74], ["favorite", true]]) {
+    const changed = list()
+    changed[0] = Object.assign({}, changed[0], { [field]: value })
+    assert.equal(Model.sameLocations(list(), changed), false, field + " = " + value)
+  }
+  // normalizeLocations output has no `favorite` on either side.
+  const norm = Model.normalizeLocations({ ok: true, locations: [{ iso: "us", city: "New York", pingMs: 21 }] })
+  assert.equal(Model.sameLocations(norm, Model.normalizeLocations({ ok: true,
+    locations: [{ iso: "us", city: "New York", pingMs: 21 }] })), true)
+  // Array-likes from Qt compare like arrays.
+  assert.equal(Model.sameLocations({ length: 1, 0: list()[0] }, [list()[0]]), true)
+})
+
+test("sameProcs, sameAccount, sameConfig and sameUpdate compare field by field", () => {
+  assert.equal(Model.sameProcs(["firefox", "foot"], ["firefox", "foot"]), true)
+  assert.equal(Model.sameProcs([], []), true)
+  assert.equal(Model.sameProcs(null, []), true)
+  assert.equal(Model.sameProcs(["firefox", "foot"], ["foot", "firefox"]), false)
+  assert.equal(Model.sameProcs(["firefox"], ["firefox", "foot"]), false)
+  assert.equal(Model.sameProcs(["firefox"], ["firefo"]), false)
+  assert.equal(Model.sameProcs({ length: 1, 0: "foot" }, ["foot"]), true)
+
+  const acct = { loggedIn: true, email: "a@b.c", plan: "Premium", devices: 3, validUntil: "2027-01-01" }
+  assert.equal(Model.sameAccount(acct, Object.assign({}, acct)), true)
+  assert.equal(Model.sameAccount(Model.loggedOutAccount(), Model.loggedOutAccount()), true)
+  assert.equal(Model.sameAccount(acct, Model.loggedOutAccount()), false)
+  for (const field of ["loggedIn", "email", "plan", "devices", "validUntil"]) {
+    assert.equal(Model.sameAccount(acct, Object.assign({}, acct, { [field]: "x" })), false, field)
+  }
+  assert.equal(Model.sameAccount(acct, Object.assign({}, acct, { devices: null })), false)
+
+  const cfg = Model.normalizeConfig({ mode: "socks", socksHost: "127.0.0.1", socksPort: 1080,
+    socksUsername: "u", dns: "1.1.1.1", changeSystemDns: true, protocol: "quic", postQuantum: false, showHints: false })
+  assert.equal(Model.sameConfig(cfg, Object.assign({}, cfg)), true)
+  assert.equal(Model.sameConfig(Model.normalizeConfig(null), Model.normalizeConfig(null)), true)
+  for (const [field, value] of [["mode", "tun"], ["socksHost", "0.0.0.0"], ["socksPort", 9050],
+    ["socksUsername", "v"], ["dns", "default"], ["changeSystemDns", false], ["protocol", "auto"],
+    ["postQuantum", true], ["showHints", true]]) {
+    assert.equal(Model.sameConfig(cfg, Object.assign({}, cfg, { [field]: value })), false, field)
+  }
+
+  const up = { upToDate: false, current: "2.5.1", latest: "2.6.0", checkedAt: 1000 }
+  assert.equal(Model.sameUpdate(up, Object.assign({}, up)), true)
+  // checkedAt moves on every check; only "has a check ever succeeded" is read.
+  assert.equal(Model.sameUpdate(up, Object.assign({}, up, { checkedAt: 999999 })), true)
+  assert.equal(Model.sameUpdate(up, Object.assign({}, up, { checkedAt: 0 })), false)
+  for (const [field, value] of [["upToDate", true], ["current", "2.5.2"], ["latest", null], ["latest", "2.7.0"]]) {
+    assert.equal(Model.sameUpdate(up, Object.assign({}, up, { [field]: value })), false, field)
+  }
+  assert.equal(Model.sameUpdate(Model.normalizeUpdate(null), Model.normalizeUpdate(null)), true)
+})
+
+test("Service.qml assigns the arrays and objects only when they actually changed", () => {
+  const src = require("node:fs").readFileSync(require("node:path").join(__dirname, "..", "Service.qml"), "utf8")
+  assert.match(src, /if \(!Model\.sameLocations\(locations, list\)\) locations = list/)
+  assert.match(src, /if \(!Model\.sameProcs\(procs, list\)\) procs = list/)
+  assert.match(src, /if \(!Model\.sameAccount\(account, nextAccount\)\) account = nextAccount/)
+  assert.match(src, /if \(!Model\.sameConfig\(config, nextConfig\)\) config = nextConfig/)
+  assert.match(src, /if \(!Model\.sameUpdate\(update, info\)\) update = info/)
+  assert.match(src, /snap\.state !== "connected" && \(rates\.down !== 0 \|\| rates\.up !== 0\)/)
+  // No normalize result is assigned to those five properties unguarded any
+  // more. (account = Model.loggedOutAccount() stays: it is a state change,
+  // not a re-read of the same answer.)
+  assert.doesNotMatch(src, /\n\s*(locations|procs|account|config|update) = Model\.(normalize|toList)/)
+})
+
 test("procsFresh reuses a process list for ten seconds and always fetches the first one", () => {
   const now = 1_700_000_000_000
   const ttl = Model.PROCS_TTL_MS
