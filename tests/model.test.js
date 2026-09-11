@@ -287,15 +287,17 @@ test("countryIndex answers exactly what the linear scan did", () => {
 test("Panel.qml builds the popup content on first open and never throws it away", () => {
   const fs = require("node:fs"), path = require("node:path")
   const panel = fs.readFileSync(path.join(__dirname, "..", "Panel.qml"), "utf8")
-  // The focus target, the Flickable and the two Loaders stay eager — the panel
-  // takes keyboard focus before anything inside it exists — and only what they
-  // load is deferred.
+  // The focus target, the Flickable and the three Loaders stay eager — the
+  // panel takes keyboard focus before anything inside it exists — and only what
+  // they load is deferred.
   assert.match(panel, /focusTarget: keyCatcher/)
   assert.match(panel, /PanelKeyCatcher \{\s*\n\s*id: keyCatcher/)
   assert.match(panel, /Flickable \{\s*\n\s*id: panelFlick/)
   assert.match(panel, /Loader \{\s*\n\s*id: contentLoader\s*\n\s*width: panelFlick\.width\s*\n\s*active: root\.popupReady\s*\n\s*sourceComponent: popupContent\s*\n\s*\}/)
-  // The footer is a second Loader on the same latch: both are built inside the
-  // one `popupReady = true`, so the card is measured with all of it there.
+  // The header and the footer are two more Loaders on the same latch: all
+  // three are built inside the one `popupReady = true`, so the card is
+  // measured with all of it there.
+  assert.match(panel, /Loader \{\s*\n\s*id: headerLoader\s*\n\s*anchors\.left: parent\.left\s*\n\s*anchors\.right: parent\.right\s*\n\s*anchors\.top: parent\.top\s*\n\s*active: root\.popupReady\s*\n\s*sourceComponent: popupHeader\s*\n\s*\}/)
   assert.match(panel, /Loader \{\s*\n\s*id: footerLoader\s*\n\s*anchors\.left: parent\.left\s*\n\s*anchors\.right: parent\.right\s*\n\s*anchors\.bottom: parent\.bottom\s*\n\s*active: root\.popupReady\s*\n\s*sourceComponent: popupFooter\s*\n\s*\}/)
   // Latched inside the open branch, never cleared.
   assert.match(panel, /property bool popupReady: false/)
@@ -304,23 +306,38 @@ test("Panel.qml builds the popup content on first open and never throws it away"
   assert.match(opened[0], /if \(opened\) \{/)
   assert.match(opened[0], /\n\s*popupReady = true\n/)
   assert.doesNotMatch(panel, /popupReady = false/)
-  // The footer block lives outside the Flickable, anchored to the bottom of
-  // the key catcher, and the Flickable stops where it starts — that is what
-  // keeps the icon bar on screen while a tall view scrolls.
+  // The header block and the footer block live outside the Flickable, anchored
+  // to the top and the bottom of the key catcher, and the Flickable runs
+  // between them — that is what keeps the map, the hero and the icon bar on
+  // screen while a tall view scrolls between them.
   const flick = /\n      Flickable \{[\s\S]*?\n      \}/.exec(panel)
   assert.ok(flick, "Flickable block present")
+  assert.match(flick[0], /anchors\.top: headerLoader\.bottom\s*\n\s*anchors\.topMargin: Style\.space\(10\)/)
   assert.match(flick[0], /anchors\.bottom: footerLoader\.top/)
-  assert.doesNotMatch(flick[0], /popupFooter|Repeater|PanelSeparator/)
+  assert.doesNotMatch(flick[0], /popupHeader|popupFooter|WorldMap|PanelHero|Repeater|PanelSeparator/)
+  assert.match(panel, /Component \{\s*\n\s*id: popupHeader/)
   assert.match(panel, /Component \{\s*\n\s*id: popupFooter/)
-  // The card sizes to column + gap + footer, the Flickable scrolls the column
-  // alone, and both are measured on the same change.
+  // The map, the hero, the status line and their rule are the header block;
+  // the scrolling column holds the view Loader and nothing else.
+  const header = /Component \{\s*\n\s*id: popupHeader[\s\S]*?\n  \}/.exec(panel)
+  assert.ok(header, "popupHeader Component present")
+  for (const pinned of [/WorldMap \{/, /PanelHero \{/, /text: root\.statusLine/, /PanelSeparator \{ foreground: root\.foreground \}/])
+    assert.match(header[0], pinned)
+  assert.doesNotMatch(header[0], /viewLoader/)
+  const content = /Component \{\s*\n\s*id: popupContent[\s\S]*?\n  \}/.exec(panel)
+  assert.ok(content, "popupContent Component present")
+  assert.match(content[0], /Loader \{\s*\n\s*id: viewLoader/)
+  assert.doesNotMatch(content[0], /WorldMap|PanelHero|PanelSeparator|statusLine/)
+  // The card sizes to header + gap + view + gap + footer, the Flickable scrolls
+  // the view alone, and all three are measured on the same change.
   assert.match(panel, /readonly property real popupColumnHeight: contentLoader\.item \? contentLoader\.item\.implicitHeight : 0/)
+  assert.match(panel, /readonly property real popupHeaderHeight: headerLoader\.item \? headerLoader\.item\.implicitHeight : 0/)
   assert.match(panel, /readonly property real popupFooterHeight: footerLoader\.item \? footerLoader\.item\.implicitHeight : 0/)
-  assert.match(panel, /readonly property real popupContentHeight: popupColumnHeight > 0\s*\n\s*\? popupColumnHeight \+ Style\.space\(10\) \+ popupFooterHeight : 0/)
+  assert.match(panel, /readonly property real popupContentHeight: popupColumnHeight > 0\s*\n\s*\? popupHeaderHeight \+ Style\.space\(10\) \+ popupColumnHeight \+ Style\.space\(10\) \+ popupFooterHeight : 0/)
   assert.match(panel, /contentHeight: panel\.fittedContentHeight\(root\.popupContentHeight, Style\.space\(760\)\)/)
   assert.match(panel, /contentHeight: root\.popupColumnHeight/)
   // Ids inside the deferred Components are not reachable from out here.
-  assert.doesNotMatch(panel, /column\.implicitHeight|footerBlock\.implicitHeight/)
+  assert.doesNotMatch(panel, /column\.implicitHeight|headerBlock\.implicitHeight|footerBlock\.implicitHeight/)
   // Everything that reaches into the content goes through one null-safe
   // property, so the bar icon and every IPC verb work unopened.
   assert.match(panel, /readonly property var viewItem: contentLoader\.item \? contentLoader\.item\.viewItem : null/)

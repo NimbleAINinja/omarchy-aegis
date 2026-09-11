@@ -413,15 +413,33 @@ Panel {
       onDeleteRequested: if (root.focusSection === "list" && root.viewItem && typeof root.viewItem.removeAt === "function") root.viewItem.removeAt(root.cursorIndex)
       onTextKey: function(t) { root.handleTextKey(t) }
 
-      // The scrolling part: everything above the footer. It ends where the
-      // footer begins, so a view taller than the card scrolls under a footer
-      // that stays put. Before the first open the footer Loader is inactive
-      // and zero-high, and this fills the card — with nothing in it.
+      // The map, the hero and the status line, pinned to the top of the card:
+      // they are what the panel IS — where the tunnel comes out, whether it is
+      // up, what just went wrong — and they used to be the first thing scrolled
+      // away by a long location list, leaving the user reading rows with no
+      // idea what they were connected to. Everything heavy is behind this
+      // Loader: two Canvas image buffers (~378 KB each) that would otherwise be
+      // built per screen at shell start-up for a popup the user may never open.
+      Loader {
+        id: headerLoader
+        anchors.left: parent.left
+        anchors.right: parent.right
+        anchors.top: parent.top
+        active: root.popupReady
+        sourceComponent: popupHeader
+      }
+
+      // The scrolling middle: the current tab, and nothing else. It starts one
+      // gap below the header's rule and ends where the footer begins, so a view
+      // taller than the card scrolls between two things that stay put. Before
+      // the first open both Loaders are inactive and zero-high, and this fills
+      // the card — with nothing in it.
       Flickable {
         id: panelFlick
         anchors.left: parent.left
         anchors.right: parent.right
-        anchors.top: parent.top
+        anchors.top: headerLoader.bottom
+        anchors.topMargin: Style.space(10)
         anchors.bottom: footerLoader.top
         contentWidth: width
         contentHeight: root.popupColumnHeight
@@ -431,13 +449,13 @@ Panel {
         interactive: contentHeight > height
         ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
 
-        // Everything heavy lives behind this Loader: two Canvas image buffers
-        // (~378 KB each) plus the whole column of rows, built per screen at
-        // shell start-up for a popup the user may never open. It activates the
-        // moment `opened` flips — which is when KeyboardPanel starts its 140 ms
-        // fade-in, not when the fade finishes — so the card is measured with
-        // the content already there and never pops. It never deactivates: a
-        // panel opened once is one the user opens again.
+        // The view's own rows — the whole location list, the settings tab —
+        // deferred on the same latch as the header above and the footer below.
+        // All three activate the moment `opened` flips, which is when
+        // KeyboardPanel starts its 140 ms fade-in and not when the fade
+        // finishes, so the card is measured with everything already there and
+        // never pops. None of them deactivate: a panel opened once is one the
+        // user opens again.
         Loader {
           id: contentLoader
           width: panelFlick.width
@@ -450,8 +468,8 @@ Panel {
       // card: it used to be the last row of the scrolling column, so on a long
       // location list or the settings tab it scrolled out of reach and the way
       // to another tab was to scroll back down. Lazy on the same latch as the
-      // column above, so the first open still builds both at once and the card
-      // measures them together.
+      // header and the view, so the first open builds all three at once and the
+      // card measures them together.
       Loader {
         id: footerLoader
         anchors.left: parent.left
@@ -464,15 +482,17 @@ Panel {
   }
 
   // How tall the scrolling column wants to be: what the Flickable scrolls
-  // through. 0 before the first open.
+  // through, which is now the current view alone. 0 before the first open.
   readonly property real popupColumnHeight: contentLoader.item ? contentLoader.item.implicitHeight : 0
+  readonly property real popupHeaderHeight: headerLoader.item ? headerLoader.item.implicitHeight : 0
   readonly property real popupFooterHeight: footerLoader.item ? footerLoader.item.implicitHeight : 0
-  // What the card sizes itself to: the column, the footer that no longer
-  // scrolls with it, and one column gap between them. 0 before the first open,
-  // when fittedContentHeight falls back to the card's own insets and nothing
-  // is drawn anyway.
+  // What the card sizes itself to: the pinned header, the view, the pinned
+  // footer, and a column gap on either side of the view. Still content-sized
+  // up to the cap, so a short tab is still a short card. 0 before the first
+  // open, when fittedContentHeight falls back to the card's own insets and
+  // nothing is drawn anyway.
   readonly property real popupContentHeight: popupColumnHeight > 0
-    ? popupColumnHeight + Style.space(10) + popupFooterHeight : 0
+    ? popupHeaderHeight + Style.space(10) + popupColumnHeight + Style.space(10) + popupFooterHeight : 0
   // The current view's item, or null before the popup has ever been built.
   // This is the only way into the deferred content — the view Loader's id
   // lives inside the Component — and every use of it above checks for null
@@ -484,13 +504,13 @@ Panel {
   property bool popupReady: false
 
   Component {
-    id: popupContent
+    id: popupHeader
 
+    // Map, hero, status line and the rule under them, as one block the card
+    // can measure and the Flickable can start below.
     Column {
-      id: column
+      id: headerBlock
       spacing: Style.space(10)
-      // How Panel.qml's own functions reach into the loaded content.
-      readonly property var viewItem: viewLoader.item
 
       WorldMap {
         id: map
@@ -578,6 +598,18 @@ Panel {
       }
 
       PanelSeparator { foreground: root.foreground }
+    }
+  }
+
+  Component {
+    id: popupContent
+
+    // The scrolling part of the card: the current tab and nothing else.
+    Column {
+      id: column
+      spacing: Style.space(10)
+      // How Panel.qml's own functions reach into the loaded content.
+      readonly property var viewItem: viewLoader.item
 
       Loader {
         id: viewLoader
