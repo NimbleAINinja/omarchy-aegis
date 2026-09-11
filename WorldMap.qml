@@ -23,8 +23,30 @@ Item {
   readonly property real pickRadius: Math.max(10, dotPitch * 4)
   signal candidateClicked(var location)
 
+  // Pixel positions of `candidates`, rebuilt when they or the geometry
+  // change: a pointer event otherwise re-projected all ~80 cities, twice
+  // each, through two QML functions. A location without coordinates is
+  // stored as NaN, which Link.nearestProjected skips.
+  property var candidateX: []
+  property var candidateY: []
+
+  function rebuildProjected() {
+    var list = candidates || []
+    var count = list.length
+    var xs = new Array(count)
+    var ys = new Array(count)
+    for (var i = 0; i < count; i++) {
+      var p = list[i]
+      var ok = Link.finiteCoord(p)
+      xs[i] = ok ? projectX(Number(p.lon)) : NaN
+      ys[i] = ok ? projectY(Number(p.lat)) : NaN
+    }
+    candidateX = xs
+    candidateY = ys
+  }
+
   function pickCandidate(x, y) {
-    var hit = Link.nearest(candidates, x, y, projectX, projectY, pickRadius)
+    var hit = Link.nearestProjected(candidateX, candidateY, candidates, x, y, pickRadius)
     return hit ? hit.point : null
   }
   property string linkState: "none"    // "none" | "connecting" | "connected"
@@ -360,6 +382,7 @@ Item {
 
   function repaintAll() {
     rebuildCells()
+    rebuildProjected()
     baseCanvas.requestPaint()
     dotCanvas.requestPaint()
   }
@@ -380,7 +403,7 @@ Item {
   onExitChanged: dotCanvas.requestPaint()
   onHoverChanged: dotCanvas.requestPaint()
   onHoverCandidateChanged: dotCanvas.requestPaint()
-  onCandidatesChanged: dotCanvas.requestPaint()
+  onCandidatesChanged: { rebuildProjected(); dotCanvas.requestPaint() }
   onLinkStateChanged: {
     if (linkState === "connected") drawProgress = 1
     else drawProgress = 0

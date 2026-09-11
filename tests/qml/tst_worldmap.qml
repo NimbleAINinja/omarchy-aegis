@@ -326,4 +326,23 @@ TestCase {
     map.paintMarkers(third)
     verify(third.record.measures.length > 0, "a new font measures again")
   }
+
+  function test_projected_candidates_are_cached_and_kept_fresh() {
+    var map = makeMap({ home: paris, exit: null, linkState: "none" })
+    map.candidates = [
+      { city: "Tokyo", lat: 35.68, lon: 139.69 },
+      { city: "NoCoords", lat: null, lon: null }
+    ]
+    compare(map.candidateX.length, 2)
+    fuzzyCompare(map.candidateX[0], map.projectX(139.69), 1e-9)
+    fuzzyCompare(map.candidateY[0], map.projectY(35.68), 1e-9)
+    // Not 0,0: a location without coordinates must stay unpickable.
+    verify(isNaN(map.candidateX[1]))
+    verify(isNaN(map.candidateY[1]))
+    // A resize reprojects, or every pick after it would be off.
+    map.width = 240
+    fuzzyCompare(map.candidateX[0], map.projectX(139.69), 1e-9)
+    var p = map.pointFor(35.68, 139.69)
+    compare(map.pickCandidate(p.x, p.y).city, "Tokyo")
+  }
 }

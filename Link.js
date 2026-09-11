@@ -171,10 +171,38 @@ function nearest(points, x, y, projectX, projectY, maxDist) {
   return best
 }
 
+// The same pick over points that are already projected: xs[i] and ys[i] are
+// the pixel position of items[i]. Comparing squared distances saves the
+// square root, and a point whose coordinates were not finite is stored as
+// NaN, which fails every comparison below — that is the finiteCoord skip
+// nearest() does inline, kept so that a location without coordinates is
+// never picked at 0,0. Used for map hover and click, where nearest() would
+// otherwise re-project every city on every pointer event.
+function nearestProjected(xs, ys, items, x, y, maxDist) {
+  var list = items || []
+  var limit = Number(maxDist)
+  if (!(limit > 0)) return null
+  if (!xs || !ys) return null
+  var count = Math.min(list.length, xs.length, ys.length)
+  var best = null
+  var bestDist2 = limit * limit
+  for (var i = 0; i < count; i++) {
+    var dx = xs[i] - x
+    var dy = ys[i] - y
+    var dist2 = dx * dx + dy * dy
+    if (dist2 <= bestDist2 && (best === null || dist2 < bestDist2)) {
+      best = { point: list[i], dist: Math.sqrt(dist2), x: xs[i], y: ys[i] }
+      bestDist2 = dist2
+    }
+  }
+  return best
+}
+
 if (typeof module !== "undefined") {
   module.exports = {
     controlPoint: controlPoint,
     pointOnQuad: pointOnQuad,
+    finiteCoord: finiteCoord,
     segments: segments,
     chordLength: chordLength,
     totalLength: totalLength,
@@ -182,6 +210,7 @@ if (typeof module !== "undefined") {
     beadPositions: beadPositions,
     polyline: polyline,
     progressSegments: progressSegments,
-    nearest: nearest
+    nearest: nearest,
+    nearestProjected: nearestProjected
   }
 }

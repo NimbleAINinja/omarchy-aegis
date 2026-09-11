@@ -175,3 +175,92 @@ test("nearest never returns a location missing coordinates, even right at 0,0", 
   const paris = { x: px(2.35), y: py(48.86) }
   assert.equal(Link.nearest(pts, paris.x, paris.y, px, py, 12).point.city, "Paris")
 })
+
+// Projections of `items` as WorldMap caches them: NaN where the location has
+// no usable coordinates, which is what keeps it off 0,0.
+function project(items) {
+  const xs = [], ys = []
+  for (const p of items) {
+    const ok = Link.finiteCoord(p)
+    xs.push(ok ? px(Number(p.lon)) : NaN)
+    ys.push(ok ? py(Number(p.lat)) : NaN)
+  }
+  return [xs, ys]
+}
+
+test("nearestProjected picks the same point as nearest, without projecting", () => {
+  const pts = [
+    { city: "Paris", lat: 48.86, lon: 2.35 },
+    { city: "Brussels", lat: 50.85, lon: 4.35 },
+    { city: "NoCoords", lat: null, lon: null }
+  ]
+  const [xs, ys] = project(pts)
+  const paris = { x: px(2.35), y: py(48.86) }
+  const hit = Link.nearestProjected(xs, ys, pts, paris.x - 2, paris.y + 1, 12)
+  assert.equal(hit.point.city, "Paris")
+  assert.ok(hit.dist < 3)
+  assert.equal(hit.x, paris.x)
+  assert.equal(hit.y, paris.y)
+  assert.equal(Link.nearestProjected(xs, ys, pts, 5, 5, 12), null, "nothing within reach")
+  assert.equal(Link.nearestProjected(xs, ys, pts, paris.x, paris.y, 0), null, "maxDist 0 never matches")
+  assert.equal(Link.nearestProjected([], [], [], paris.x, paris.y, 12), null)
+  assert.equal(Link.nearestProjected(null, null, pts, paris.x, paris.y, 12), null, "no cache yet")
+  // A cache that lags behind the list only offers what it covers.
+  const brussels = { x: px(4.35), y: py(50.85) }
+  assert.equal(Link.nearestProjected(xs, ys, pts, brussels.x, brussels.y, 3).point.city, "Brussels")
+  assert.equal(Link.nearestProjected(xs.slice(0, 1), ys.slice(0, 1), pts, brussels.x, brussels.y, 3), null)
+})
+
+test("nearestProjected never returns a location missing coordinates, even right at 0,0", () => {
+  const pts = [
+    { city: "NullCoords", lat: null, lon: null },
+    { city: "EmptyStringCoords", lat: "", lon: "" },
+    { city: "MixedCoords", lat: 10, lon: "" },
+    { city: "Paris", lat: 48.86, lon: 2.35 }
+  ]
+  const [xs, ys] = project(pts)
+  assert.equal(Link.nearestProjected(xs, ys, pts, px(0), py(0), 12), null)
+  assert.equal(Link.nearestProjected(xs, ys, pts, px(2.35), py(48.86), 12).point.city, "Paris")
+})
+
+test("nearestProjected agrees with nearest on random inputs", () => {
+  // Deterministic PRNG so a disagreement is reproducible.
+  let seed = 0x2f6e2b1
+  const rnd = () => {
+    seed = (seed + 0x6d2b79f5) | 0
+    let t = Math.imul(seed ^ (seed >>> 15), 1 | seed)
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296
+  }
+  const broken = [null, undefined, "", NaN, "nope", Infinity]
+  let found = 0
+  for (let round = 0; round < 400; round++) {
+    const pts = []
+    for (let i = 0; i < 1 + Math.floor(rnd() * 30); i++) {
+      if (rnd() < 0.25) {
+        // A location with one or both coordinates unusable.
+        const lat = rnd() < 0.5 ? broken[Math.floor(rnd() * broken.length)] : rnd() * 180 - 90
+        const lon = rnd() < 0.5 ? broken[Math.floor(rnd() * broken.length)] : rnd() * 360 - 180
+        pts.push({ city: "broken" + i, lat, lon })
+      } else {
+        pts.push({ city: "city" + i, lat: rnd() * 140 - 56, lon: rnd() * 360 - 180 })
+      }
+    }
+    const [xs, ys] = project(pts)
+    const x = rnd() * W
+    const y = rnd() * H
+    const radius = 5 + rnd() * 120
+    const slow = Link.nearest(pts, x, y, px, py, radius)
+    const fast = Link.nearestProjected(xs, ys, pts, x, y, radius)
+    if (slow === null) {
+      assert.equal(fast, null, `round ${round}: nearest found nothing`)
+      continue
+    }
+    found++
+    assert.equal(fast.point, slow.point, `round ${round}: same location`)
+    assert.ok(Math.abs(fast.dist - slow.dist) < 1e-9, `round ${round}: same distance`)
+    assert.equal(fast.x, slow.x)
+    assert.equal(fast.y, slow.y)
+  }
+  assert.ok(found > 100, `expected plenty of hits, got ${found}`)
+})
