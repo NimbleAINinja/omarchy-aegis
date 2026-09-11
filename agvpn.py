@@ -805,6 +805,11 @@ def _state_after():
 def verb_connect(name):
     if not name:
         raise CliError("unknown", "connect needs a location name")
+    # A name starting with "-" would be parsed by adguardvpn-cli's own option
+    # parser (CLI11) as an option rather than -l's value; it is our own argv
+    # word (no shell involved), but that still isn't a location name.
+    if name.startswith("-"):
+        raise CliError("unknown", "connect name must not start with -")
     rc, out, err = run_cli(["connect", "-l", name, "-y", "--no-progress"], CONNECT_TIMEOUT)
     if rc != 0:
         code, message = classify_failure(out, err)
@@ -857,7 +862,9 @@ def verb_exclusions(args):
         rc, out, err = run_cli(["site-exclusions", "mode", mode])
     elif action in ("add", "remove"):
         domain = (args[1] if len(args) > 1 else "").strip()
-        if not domain or any(ch.isspace() for ch in domain):
+        # A leading "-" would reach adguardvpn-cli as an option word, not a
+        # domain (see config_command's "text" check for the same rule).
+        if not domain or any(ch.isspace() for ch in domain) or domain.startswith("-"):
             raise CliError("unknown", "exclusions %s needs a domain" % action)
         rc, out, err = run_cli(["site-exclusions", action, domain])
     else:
@@ -1055,6 +1062,14 @@ def config_command(key, value):
             raise CliError("unknown", "%s must be a port number" % key)
         return ["config", sub, value]
     if kind == "text":
+        # A value starting with "-" would reach adguardvpn-cli as an option
+        # word (CLI11), not this setting's value — checked before the empty/
+        # whitespace rule so the message names the actual problem. Never
+        # applied to socksPassword: that key is "stdin", not "text", because
+        # the value never goes on argv at all (see _config_set_secret), so a
+        # password starting with "-" is fine.
+        if value.startswith("-"):
+            raise CliError("unknown", "%s must not start with -" % key)
         if not value or any(ch.isspace() for ch in value):
             raise CliError("unknown", "%s needs a value" % key)
         return ["config", sub, value]
@@ -1218,12 +1233,20 @@ def _is_denied(name):
 
 
 def verb_kill(names):
-    """Kill listed apps by exact process name via pkill -x. Never touches a
-    deny-listed name (PROCS_DENY) even if it slipped in through free text
-    (KillSwitchView's field or a hand-edited killApps setting string) —
-    Model.js keeps the UI from offering or accepting one, but this is the
-    layer that actually calls pkill, so it enforces the rule again."""
+    """Kill listed apps by exact process name via pkill -u <uid> -x, scoped to
+    this user's own processes (uid = os.getuid(), the same id verb_procs's
+    `ps -u` filters on). Without -u, pkill -x matches that name for every
+    user on the system: a same-named process another user owns would either
+    get killed (if this user's sudo/setuid lets pkill reach it) or, more
+    likely, make pkill fail with EPERM on that other match even though this
+    user's own process (if any) was found and signalled fine — turning a
+    plain "missing" into a spurious failure. Never touches a deny-listed name
+    (PROCS_DENY) even if it slipped in through free text (KillSwitchView's
+    field or a hand-edited killApps setting string) — Model.js keeps the UI
+    from offering or accepting one, but this is the layer that actually calls
+    pkill, so it enforces the rule again."""
     pkill = os.environ.get("AEGIS_PKILL") or shutil.which("pkill") or "pkill"
+    uid = str(os.getuid())
     killed, missing, rejected, skipped = [], [], [], []
     for name in names:
         if not (name or "").strip():
@@ -1237,7 +1260,8 @@ def verb_kill(names):
         # pkill -x compares against the truncated comm, so a long executable
         # name only matches by its first COMM_LEN characters.
         try:
-            p = subprocess.run([pkill, "-x", "--", name[:COMM_LEN]], capture_output=True, text=True, timeout=5)
+            p = subprocess.run([pkill, "-u", uid, "-x", "--", name[:COMM_LEN]], capture_output=True, text=True,
+                               timeout=5)
             (killed if p.returncode == 0 else missing).append(name)
         except (OSError, subprocess.SubprocessError):
             missing.append(name)

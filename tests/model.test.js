@@ -591,6 +591,10 @@ test("normalizePaused always yields both mode lists, cleaned", () => {
   assert.deepEqual(Model.normalizePaused({ selective: { length: 1, 0: "X.net" }, other: ["z"] }), { general: [], selective: ["x.net"] })
 })
 
+test("normalizePaused drops a domain starting with -: it would reach adguardvpn-cli as an option, not a domain", () => {
+  assert.deepEqual(Model.normalizePaused({ general: ["-x", "--help", "a.com"] }), { general: ["a.com"], selective: [] })
+})
+
 test("mergeExclusions keeps one stable alphabetical order so pausing never moves a row", () => {
   const rows = Model.mergeExclusions(["news.example.com", "anthropic.com"], ["example.org", "anthropic.com"])
   assert.deepEqual(rows, [
@@ -600,6 +604,7 @@ test("mergeExclusions keeps one stable alphabetical order so pausing never moves
   ])
   assert.deepEqual(Model.mergeExclusions([], []), [])
   assert.deepEqual(Model.mergeExclusions(["B.com", "a.com"], []), [{ domain: "a.com", paused: false }, { domain: "b.com", paused: false }], "hostnames are case-insensitive, so rows are lowercased")
+  assert.deepEqual(Model.mergeExclusions(["-x", "a.com"], []), [{ domain: "a.com", paused: false }], "an option-like active domain is dropped rather than shown")
 })
 test("setPaused adds or removes a domain in the right mode without mutating input", () => {
   const base = { general: ["a.com"], selective: [] }

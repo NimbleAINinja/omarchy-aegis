@@ -348,6 +348,16 @@ class Verbs(unittest.TestCase):
         self.assertEqual(j["state"], "connected")
         self.assertIn("connect -l Mumbai (Virtual) -y --no-progress", argv)
 
+    def test_connect_rejects_option_like_name_without_running(self):
+        with tempfile.TemporaryDirectory() as d:
+            log = Path(d, "argv.log")
+            rc, out, _ = run_verb("connect", "-f", env_extra={"FAKE_LOG": str(log)})
+            ran = log.exists()
+        j = self.check_json(out)
+        self.assertFalse(j["ok"])
+        self.assertEqual(j["code"], "unknown")
+        self.assertFalse(ran, "must not touch the CLI for a name starting with -")
+
     def test_connect_sudo_password(self):
         rc, out, _ = run_verb("connect", "Sydney", mode="sudo")
         j = self.check_json(out)
@@ -407,6 +417,17 @@ class Verbs(unittest.TestCase):
             argv = log.read_text()
         self.assertIn("site-exclusions mode selective", argv)
         self.assertEqual(self.check_json(out)["mode"], "selective")
+
+    def test_exclusions_add_remove_reject_option_like_domain_without_running(self):
+        for action in ("add", "remove"):
+            with tempfile.TemporaryDirectory() as d:
+                log = Path(d, "argv.log")
+                rc, out, _ = run_verb("exclusions", action, "--help", env_extra={"FAKE_LOG": str(log)})
+                ran = log.exists()
+            j = self.check_json(out)
+            self.assertFalse(j["ok"], action)
+            self.assertEqual(j["code"], "unknown", action)
+            self.assertFalse(ran, "must not touch the CLI for exclusions %s --help" % action)
 
     def test_exclusions_mode_rejects_bad_value(self):
         rc, out, _ = run_verb("exclusions", "mode", "bogus")
@@ -643,6 +664,21 @@ class ConfigVerbs(unittest.TestCase):
             self.assertEqual(j["code"], "unknown")
             self.assertFalse(ran, "must not touch the CLI for %s=%s" % (key, value))
 
+    def test_config_set_rejects_option_like_text_values_without_running(self):
+        # dns/socksHost/socksUsername are "text" config setters: a value
+        # starting with "-" would reach adguardvpn-cli as an option word
+        # (CLI11), not this setting's value.
+        for key, value in (("dns", "-x"), ("dns", "--help"), ("socksHost", "-h"), ("socksUsername", "-u")):
+            with tempfile.TemporaryDirectory() as d:
+                log = Path(d, "argv.log")
+                rc, out, _ = run_verb("config", "set", key, value, env_extra={"FAKE_LOG": str(log)})
+                ran = log.exists()
+            j = self.check_json(out)
+            self.assertFalse(j["ok"], (key, value))
+            self.assertEqual(j["code"], "unknown", (key, value))
+            self.assertIn(key, j["error"])
+            self.assertFalse(ran, "must not touch the CLI for %s=%s" % (key, value))
+
     def set_password(self, stdin, args=("-",), mode="connected"):
         """`config set socksPassword <args>` fed `stdin`: (answer, the fake
         CLI's argv log or None if it never ran, the line it read on stdin)."""
@@ -681,6 +717,15 @@ class ConfigVerbs(unittest.TestCase):
         # The fake logs its argv verbatim: no positional after the subcommand.
         self.assertEqual(argv.splitlines(), ["config set-socks-password", "config show"])
         self.assertNotIn("pa55", argv)
+
+    def test_socks_password_starting_with_dash_still_works_via_stdin(self):
+        # Unlike dns/socksHost/socksUsername, socksPassword is a "stdin"
+        # setter: the value never rides argv (see config_command), so a
+        # leading "-" is not a CLI-option risk and must not be refused.
+        j, argv, read = self.set_password("-hunter2\n")
+        self.assertTrue(j["ok"], j)
+        self.assertEqual(read, "-hunter2")
+        self.assertEqual(argv.splitlines(), ["config set-socks-password", "config show"])
 
     def test_socks_password_line_is_enough_without_eof(self):
         with tempfile.TemporaryDirectory() as d:
@@ -765,9 +810,22 @@ class ConfigVerbs(unittest.TestCase):
         self.assertEqual(j["missing"], ["ghost"])
         self.assertEqual(j["rejected"], ["bad name"])
         self.assertEqual(j["skipped"], [])
-        self.assertIn("pkill -x -- sleepy", argv)
+        self.assertIn("pkill -u %d -x -- sleepy" % os.getuid(), argv)
         self.assertNotIn("-f", argv)
         self.assertNotIn("bad name", argv)
+
+    def test_kill_pkill_argv_is_scoped_to_this_uid(self):
+        # The exact argv pkill is invoked with: -u <uid> ahead of -x, so it
+        # can only ever match this user's own processes (see verb_kill).
+        with tempfile.TemporaryDirectory() as d:
+            log = Path(d, "argv.log")
+            rc, out, _ = run_verb("kill", "sleepy",
+                                  env_extra={"FAKE_LOG": str(log), "AEGIS_PKILL": str(ROOT / "tests" / "fake-pkill.sh")})
+            lines = [l for l in log.read_text().splitlines() if l.startswith("pkill ")]
+        self.assertTrue(self.check_json(out)["ok"])
+        self.assertEqual(len(lines), 1)
+        argv = lines[0][len("pkill "):].split(" ")
+        self.assertEqual(argv, ["-u", str(os.getuid()), "-x", "--", "sleepy"])
 
     def test_kill_refuses_denylisted_names_even_when_well_formed(self):
         with tempfile.TemporaryDirectory() as d:
@@ -846,8 +904,8 @@ class ConfigVerbs(unittest.TestCase):
                                   env_extra={"FAKE_LOG": str(log), "AEGIS_PKILL": str(ROOT / "tests" / "fake-pkill.sh")})
             argv = log.read_text().splitlines()
         data = self.check_json(out)
-        self.assertIn("pkill -x -- transmission-gt", argv)
-        self.assertIn("pkill -x -- sleepy", argv)
+        self.assertIn("pkill -u %d -x -- transmission-gt" % os.getuid(), argv)
+        self.assertIn("pkill -u %d -x -- sleepy" % os.getuid(), argv)
         self.assertEqual(data["killed"], ["sleepy"])
         self.assertEqual(data["missing"], ["transmission-gtk"])
 

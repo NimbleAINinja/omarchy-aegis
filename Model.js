@@ -871,7 +871,11 @@ function cleanDomains(value) {
   var items = toList(value)
   for (var i = 0; i < items.length; i++) {
     var d = str(items[i]).trim().toLowerCase()
-    if (d === "" || seen[d]) continue
+    // A leading "-" would reach adguardvpn-cli as an option word, not a
+    // domain (agvpn.py's verb_exclusions refuses it too, for any caller that
+    // bypasses this cleaning) — dropped here the same way an empty or
+    // already-seen entry is, so the field mirrors that refusal early.
+    if (d === "" || d.charAt(0) === "-" || seen[d]) continue
     seen[d] = true
     out.push(d)
   }

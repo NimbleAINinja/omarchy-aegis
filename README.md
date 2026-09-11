@@ -105,7 +105,7 @@ Settings live inline on the widget's entry in `~/.config/omarchy/shell.json`:
 | `wasConnected` | internal | set while connected, cleared only by a disconnect or logout you make; survives crashes and reboots |
 | `killSwitch` | `false` | close `killApps` a few seconds after the tunnel drops unexpectedly (critical notification); closes apps, doesn't block traffic, see [Kill switch](#kill-switch) |
 | `killOnDisconnect` | `false` | with `killSwitch` on, also close `killApps` once a disconnect or logout you make has gone through (normal notification); off, your own disconnects close nothing and send no alert |
-| `killApps` | `""` | comma separated process names, each killed with `pkill -x`; pick them from the suggestions of running processes |
+| `killApps` | `""` | comma separated process names, each killed with `pkill -u <your uid> -x`; pick them from the suggestions of running processes |
 | `pausedExclusions` | internal | `{general: [], selective: []}` domains you paused; they are removed from the CLI list and re-added on resume |
 | `lastUpdateCheck` | internal | epoch seconds of the last `check-update`; checked again after 24 h |
 | `locateHome` | `true` | look up your location from `ipinfo.io` while the VPN is off, to place the home marker on the map; off deletes the cached location and falls back to a time-zone estimate |
@@ -122,9 +122,11 @@ The kill switch closes apps; it is not a firewall. While the VPN is up, Aegis
 watches the CLI's `tunnel.log` for state changes. When the tunnel goes down
 and hasn't come back a few seconds later (a location switch or a brief
 network recovery comes back on its own and is not a drop), it confirms with
-`adguardvpn-cli status` and closes the listed apps with `pkill -x`. That
-usually takes five to ten seconds, longer if another CLI call is still
-running. Until then the apps can keep sending over your normal connection,
+`adguardvpn-cli status` and closes the listed apps with `pkill -u <your uid>
+-x`, scoped to your own processes so a same-named process belonging to
+another user on the system is never touched. That usually takes five to ten
+seconds, longer if another CLI call is still running. Until then the apps
+can keep sending over your normal connection,
 and nothing stops an app you start again afterwards. If the VPN daemon dies
 without logging anything, the drop is only caught at the next status poll
 (`refreshIntervalSec`, doubled while the panel is closed). A drop while the
