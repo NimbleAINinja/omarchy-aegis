@@ -250,6 +250,34 @@ Item {
   // neighbourhood of its own column and row; only a point with no land
   // anywhere near it (an island the 1° grid drops, a city out at sea) falls
   // back to a scan of every cell.
+  // Land cell index by lattice slot, -1 where there is no land: what turns a
+  // point into the dot nearest it without a scan. Built once per cells
+  // generation, because both the tints and the hover highlight need it and the
+  // highlight is asked for on every pointer move.
+  property var cellSlots: new Int32Array(0)
+  property int slotGeneration: -1
+
+  function rebuildSlots() {
+    if (slotGeneration === cellsGeneration) return
+    slotGeneration = cellsGeneration
+    var cols = cacheCols
+    var rows = cacheRows
+    var cells = cellX.length
+    if (cols <= 0 || rows <= 0 || cells === 0 || dotPitch <= 0) {
+      cellSlots = new Int32Array(0)
+      return
+    }
+    var slots = new Int32Array(cols * rows)
+    for (var s = 0; s < slots.length; s++) slots[s] = -1
+    var pitch = dotPitch
+    for (var i = 0; i < cells; i++) {
+      var col = Math.floor((cellX[i] - cacheOffsetX) / pitch)
+      var row = Math.floor((cellY[i] - cacheOffsetY) / pitch)
+      if (col >= 0 && col < cols && row >= 0 && row < rows) slots[row * cols + col] = i
+    }
+    cellSlots = slots
+  }
+
   function rebuildTints() {
     if (tintGeneration === cellsGeneration && tintSource === dotTints) return
     tintGeneration = cellsGeneration
@@ -264,17 +292,8 @@ Item {
       }
       return
     }
-    // Land cell index by lattice slot, -1 where there is no land.
-    var cols = cacheCols
-    var slots = new Int32Array(cols * cacheRows)
-    for (var s = 0; s < slots.length; s++) slots[s] = -1
-    var pitch = dotPitch
+    rebuildSlots()
     var i
-    for (i = 0; i < cells; i++) {
-      var col = Math.floor((cellX[i] - cacheOffsetX) / pitch)
-      var row = Math.floor((cellY[i] - cacheOffsetY) / pitch)
-      if (col >= 0 && col < cols && row >= 0 && row < cacheRows) slots[row * cols + col] = i
-    }
     // One tier per land cell, the best one that asked for it.
     var best = new Uint8Array(cells)
     for (var t = 0; t < tints.length; t++) {
@@ -284,7 +303,7 @@ Item {
       // coordinates would otherwise land on the dot nearest 0,0 — the same
       // trap Link.finiteCoord exists for.
       if (rank === 0 || !Link.finiteCoord(tint)) continue
-      var hit = nearestCell(projectX(Number(tint.lon)), projectY(Number(tint.lat)), slots)
+      var hit = nearestCell(projectX(Number(tint.lon)), projectY(Number(tint.lat)))
       if (hit < 0) continue
       if (best[hit] === 0 || rank < best[hit]) best[hit] = rank
     }
@@ -304,8 +323,10 @@ Item {
     tintTier = tiers.slice(0, found)
   }
 
-  function nearestCell(x, y, slots) {
+  function nearestCell(x, y) {
     if (!isFinite(x) || !isFinite(y)) return -1
+    var slots = cellSlots
+    if (slots.length === 0) return -1
     var cols = cacheCols
     var rows = cacheRows
     var pitch = dotPitch
@@ -333,6 +354,20 @@ Item {
       if (far < bestDist) { bestDist = far; best = i }
     }
     return best
+  }
+
+  // Where a city's highlight belongs: on the land dot that stands for it. The
+  // ping tint is painted on the nearest cell (rebuildTints), so a ring drawn at
+  // the raw projection sat up to half a cell off the very dot it was ringing —
+  // most visible on a coastal city, where the nearest land dot is inland.
+  // Snapping both through the same slot table keeps them concentric whether or
+  // not tinting is on; with no cells — no grid loaded yet — the projection is
+  // all there is to point at.
+  function snapToCell(x, y) {
+    if (cellX.length === 0) return { x: x, y: y }
+    rebuildSlots()
+    var hit = nearestCell(x, y)
+    return hit < 0 ? { x: x, y: y } : { x: cellX[hit], y: cellY[hit] }
   }
 
   // Over the land dots, on the same static layer, in the tier's colour and a
@@ -509,14 +544,18 @@ Item {
     // Highlight: the candidate under the pointer wins over the list cursor.
     // A ring around the city plus a bright dot, drawn over the land dots so it
     // reads even where the link passes; a hovered candidate also gets a label.
+    // Ring, dot and label all sit on the snapped dot (snapToCell) — the exit
+    // and home markers keep their exact projections, because they mark a place
+    // rather than pick one of the dots out.
     // Number(null)/Number("") coerce to a finite 0, so this reuses
     // Link.finiteCoord rather than isFinite(Number(...)) directly — the
     // same trap that once put coordinate-less locations at 0,0 in
     // Link.nearest (see Link.js).
     var focus = Link.finiteCoord(hoverCandidate) ? hoverCandidate : hover
     if (Link.finiteCoord(focus)) {
-      var vx = projectX(Number(focus.lon))
-      var vy = projectY(Number(focus.lat))
+      var spot = snapToCell(projectX(Number(focus.lon)), projectY(Number(focus.lat)))
+      var vx = spot.x
+      var vy = spot.y
       if (focus === hoverCandidate) {
         var ring = dotPitch * 1.6
         placed.push({ x: vx - ring, y: vy - ring, w: ring * 2, h: ring * 2 })

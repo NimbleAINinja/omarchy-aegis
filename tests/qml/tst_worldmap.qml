@@ -189,6 +189,84 @@ TestCase {
     compare(ctx.record.rects.length, 0)
   }
 
+  function test_the_hover_highlight_snaps_to_the_dot_the_tint_paints() {
+    // The one land dot of tinyGrid(6, 1) is at (292.5, 67.5); a city at
+    // lat 0, lon 90 projects to (270, 90), most of a cell away. Its ping tint
+    // is painted on the dot, so the ring has to go there too — anywhere else
+    // and it rings empty background next to the dot it means.
+    var map = tintMap([{ lat: 0, lon: 90, tier: "good" }])
+    var cell = { x: map.cellX[0], y: map.cellY[0] }
+    var projected = map.pointFor(0, 90)
+    fuzzyCompare(map.tintX[0], cell.x, 1e-6)
+    fuzzyCompare(map.tintY[0], cell.y, 1e-6)
+    var dx = projected.x - cell.x
+    var dy = projected.y - cell.y
+    verify(Math.sqrt(dx * dx + dy * dy) > map.dotPitch / 2,
+      "the projection has to be visibly off the dot for this to prove anything")
+
+    // The list cursor's highlight...
+    map.hover = { lat: 0, lon: 90 }
+    var ctx = fakeContext()
+    map.paintMarkers(ctx)
+    compare(ctx.record.arcs.length, 2, "a ring and a bright centre dot")
+    for (var i = 0; i < 2; i++) {
+      fuzzyCompare(ctx.record.arcs[i].x, cell.x, 1e-6)
+      fuzzyCompare(ctx.record.arcs[i].y, cell.y, 1e-6)
+    }
+    map.hover = null
+
+    // ...and the pointer's, which is the same visual, plus its label.
+    map.candidates = [{ city: "Cellville", lat: 0, lon: 90 }]
+    map.hoverCandidate = map.candidates[0]
+    var ctx2 = fakeContext()
+    map.paintMarkers(ctx2)
+    compare(ctx2.record.arcs.length, 2)
+    fuzzyCompare(ctx2.record.arcs[0].x, cell.x, 1e-6)
+    fuzzyCompare(ctx2.record.arcs[0].y, cell.y, 1e-6)
+    compare(ctx2.record.texts.length, 1)
+    compare(ctx2.record.texts[0].text, "Cellville")
+    fuzzyCompare(ctx2.record.texts[0].y, cell.y, 1e-6, "the label hangs off the dot too")
+
+    // Snapping is about where the dots are, not about whether they are tinted.
+    map.tintDots = false
+    var ctx3 = fakeContext()
+    map.paintMarkers(ctx3)
+    fuzzyCompare(ctx3.record.arcs[0].x, cell.x, 1e-6)
+    fuzzyCompare(ctx3.record.arcs[0].y, cell.y, 1e-6)
+  }
+
+  function test_a_highlight_with_no_land_to_snap_to_stays_on_the_projection() {
+    // No grid yet (it is read from disk after the map is built): there are no
+    // dots to sit on, so the ring goes where the city actually is.
+    var map = makeMap({ hover: { lat: 35.68, lon: 139.69 } })
+    compare(map.cellX.length, 0)
+    var ctx = fakeContext()
+    map.paintMarkers(ctx)
+    compare(ctx.record.arcs.length, 2)
+    var p = map.pointFor(35.68, 139.69)
+    fuzzyCompare(ctx.record.arcs[0].x, p.x, 0.01)
+    fuzzyCompare(ctx.record.arcs[0].y, p.y, 0.01)
+  }
+
+  function test_the_exit_and_home_markers_keep_their_exact_projections() {
+    // Only the highlight snaps: the markers say where a place is, and a
+    // marker on the nearest dot would be saying something else.
+    var map = tintMap([{ lat: 0, lon: 90, tier: "good" }])
+    map.home = { lat: 0, lon: 90, label: "Home" }
+    map.exit = { lat: 0, lon: 90, label: "Exit" }
+    map.linkState = "connected"
+    var ctx = fakeContext()
+    map.paintMarkers(ctx)
+    var p = map.pointFor(0, 90)
+    verify(Math.abs(p.x - map.cellX[0]) > 1, "the dot is not where the marker goes")
+    // Home is the only arc here (no hover), and the exit is the first rect.
+    fuzzyCompare(ctx.record.arcs[0].x, p.x, 0.01)
+    fuzzyCompare(ctx.record.arcs[0].y, p.y, 0.01)
+    var size = Math.max(3, Math.round(map.dotPitch * 0.9))
+    fuzzyCompare(ctx.record.rects[0].x + (size + 2) / 2, p.x, 1)
+    fuzzyCompare(ctx.record.rects[0].y + (size + 2) / 2, p.y, 1)
+  }
+
   function test_link_none_paints_nothing() {
     var map = makeMap({ home: paris, exit: tokyo, linkState: "none" })
     var ctx = fakeContext()
