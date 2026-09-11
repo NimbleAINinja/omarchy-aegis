@@ -2,7 +2,9 @@
 # Fake ps for tests: "pid comm" lines with duplicates, kernel threads, padding,
 # shells, and the helper's own interpreter. Logs argv. FAKE_PS_FAIL=1 → exit 1.
 # pid 42 has a fake /proc entry (see AEGIS_PROC in the tests) whose exe is
-# /usr/bin/transmission-gtk while comm is the kernel-truncated form.
+# /usr/bin/transmission-gtk while comm is the kernel-truncated form; pid 43
+# shares that comm with no /proc entry of its own, so it only resolves if the
+# helper remembers the lookup per comm.
 # `ps -o etimes= -p PID` (read_since's daemon-uptime lookup) is handled
 # separately: prints $FAKE_PS_ETIMES seconds, or fails like a dead pid would
 # when that is unset (so a test that never sets it exercises "no daemon").
@@ -16,6 +18,7 @@ fi
 cat <<'LIST'
    11 firefox
    42 transmission-gt
+   43 transmission-gt
    13 kworker/0:1
    14 firefox
    15 bash

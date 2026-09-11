@@ -1089,8 +1089,20 @@ class ConfigVerbs(unittest.TestCase):
         self.assertEqual(rc, 0)
         data = self.check_json(out)
         self.assertTrue(data["ok"])
-        # full executable name from /proc/<pid>/exe wins over the truncated comm
+        # full executable name from /proc/<pid>/exe wins over the truncated
+        # comm, and pid 43 (same comm, no /proc entry) reuses that answer
         self.assertEqual(data["procs"], ["firefox", "foot", "nvim", "Signal", "transmission-gtk"])
+
+    def test_procs_looks_up_exe_once_per_truncated_comm_and_never_for_a_short_one(self):
+        # /proc/<pid>/exe can only ever lengthen a comm the kernel truncated,
+        # so a shorter comm is not worth a readlink — and two pids sharing a
+        # truncated comm are worth exactly one.
+        with mock.patch.dict(os.environ, {"AEGIS_PS": str(FAKE_PS), "AEGIS_PROC": "/nonexistent-proc"}):
+            with mock.patch.object(agvpn.os, "readlink", side_effect=OSError) as readlink:
+                result = agvpn.verb_procs()
+        looked_up = [os.path.basename(os.path.dirname(call.args[0])) for call in readlink.call_args_list]
+        self.assertEqual(sorted(looked_up), ["28", "42"])  # transmission-gt, dbus-broker-lau
+        self.assertIn("transmission-gt", result["procs"])  # the comm itself, exe unreadable
 
     def test_procs_dbus_broker_prefix_is_denied(self):
         rc, out, _ = run_verb("procs", env_extra={"AEGIS_PS": str(ROOT / "tests" / "fake-ps.sh")})

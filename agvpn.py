@@ -1393,7 +1393,9 @@ def verb_procs():
 
     ps gives the kernel comm (truncated to COMM_LEN); the executable's real
     basename from /proc/<pid>/exe is preferred when it is readable, so long
-    names such as transmission-gtk are offered in full."""
+    names such as transmission-gtk are offered in full. Only a comm that IS
+    COMM_LEN bytes can be a truncation, so those are the only ones looked up,
+    and the answer is remembered per comm rather than read once per pid."""
     ps = os.environ.get("AEGIS_PS") or shutil.which("ps") or "ps"
     try:
         p = subprocess.run([ps, "-u", str(os.getuid()), "-o", "pid=,comm="], capture_output=True, text=True,
@@ -1404,18 +1406,27 @@ def verb_procs():
         raise CliError("unknown", "ps exited %d" % p.returncode)
     seen = set()
     names = []
+    full = {}  # comm -> the full name for it; one readlink per comm, not per pid
     for line in p.stdout.splitlines():
         parts = line.strip().split(None, 1)
         if len(parts) < 2:
             continue
         pid, comm = parts[0], parts[1].strip()
         name = comm
-        try:
-            exe = os.path.basename(os.readlink(os.path.join(proc_root(), pid, "exe")))
-            if exe and exe[:COMM_LEN] == comm[:COMM_LEN]:
-                name = exe
-        except OSError:
-            pass
+        # Only a comm the kernel had to truncate can have a longer real name,
+        # and for a shorter one the exe could only ever match comm itself —
+        # so /proc/<pid>/exe is read for those alone.
+        if len(comm) == COMM_LEN:
+            if comm in full:
+                name = full[comm]
+            else:
+                try:
+                    exe = os.path.basename(os.readlink(os.path.join(proc_root(), pid, "exe")))
+                    if exe and exe[:COMM_LEN] == comm:
+                        name = exe
+                except OSError:
+                    pass
+                full[comm] = name
         if not name or name in seen or _is_denied(name) or not PROCESS_NAME.match(name):
             continue
         seen.add(name)
