@@ -109,6 +109,60 @@ test("filterLocations ignores case and diacritics across city, country and iso",
   assert.equal(Model.filterLocations(list, "zzz").length, 0)
 })
 
+test("filterLocations answers the same with or without the pre-folded hay field", () => {
+  const raw = [
+    { iso: "br", country: "Brazil", city: "São Paulo", pingMs: 200 },
+    { iso: "md", country: "Moldova", city: "Chișinău", pingMs: 50 },
+    { iso: "de", country: "Germany", city: "Berlin", pingMs: 31 },
+    { iso: "ch", country: "Switzerland", city: "Zürich", pingMs: 20 },
+    { iso: "c1", country: "Cloudland", city: "Nowhere", pingMs: null }
+  ]
+  // normalizeLocations pre-folds `hay`; the same rows stripped of it must take
+  // the fallback path in filterLocations and come out identical.
+  const folded = Model.normalizeLocations({ ok: true, locations: raw })
+  for (const l of folded) assert.equal(typeof l.hay, "string")
+  const bare = folded.map(l => {
+    const copy = Object.assign({}, l)
+    delete copy.hay
+    return copy
+  })
+  for (const q of ["", "b", "ber", "zur", "zür", "C1", "  ", "zzz", "switzer"]) {
+    assert.deepEqual(
+      Model.filterLocations(folded, q).map(l => l.city),
+      Model.filterLocations(bare, q).map(l => l.city),
+      "query " + JSON.stringify(q))
+  }
+  // The two spellings of Zürich both reach the row, from either path.
+  assert.deepEqual(Model.filterLocations(folded, "zur").map(l => l.city), ["Zürich"])
+  assert.deepEqual(Model.filterLocations(folded, "zür").map(l => l.city), ["Zürich"])
+  assert.deepEqual(Model.filterLocations(folded, "C1").map(l => l.city), ["Nowhere"])
+})
+
+test("a location without hay still matches city, country and iso", () => {
+  const list = [loc("GB", "United Kingdom", "London", 30)]
+  assert.equal(list[0].hay, undefined)
+  assert.deepEqual(Model.filterLocations(list, "lond").map(l => l.city), ["London"])
+  assert.deepEqual(Model.filterLocations(list, "kingdom").map(l => l.city), ["London"])
+  assert.deepEqual(Model.filterLocations(list, "gb").map(l => l.city), ["London"])
+  assert.equal(Model.filterLocations(list, "zzz").length, 0)
+  // A junk row must be skipped, not throw.
+  assert.equal(Model.filterLocations([null, {}], "x").length, 0)
+})
+
+test("copyLocation and orderLocations carry the pre-folded hay through", () => {
+  const list = Model.normalizeLocations({ ok: true, locations: [
+    { iso: "ch", country: "Switzerland", city: "Zürich", pingMs: 20 },
+    { iso: "de", country: "Germany", city: "Berlin", pingMs: 31 }
+  ] })
+  const ordered = Model.orderLocations(list, ["DE|Berlin"], "Zürich")
+  assert.deepEqual(ordered.map(l => l.city), ["Berlin", "Zürich"])
+  for (const l of ordered) assert.equal(typeof l.hay, "string")
+  assert.deepEqual(Model.filterLocations(ordered, "zur").map(l => l.city), ["Zürich"])
+  // sameLocations ignores hay, and cannot be fooled by it: city/country/iso
+  // are compared, and hay is derived from exactly those.
+  assert.equal(Model.sameLocations(list, list.map(l => Object.assign({}, l, { hay: "garbage" }))), true)
+})
+
 test("foldText strips diacritics with and without String.normalize", () => {
   assert.equal(Model.foldText("São Paulo"), "sao paulo")
   assert.equal(Model.foldText("Chișinău"), "chisinau")

@@ -61,17 +61,32 @@ function normalizeSnapshot(obj) {
 function normalizeLocation(raw) {
   var r = raw && typeof raw === "object" ? raw : {}
   var city = str(r.city)
+  var country = str(r.country)
+  var iso = str(r.iso).toUpperCase()
   var ping = r.pingMs === null || r.pingMs === undefined || r.pingMs === "" ? null : num(r.pingMs, null)
   return {
-    iso: str(r.iso).toUpperCase(),
-    country: str(r.country),
+    iso: iso,
+    country: country,
     city: city,
     cliName: str(r.cliName) || city,
     pingMs: ping,
     virtual: r.virtual === true,
     lat: r.lat === null || r.lat === undefined ? null : num(r.lat, null),
-    lon: r.lon === null || r.lon === undefined ? null : num(r.lon, null)
+    lon: r.lon === null || r.lon === undefined ? null : num(r.lon, null),
+    // What filterLocations searches, folded once here instead of three times
+    // per row per keystroke: ~90 locations x 3 fields = 270 foldText calls for
+    // every character typed, each one walking a string char by char through
+    // FOLD_MAP. Derived purely from city/country/iso, which sameLocations
+    // already compares, so it can never go stale behind them.
+    hay: searchHay(city, country, iso)
   }
+}
+
+// The folded needle filterLocations matches against. Kept next to
+// normalizeLocation so the pre-folded field and the fallback below can never
+// disagree about what is searchable.
+function searchHay(city, country, iso) {
+  return foldText(city) + " " + foldText(country) + " " + foldText(iso)
 }
 
 function normalizeLocations(obj) {
@@ -126,6 +141,8 @@ function sameLocations(a, b) {
     var p = x[i] || {}, q = y[i] || {}
     // `favorite` is added by orderLocations, so it is absent on both sides of
     // a normalizeLocations comparison and undefined === undefined there.
+    // `hay` is derived from city/country/iso, all three compared here, so it
+    // cannot differ once they match.
     if (p.iso !== q.iso || p.city !== q.city || p.country !== q.country || p.cliName !== q.cliName
       || p.pingMs !== q.pingMs || p.virtual !== q.virtual || p.lat !== q.lat || p.lon !== q.lon
       || p.favorite !== q.favorite) return false
@@ -232,7 +249,10 @@ function filterLocations(list, query) {
   var q = foldText(query).replace(/^\s+|\s+$/g, "")
   if (q === "") return items
   return items.filter(function (loc) {
-    var hay = foldText(loc.city) + " " + foldText(loc.country) + " " + foldText(loc.iso)
+    // normalizeLocation pre-folds `hay`, and copyLocation/orderLocations carry
+    // it through; anything else (a raw CLI row, a hand-built test fixture) is
+    // folded here exactly as before, so the answer never depends on which.
+    var hay = loc && typeof loc.hay === "string" ? loc.hay : searchHay(loc ? loc.city : "", loc ? loc.country : "", loc ? loc.iso : "")
     return hay.indexOf(q) !== -1
   })
 }
