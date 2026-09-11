@@ -1,0 +1,4 @@
+Exclusions for [1mSELECTIVE[0m mode:
+example.com
+*.bank.example
+

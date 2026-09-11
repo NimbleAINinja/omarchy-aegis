@@ -1,0 +1,3 @@
+Log is being written to: /home/user/.local/share/adguardvpn-cli/tunnel.log
+Successfully Connected to [1mSYDNEY[0m
+You are now connected. You can check the connection status by running `adguardvpn-cli status`

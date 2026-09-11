@@ -1,0 +1,18 @@
+Current configuration:
+	Data directory: /home/hydrox/.local/share/adguardvpn-cli
+	Mode: socks
+	SOCKS port: 1085
+	SOCKS host: 0.0.0.0
+	SOCKS username: proxyuser
+	DNS upstream: https://dns.adguard-dns.com/dns-query
+	Tunnel routing mode: auto
+	Change system DNS: on
+	Crash reporting: on
+	Send anonymized usage data: on
+	Update channel: BETA
+	Protocol: quic
+	Post-quantum cryptography: off
+	Show hints: off
+	Debug logging: Default (off)
+	Show notifications: Default (off)
+	Outbound interface override: not set

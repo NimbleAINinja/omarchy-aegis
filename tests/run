@@ -1,0 +1,46 @@
+#!/usr/bin/env bash
+# Run every check: manifest, node unit tests, python helper tests, headless QML, lint.
+set -euo pipefail
+dir=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+cd "$dir"
+
+bash tests/manifest.test.sh
+
+node_tests=()
+for t in tests/model.test.js tests/link.test.js; do
+  [[ -s $t ]] && node_tests+=("$t")
+done
+if (( ${#node_tests[@]} )); then
+  node --test "${node_tests[@]}"
+else
+  echo "no node tests yet, skipped"
+fi
+
+if [[ -s tests/agvpn_test.py ]]; then
+  python3 -m unittest tests/agvpn_test.py
+else
+  echo "no python tests yet, skipped"
+fi
+
+runner=/usr/lib/qt6/bin/qmltestrunner
+if [[ -x $runner ]]; then
+  QT_QUICK_BACKEND=software QT_LOGGING_RULES="qt.qml.*=false" "$runner" -platform offscreen -input tests/qml -silent
+else
+  echo "qmltestrunner not found, QML tests skipped"
+fi
+
+lint=/usr/lib/qt6/bin/qmllint
+if [[ -x $lint ]]; then
+  # WorldMap.qml imports only QtQuick and local JS, so it must lint clean.
+  "$lint" WorldMap.qml
+  # The rest import Quickshell and the shell's own modules; only hard errors matter there.
+  for f in Panel.qml Service.qml LocationList.qml ExclusionsView.qml AccountView.qml SettingsView.qml KillSwitchView.qml; do
+    [[ -s $f ]] || continue
+    if "$lint" -I /usr/share/omarchy/shell "$f" 2>&1 | grep -qi "error"; then
+      "$lint" -I /usr/share/omarchy/shell "$f" 2>&1 | grep -i "error" >&2
+      exit 1
+    fi
+  done
+fi
+
+echo "all checks passed"

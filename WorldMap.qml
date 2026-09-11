@@ -1,0 +1,404 @@
+import QtQuick
+import "Grid.js" as Grid
+import "Link.js" as Link
+
+// Dot-matrix world map with a single animated link from home to the VPN exit.
+//
+// Land is a grid of small squares sampled from a precomputed 1° land mask.
+// The only colours are the ones injected by the caller, so the map stays
+// monochrome on every theme; the link, beads and home marker use `accent`.
+//
+// Imports nothing but QtQuick and two pure JS files so it can be exercised
+// headlessly; every paint routine takes the 2D context as a parameter for the
+// same reason.
+Item {
+  id: root
+
+  property var grid: null              // decoded by Grid.decodeRle
+  property var home: null              // {lat, lon, label} or null
+  property var exit: null              // {lat, lon, label} or null
+  property var hover: null             // {lat, lon} of the row under the cursor, or null
+  property var candidates: []          // clickable locations [{city, lat, lon, ...}]
+  property var hoverCandidate: null    // nearest candidate to the pointer, or null
+  readonly property real pickRadius: Math.max(10, dotPitch * 4)
+  signal candidateClicked(var location)
+
+  function pickCandidate(x, y) {
+    var hit = Link.nearest(candidates, x, y, projectX, projectY, pickRadius)
+    return hit ? hit.point : null
+  }
+  property string linkState: "none"    // "none" | "connecting" | "connected"
+  property int phase: 0                // 0..99, advanced by the animation timer
+  property real drawProgress: 0        // 0..1, how much of the link is drawn in
+  property bool animate: true
+  property bool showGrid: true
+  property real dotPitch: 4
+  property real dotFill: 0.55
+  // Latitude range shown; the default crops the empty Southern Ocean and the
+  // polar cap, which is where the classic dot maps stop.
+  property real latMin: -58
+  property real latMax: 84
+
+  property color dotColor: Qt.rgba(1, 1, 1, 0.22)
+  property color gridColor: Qt.rgba(1, 1, 1, 0.06)
+  property color markerColor: "white"
+  property color accent: "white"
+  property color textColor: "white"
+  property color haloColor: "black"
+  property string fontFamily: "monospace"
+  property real labelPixelSize: 10
+
+  readonly property int beadCount: 4
+
+  implicitHeight: Math.round(width * (latMax - latMin) / 360)
+
+  // Land cells for the current size, rebuilt only when geometry changes.
+  property var cellX: []
+  property var cellY: []
+  property string cacheKey: ""
+
+  // Link geometry in map pixels, one or two quadratic segments (two when the
+  // shorter way round crosses the antimeridian).
+  readonly property var segments: computeSegments(home, exit, linkState, width, height, latMin, latMax)
+
+  function projectX(lon) { return (lon + 180) / 360 * width }
+  function projectY(lat) { return (latMax - lat) / (latMax - latMin) * height }
+  function lonAt(x) { return x / width * 360 - 180 }
+  function latAt(y) { return latMax - y / height * (latMax - latMin) }
+  function pointFor(lat, lon) { return { x: projectX(lon), y: projectY(lat) } }
+
+  function withAlpha(color, alpha) {
+    return Qt.rgba(color.r, color.g, color.b, alpha)
+  }
+
+  // Canvas 2D wants CSS colour strings for strokes and fills.
+  function css(color, alpha) {
+    return "rgba(" + Math.round(color.r * 255) + "," + Math.round(color.g * 255) + "," + Math.round(color.b * 255) + "," + alpha + ")"
+  }
+
+  function canvasFont() {
+    var family = String(fontFamily || "monospace")
+    if (family.indexOf(" ") >= 0 && family.charAt(0) !== "'") family = "'" + family + "'"
+    return Math.max(6, Math.round(labelPixelSize)) + "px " + family
+  }
+
+  function computeSegments(homePoint, exitPoint, state, w, h, lo, hi) {
+    if (!homePoint || !exitPoint || state === "none" || w <= 0 || h <= 0) return []
+    return Link.segments(homePoint, exitPoint, projectX, projectY, w)
+  }
+
+  function rebuildCells() {
+    var key = width + "x" + height + "@" + dotPitch + ":" + latMin + ":" + latMax + ":" + (grid ? grid.rows + "x" + grid.cols : "none")
+    if (key === cacheKey) return
+    cacheKey = key
+    var xs = [], ys = []
+    if (grid && width > 0 && height > 0 && dotPitch > 0) {
+      var pitch = dotPitch
+      var cols = Math.floor(width / pitch)
+      var rows = Math.floor(height / pitch)
+      var offsetX = (width - cols * pitch) / 2
+      var offsetY = (height - rows * pitch) / 2
+      for (var r = 0; r < rows; r++) {
+        var cy = offsetY + (r + 0.5) * pitch
+        var lat = latAt(cy)
+        for (var c = 0; c < cols; c++) {
+          var cx = offsetX + (c + 0.5) * pitch
+          if (!Grid.isLand(grid, lonAt(cx), lat)) continue
+          xs.push(cx)
+          ys.push(cy)
+        }
+      }
+    }
+    cellX = xs
+    cellY = ys
+  }
+
+  function paintGrid(ctx) {
+    if (!showGrid || width <= 0 || height <= 0) return
+    ctx.lineWidth = 1
+    for (var lon = -150; lon <= 150; lon += 30) {
+      var x = Math.round(projectX(lon)) + 0.5
+      ctx.strokeStyle = lon === 0 ? withAlpha(gridColor, Math.min(1, gridColor.a * 1.6)) : gridColor
+      ctx.beginPath()
+      ctx.moveTo(x, 0)
+      ctx.lineTo(x, height)
+      ctx.stroke()
+    }
+    for (var lat = -60; lat <= 60; lat += 30) {
+      if (lat < latMin || lat > latMax) continue
+      var y = Math.round(projectY(lat)) + 0.5
+      ctx.strokeStyle = lat === 0 ? withAlpha(gridColor, Math.min(1, gridColor.a * 1.6)) : gridColor
+      ctx.beginPath()
+      ctx.moveTo(0, y)
+      ctx.lineTo(width, y)
+      ctx.stroke()
+    }
+  }
+
+  function paintDots(ctx) {
+    var count = cellX.length
+    if (count === 0) return
+    var side = Math.max(1, Math.round(dotPitch * dotFill))
+    var half = side / 2
+    var xs = cellX, ys = cellY
+    ctx.fillStyle = dotColor
+    for (var i = 0; i < count; i++)
+      ctx.fillRect(Math.round(xs[i] - half), Math.round(ys[i] - half), side, side)
+  }
+
+  function traceSegment(ctx, seg) {
+    ctx.beginPath()
+    ctx.moveTo(seg.x0, seg.y0)
+    ctx.quadraticCurveTo(seg.cx, seg.cy, seg.x1, seg.y1)
+  }
+
+  function tracePartial(ctx, seg, tEnd) {
+    var points = Link.polyline(seg, tEnd, 24)
+    ctx.beginPath()
+    for (var i = 0; i < points.length; i++) {
+      if (i === 0) ctx.moveTo(points[i].x, points[i].y)
+      else ctx.lineTo(points[i].x, points[i].y)
+    }
+  }
+
+  function strokeLink(ctx, trace) {
+    ctx.lineCap = "round"
+    ctx.lineJoin = "round"
+    trace()
+    ctx.strokeStyle = css(accent, 0.22)
+    ctx.lineWidth = 4
+    ctx.stroke()
+    trace()
+    ctx.strokeStyle = css(accent, 0.9)
+    ctx.lineWidth = 1.4
+    ctx.stroke()
+  }
+
+  function paintLink(ctx) {
+    var segs = segments
+    if (segs.length === 0) return
+    var progress = Math.max(0, Math.min(1, drawProgress))
+    if (progress >= 1) {
+      for (var i = 0; i < segs.length; i++) {
+        var seg = segs[i]
+        strokeLink(ctx, function() { traceSegment(ctx, seg) })
+      }
+    } else {
+      // Progress runs across the whole link by chord length, so segment B
+      // only starts once A is fully drawn.
+      var parts = Link.progressSegments(segs, progress)
+      for (var j = 0; j < parts.length; j++) {
+        var part = parts[j]
+        if (part.tEnd <= 0) continue
+        strokeLink(ctx, function() { tracePartial(ctx, part, part.tEnd) })
+      }
+    }
+    if (linkState !== "connected") return
+    var beads = Link.beadPositions(segs, phase, beadCount)
+    ctx.fillStyle = css(Qt.lighter(accent, 1.4), 1)
+    for (var b = 0; b < beads.length; b++) {
+      ctx.beginPath()
+      ctx.arc(beads[b].x, beads[b].y, 2.1, 0, Math.PI * 2)
+      ctx.fill()
+    }
+  }
+
+  function shortLabel(label) {
+    var text = String(label || "")
+    return text.length > 14 ? text.substring(0, 13) + "…" : text
+  }
+
+  function rectsOverlap(a, b) {
+    return a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y
+  }
+
+  function paintMarkers(ctx) {
+    var placed = []
+    var labels = []
+    var size = Math.max(3, Math.round(dotPitch * 0.9))
+    var gap = Math.max(3, Math.round(dotPitch * 0.75))
+    ctx.font = canvasFont()
+    ctx.lineJoin = "round"
+
+    if (exit && linkState !== "none") {
+      var ex = projectX(exit.lon)
+      var ey = projectY(exit.lat)
+      var half = size / 2
+      placed.push({ x: ex - half, y: ey - half, w: size, h: size })
+      ctx.fillStyle = haloColor
+      ctx.fillRect(Math.round(ex - half) - 1, Math.round(ey - half) - 1, size + 2, size + 2)
+      ctx.fillStyle = markerColor
+      ctx.fillRect(Math.round(ex - half), Math.round(ey - half), size, size)
+      labels.push({ text: shortLabel(exit.label), x: ex, y: ey, reach: half + gap })
+    }
+
+    if (home) {
+      var hx = projectX(home.lon)
+      var hy = projectY(home.lat)
+      var radius = dotPitch * 0.6
+      if (linkState === "none") {
+        var t = (phase % 100) / 100
+        ctx.beginPath()
+        ctx.arc(hx, hy, dotPitch * 2.2 * t, 0, Math.PI * 2)
+        ctx.strokeStyle = css(accent, 0.5 * (1 - t))
+        ctx.lineWidth = 1
+        ctx.stroke()
+      }
+      ctx.beginPath()
+      ctx.arc(hx, hy, radius, 0, Math.PI * 2)
+      ctx.fillStyle = css(accent, 1)
+      ctx.fill()
+      placed.push({ x: hx - radius, y: hy - radius, w: radius * 2, h: radius * 2 })
+      labels.push({ text: shortLabel(home.label), x: hx, y: hy, reach: radius + gap })
+    }
+
+    // Highlight: the candidate under the pointer wins over the list cursor.
+    // A ring around the city plus a bright dot, drawn over the land dots so it
+    // reads even where the link passes; a hovered candidate also gets a label.
+    var focus = hoverCandidate && isFinite(Number(hoverCandidate.lat)) && isFinite(Number(hoverCandidate.lon)) ? hoverCandidate : hover
+    if (focus && isFinite(Number(focus.lat)) && isFinite(Number(focus.lon))) {
+      var vx = projectX(Number(focus.lon))
+      var vy = projectY(Number(focus.lat))
+      if (focus === hoverCandidate) {
+        var ring = dotPitch * 1.6
+        placed.push({ x: vx - ring, y: vy - ring, w: ring * 2, h: ring * 2 })
+        labels.unshift({ text: shortLabel(String(focus.city || focus.label || "")), x: vx, y: vy, reach: ring + gap })
+      }
+      ctx.beginPath()
+      ctx.arc(vx, vy, dotPitch * 1.6, 0, Math.PI * 2)
+      ctx.strokeStyle = css(accent, 0.9)
+      ctx.lineWidth = 1.2
+      ctx.stroke()
+      ctx.beginPath()
+      ctx.arc(vx, vy, Math.max(1.5, dotPitch * 0.45), 0, Math.PI * 2)
+      ctx.fillStyle = css(accent, 1)
+      ctx.fill()
+    }
+
+    var textHeight = Math.round(labelPixelSize) + 2
+    for (var j = 0; j < labels.length; j++) {
+      var label = labels[j].text
+      if (label === "") continue
+      var px = labels[j].x
+      var py = labels[j].y
+      var reach = labels[j].reach
+      var textWidth = ctx.measureText(label).width
+      var candidates = [
+        { x: px + reach, y: py - textHeight / 2, align: "left", baseline: "middle", tx: px + reach, ty: py },
+        { x: px - reach - textWidth, y: py - textHeight / 2, align: "right", baseline: "middle", tx: px - reach, ty: py },
+        { x: px - textWidth / 2, y: py - reach - textHeight, align: "center", baseline: "bottom", tx: px, ty: py - reach },
+        { x: px - textWidth / 2, y: py + reach, align: "center", baseline: "top", tx: px, ty: py + reach }
+      ]
+      for (var c = 0; c < candidates.length; c++) {
+        var box = { x: candidates[c].x, y: candidates[c].y, w: textWidth, h: textHeight }
+        if (box.x < 0 || box.y < 0 || box.x + box.w > width || box.y + box.h > height) continue
+        var collides = false
+        for (var p = 0; p < placed.length; p++) {
+          if (rectsOverlap(box, placed[p])) { collides = true; break }
+        }
+        if (collides) continue
+        // Solid backing so the label stays readable over the dots and the link.
+        var padX = 3
+        var padY = 1
+        var backing = { x: box.x - padX, y: box.y - padY, w: box.w + padX * 2, h: box.h + padY * 2 }
+        placed.push(backing)
+        ctx.fillStyle = haloColor
+        ctx.fillRect(Math.round(backing.x), Math.round(backing.y), Math.round(backing.w), Math.round(backing.h))
+        ctx.textAlign = candidates[c].align
+        ctx.textBaseline = candidates[c].baseline
+        ctx.fillStyle = textColor
+        ctx.fillText(label, candidates[c].tx, candidates[c].ty)
+        break
+      }
+    }
+  }
+
+  function repaintAll() {
+    rebuildCells()
+    baseCanvas.requestPaint()
+    dotCanvas.requestPaint()
+  }
+
+  onWidthChanged: repaintAll()
+  onHeightChanged: repaintAll()
+  onDotPitchChanged: repaintAll()
+  onGridChanged: repaintAll()
+  onLatMinChanged: repaintAll()
+  onLatMaxChanged: repaintAll()
+  onShowGridChanged: baseCanvas.requestPaint()
+  onGridColorChanged: baseCanvas.requestPaint()
+  onHomeChanged: dotCanvas.requestPaint()
+  onExitChanged: dotCanvas.requestPaint()
+  onHoverChanged: dotCanvas.requestPaint()
+  onHoverCandidateChanged: dotCanvas.requestPaint()
+  onCandidatesChanged: dotCanvas.requestPaint()
+  onLinkStateChanged: {
+    if (linkState === "connected") drawProgress = 1
+    else drawProgress = 0
+    dotCanvas.requestPaint()
+  }
+  onPhaseChanged: dotCanvas.requestPaint()
+  onDrawProgressChanged: dotCanvas.requestPaint()
+  onDotFillChanged: dotCanvas.requestPaint()
+  onDotColorChanged: dotCanvas.requestPaint()
+  onMarkerColorChanged: dotCanvas.requestPaint()
+  onAccentChanged: dotCanvas.requestPaint()
+  onTextColorChanged: dotCanvas.requestPaint()
+  onHaloColorChanged: dotCanvas.requestPaint()
+  onFontFamilyChanged: dotCanvas.requestPaint()
+  onLabelPixelSizeChanged: dotCanvas.requestPaint()
+  Component.onCompleted: repaintAll()
+
+  Timer {
+    interval: 40
+    repeat: true
+    running: root.animate && root.visible && root.home !== null
+    onTriggered: {
+      root.phase = (root.phase + 2) % 100
+      if (root.linkState === "connecting") root.drawProgress = Math.min(1, root.drawProgress + 0.04)
+    }
+  }
+
+  Canvas {
+    id: baseCanvas
+    anchors.fill: parent
+    renderStrategy: Canvas.Cooperative
+    onAvailableChanged: if (available) requestPaint()
+    onPaint: {
+      var ctx = getContext("2d")
+      if (!ctx) return
+      ctx.reset()
+      ctx.clearRect(0, 0, width, height)
+      root.paintGrid(ctx)
+    }
+  }
+
+  Canvas {
+    id: dotCanvas
+    anchors.fill: parent
+    renderStrategy: Canvas.Cooperative
+    onAvailableChanged: if (available) requestPaint()
+    onPaint: {
+      var ctx = getContext("2d")
+      if (!ctx) return
+      ctx.reset()
+      ctx.clearRect(0, 0, width, height)
+      root.rebuildCells()
+      root.paintDots(ctx)
+      root.paintLink(ctx)
+      root.paintMarkers(ctx)
+    }
+  }
+
+  MouseArea {
+    anchors.fill: parent
+    hoverEnabled: true
+    cursorShape: root.hoverCandidate ? Qt.PointingHandCursor : Qt.ArrowCursor
+    onPositionChanged: function(mouse) { root.hoverCandidate = root.pickCandidate(mouse.x, mouse.y) }
+    onExited: root.hoverCandidate = null
+    onClicked: function(mouse) {
+      var hit = root.pickCandidate(mouse.x, mouse.y)
+      if (hit) root.candidateClicked(hit)
+    }
+  }
+}

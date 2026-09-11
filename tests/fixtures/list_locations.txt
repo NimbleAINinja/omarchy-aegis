@@ -1,0 +1,84 @@
+[1mISO   COUNTRY              CITY                           PING ESTIMATE
+[0mCA    Canada               Montreal                       15        
+US    United States        New York                       22        
+US    United States        Boston                         29        
+US    United States        Miami                          49        
+US    United States        Dallas                         61        
+MX    Mexico               Mexico City                    79        
+PL    Poland               Warsaw                         120       
+MD    Moldova              Chișinău                       140       
+IT    Italy                Milan                          188       
+CN    China                Shanghai (Virtual)             227       
+SG    Singapore            Singapore                      256       
+FI    Finland              Helsinki                       383       
+DE    Germany              Frankfurt                      414       
+FR    France               Paris                          421       
+US    United States        Atlanta                        437       
+GB    United Kingdom       London                         440       
+DE    Germany              Berlin                         532       
+NL    Netherlands          Amsterdam                      580       
+NO    Norway               Oslo                           627       
+CZ    Czechia              Prague                         720       
+US    United States        Las Vegas                      721       
+SK    Slovakia             Bratislava                     727       
+IE    Ireland              Dublin                         729       
+CA    Canada               Vancouver                      732       
+CH    Switzerland          Zurich                         737       
+CA    Canada               Toronto                        742       
+GB    United Kingdom       Manchester                     745       
+US    United States        Seattle                        747       
+CO    Colombia             Bogota                         754       
+ES    Spain                Barcelona                      760       
+SE    Sweden               Stockholm                      760       
+PT    Portugal             Lisbon                         780       
+US    United States        Phoenix                        780       
+CL    Chile                Santiago                       781       
+BE    Belgium              Brussels                       792       
+LT    Lithuania            Vilnius                        799       
+DK    Denmark              Copenhagen                     804       
+US    United States        Los Angeles                    806       
+TR    Turkey               Istanbul                       806       
+NZ    New Zealand          Auckland                       807       
+PE    Peru                 Lima                           810       
+LU    Luxembourg           Luxembourg                     813       
+IL    Israel               Tel Aviv                       822       
+GR    Greece               Athens                         832       
+US    United States        Chicago                        848       
+IT    Italy                Rome                           857       
+AT    Austria              Vienna                         860       
+US    United States        Silicon Valley                 861       
+RS    Serbia               Belgrade                       863       
+EG    Egypt                Cairo                          869       
+BG    Bulgaria             Sofia                          870       
+UA    Ukraine              Kyiv                           871       
+IT    Italy                Palermo                        873       
+TW    Taiwan               Taipei                         877       
+FR    France               Marseille                      882       
+KR    South Korea          Seoul                          888       
+ID    Indonesia            Jakarta                        902       
+BR    Brazil               São Paulo                      909       
+HU    Hungary              Budapest                       940       
+US    United States        Denver                         956       
+PH    Philippines          Manila                         964       
+ZA    South Africa         Johannesburg                   970       
+RO    Romania              Bucharest                      976       
+AU    Australia            Sydney                         985       
+EE    Estonia              Tallinn                        989       
+HR    Croatia              Zagreb                         998       
+KZ    Kazakhstan           Astana                         1037      
+TH    Thailand             Bangkok                        1042      
+KH    Cambodia             Phnom Penh                     1046      
+LV    Latvia               Riga                           1069      
+ES    Spain                Madrid                         1070      
+HK    Hong Kong            Hong Kong                      1101      
+AR    Argentina            Buenos Aires                   1111      
+RU    Russia               Moscow (Virtual)               1121      
+NG    Nigeria              Lagos                          1124      
+JP    Japan                Tokyo                          1149      
+VN    Vietnam              Hanoi                          1179      
+NP    Nepal                Kathmandu                      1181      
+AE    UAE                  Dubai                          1198      
+CY    Cyprus               Nicosia                        1211      
+IN    India                Mumbai (Virtual)               1226      
+
+You can connect to a location by running `adguardvpn-cli connect -l 'city, country or ISO code'`

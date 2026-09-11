@@ -1,0 +1,650 @@
+[
+ {
+  "iso": "CA",
+  "country": "Canada",
+  "city": "Montreal",
+  "lat": 45.5,
+  "lon": -73.57,
+  "virtual": false
+ },
+ {
+  "iso": "US",
+  "country": "United States",
+  "city": "New York",
+  "lat": 40.71,
+  "lon": -74.01,
+  "virtual": false
+ },
+ {
+  "iso": "US",
+  "country": "United States",
+  "city": "Boston",
+  "lat": 42.36,
+  "lon": -71.06,
+  "virtual": false
+ },
+ {
+  "iso": "US",
+  "country": "United States",
+  "city": "Miami",
+  "lat": 25.76,
+  "lon": -80.19,
+  "virtual": false
+ },
+ {
+  "iso": "US",
+  "country": "United States",
+  "city": "Dallas",
+  "lat": 32.78,
+  "lon": -96.8,
+  "virtual": false
+ },
+ {
+  "iso": "MX",
+  "country": "Mexico",
+  "city": "Mexico City",
+  "lat": 19.43,
+  "lon": -99.13,
+  "virtual": false
+ },
+ {
+  "iso": "PL",
+  "country": "Poland",
+  "city": "Warsaw",
+  "lat": 52.23,
+  "lon": 21.01,
+  "virtual": false
+ },
+ {
+  "iso": "MD",
+  "country": "Moldova",
+  "city": "Chișinău",
+  "lat": 47.01,
+  "lon": 28.86,
+  "virtual": false
+ },
+ {
+  "iso": "IT",
+  "country": "Italy",
+  "city": "Milan",
+  "lat": 45.46,
+  "lon": 9.19,
+  "virtual": false
+ },
+ {
+  "iso": "CN",
+  "country": "China",
+  "city": "Shanghai",
+  "lat": 31.23,
+  "lon": 121.47,
+  "virtual": true
+ },
+ {
+  "iso": "SG",
+  "country": "Singapore",
+  "city": "Singapore",
+  "lat": 1.35,
+  "lon": 103.82,
+  "virtual": false
+ },
+ {
+  "iso": "FI",
+  "country": "Finland",
+  "city": "Helsinki",
+  "lat": 60.17,
+  "lon": 24.94,
+  "virtual": false
+ },
+ {
+  "iso": "DE",
+  "country": "Germany",
+  "city": "Frankfurt",
+  "lat": 50.11,
+  "lon": 8.68,
+  "virtual": false
+ },
+ {
+  "iso": "FR",
+  "country": "France",
+  "city": "Paris",
+  "lat": 48.86,
+  "lon": 2.35,
+  "virtual": false
+ },
+ {
+  "iso": "US",
+  "country": "United States",
+  "city": "Atlanta",
+  "lat": 33.75,
+  "lon": -84.39,
+  "virtual": false
+ },
+ {
+  "iso": "GB",
+  "country": "United Kingdom",
+  "city": "London",
+  "lat": 51.51,
+  "lon": -0.13,
+  "virtual": false
+ },
+ {
+  "iso": "DE",
+  "country": "Germany",
+  "city": "Berlin",
+  "lat": 52.52,
+  "lon": 13.41,
+  "virtual": false
+ },
+ {
+  "iso": "NL",
+  "country": "Netherlands",
+  "city": "Amsterdam",
+  "lat": 52.37,
+  "lon": 4.9,
+  "virtual": false
+ },
+ {
+  "iso": "NO",
+  "country": "Norway",
+  "city": "Oslo",
+  "lat": 59.91,
+  "lon": 10.75,
+  "virtual": false
+ },
+ {
+  "iso": "US",
+  "country": "United States",
+  "city": "Las Vegas",
+  "lat": 36.17,
+  "lon": -115.14,
+  "virtual": false
+ },
+ {
+  "iso": "CA",
+  "country": "Canada",
+  "city": "Vancouver",
+  "lat": 49.28,
+  "lon": -123.12,
+  "virtual": false
+ },
+ {
+  "iso": "CZ",
+  "country": "Czechia",
+  "city": "Prague",
+  "lat": 50.08,
+  "lon": 14.44,
+  "virtual": false
+ },
+ {
+  "iso": "IE",
+  "country": "Ireland",
+  "city": "Dublin",
+  "lat": 53.35,
+  "lon": -6.26,
+  "virtual": false
+ },
+ {
+  "iso": "CH",
+  "country": "Switzerland",
+  "city": "Zurich",
+  "lat": 47.38,
+  "lon": 8.54,
+  "virtual": false
+ },
+ {
+  "iso": "SK",
+  "country": "Slovakia",
+  "city": "Bratislava",
+  "lat": 48.15,
+  "lon": 17.11,
+  "virtual": false
+ },
+ {
+  "iso": "CA",
+  "country": "Canada",
+  "city": "Toronto",
+  "lat": 43.65,
+  "lon": -79.38,
+  "virtual": false
+ },
+ {
+  "iso": "GB",
+  "country": "United Kingdom",
+  "city": "Manchester",
+  "lat": 53.48,
+  "lon": -2.24,
+  "virtual": false
+ },
+ {
+  "iso": "US",
+  "country": "United States",
+  "city": "Seattle",
+  "lat": 47.61,
+  "lon": -122.33,
+  "virtual": false
+ },
+ {
+  "iso": "CO",
+  "country": "Colombia",
+  "city": "Bogota",
+  "lat": 4.71,
+  "lon": -74.07,
+  "virtual": false
+ },
+ {
+  "iso": "SE",
+  "country": "Sweden",
+  "city": "Stockholm",
+  "lat": 59.33,
+  "lon": 18.07,
+  "virtual": false
+ },
+ {
+  "iso": "ES",
+  "country": "Spain",
+  "city": "Barcelona",
+  "lat": 41.39,
+  "lon": 2.17,
+  "virtual": false
+ },
+ {
+  "iso": "CL",
+  "country": "Chile",
+  "city": "Santiago",
+  "lat": -33.45,
+  "lon": -70.67,
+  "virtual": false
+ },
+ {
+  "iso": "PT",
+  "country": "Portugal",
+  "city": "Lisbon",
+  "lat": 38.72,
+  "lon": -9.14,
+  "virtual": false
+ },
+ {
+  "iso": "US",
+  "country": "United States",
+  "city": "Phoenix",
+  "lat": 33.45,
+  "lon": -112.07,
+  "virtual": false
+ },
+ {
+  "iso": "LT",
+  "country": "Lithuania",
+  "city": "Vilnius",
+  "lat": 54.69,
+  "lon": 25.28,
+  "virtual": false
+ },
+ {
+  "iso": "BE",
+  "country": "Belgium",
+  "city": "Brussels",
+  "lat": 50.85,
+  "lon": 4.35,
+  "virtual": false
+ },
+ {
+  "iso": "TR",
+  "country": "Turkey",
+  "city": "Istanbul",
+  "lat": 41.01,
+  "lon": 28.98,
+  "virtual": false
+ },
+ {
+  "iso": "NZ",
+  "country": "New Zealand",
+  "city": "Auckland",
+  "lat": -36.85,
+  "lon": 174.76,
+  "virtual": false
+ },
+ {
+  "iso": "PE",
+  "country": "Peru",
+  "city": "Lima",
+  "lat": -12.05,
+  "lon": -77.04,
+  "virtual": false
+ },
+ {
+  "iso": "US",
+  "country": "United States",
+  "city": "Los Angeles",
+  "lat": 34.05,
+  "lon": -118.24,
+  "virtual": false
+ },
+ {
+  "iso": "LU",
+  "country": "Luxembourg",
+  "city": "Luxembourg",
+  "lat": 49.61,
+  "lon": 6.13,
+  "virtual": false
+ },
+ {
+  "iso": "DK",
+  "country": "Denmark",
+  "city": "Copenhagen",
+  "lat": 55.68,
+  "lon": 12.57,
+  "virtual": false
+ },
+ {
+  "iso": "IL",
+  "country": "Israel",
+  "city": "Tel Aviv",
+  "lat": 32.08,
+  "lon": 34.78,
+  "virtual": false
+ },
+ {
+  "iso": "GR",
+  "country": "Greece",
+  "city": "Athens",
+  "lat": 37.98,
+  "lon": 23.73,
+  "virtual": false
+ },
+ {
+  "iso": "US",
+  "country": "United States",
+  "city": "Chicago",
+  "lat": 41.88,
+  "lon": -87.63,
+  "virtual": false
+ },
+ {
+  "iso": "IT",
+  "country": "Italy",
+  "city": "Rome",
+  "lat": 41.9,
+  "lon": 12.5,
+  "virtual": false
+ },
+ {
+  "iso": "RS",
+  "country": "Serbia",
+  "city": "Belgrade",
+  "lat": 44.79,
+  "lon": 20.46,
+  "virtual": false
+ },
+ {
+  "iso": "AT",
+  "country": "Austria",
+  "city": "Vienna",
+  "lat": 48.21,
+  "lon": 16.37,
+  "virtual": false
+ },
+ {
+  "iso": "US",
+  "country": "United States",
+  "city": "Silicon Valley",
+  "lat": 37.34,
+  "lon": -121.89,
+  "virtual": false
+ },
+ {
+  "iso": "BG",
+  "country": "Bulgaria",
+  "city": "Sofia",
+  "lat": 42.7,
+  "lon": 23.32,
+  "virtual": false
+ },
+ {
+  "iso": "EG",
+  "country": "Egypt",
+  "city": "Cairo",
+  "lat": 30.04,
+  "lon": 31.24,
+  "virtual": false
+ },
+ {
+  "iso": "UA",
+  "country": "Ukraine",
+  "city": "Kyiv",
+  "lat": 50.45,
+  "lon": 30.52,
+  "virtual": false
+ },
+ {
+  "iso": "FR",
+  "country": "France",
+  "city": "Marseille",
+  "lat": 43.3,
+  "lon": 5.37,
+  "virtual": false
+ },
+ {
+  "iso": "IT",
+  "country": "Italy",
+  "city": "Palermo",
+  "lat": 38.12,
+  "lon": 13.36,
+  "virtual": false
+ },
+ {
+  "iso": "TW",
+  "country": "Taiwan",
+  "city": "Taipei",
+  "lat": 25.03,
+  "lon": 121.57,
+  "virtual": false
+ },
+ {
+  "iso": "KR",
+  "country": "South Korea",
+  "city": "Seoul",
+  "lat": 37.57,
+  "lon": 126.98,
+  "virtual": false
+ },
+ {
+  "iso": "ID",
+  "country": "Indonesia",
+  "city": "Jakarta",
+  "lat": -6.21,
+  "lon": 106.85,
+  "virtual": false
+ },
+ {
+  "iso": "BR",
+  "country": "Brazil",
+  "city": "São Paulo",
+  "lat": -23.55,
+  "lon": -46.63,
+  "virtual": false
+ },
+ {
+  "iso": "HU",
+  "country": "Hungary",
+  "city": "Budapest",
+  "lat": 47.5,
+  "lon": 19.04,
+  "virtual": false
+ },
+ {
+  "iso": "US",
+  "country": "United States",
+  "city": "Denver",
+  "lat": 39.74,
+  "lon": -104.99,
+  "virtual": false
+ },
+ {
+  "iso": "PH",
+  "country": "Philippines",
+  "city": "Manila",
+  "lat": 14.6,
+  "lon": 120.98,
+  "virtual": false
+ },
+ {
+  "iso": "ZA",
+  "country": "South Africa",
+  "city": "Johannesburg",
+  "lat": -26.2,
+  "lon": 28.05,
+  "virtual": false
+ },
+ {
+  "iso": "RO",
+  "country": "Romania",
+  "city": "Bucharest",
+  "lat": 44.43,
+  "lon": 26.1,
+  "virtual": false
+ },
+ {
+  "iso": "AU",
+  "country": "Australia",
+  "city": "Sydney",
+  "lat": -33.87,
+  "lon": 151.21,
+  "virtual": false
+ },
+ {
+  "iso": "EE",
+  "country": "Estonia",
+  "city": "Tallinn",
+  "lat": 59.44,
+  "lon": 24.75,
+  "virtual": false
+ },
+ {
+  "iso": "HR",
+  "country": "Croatia",
+  "city": "Zagreb",
+  "lat": 45.81,
+  "lon": 15.98,
+  "virtual": false
+ },
+ {
+  "iso": "KZ",
+  "country": "Kazakhstan",
+  "city": "Astana",
+  "lat": 51.17,
+  "lon": 71.45,
+  "virtual": false
+ },
+ {
+  "iso": "TH",
+  "country": "Thailand",
+  "city": "Bangkok",
+  "lat": 13.76,
+  "lon": 100.5,
+  "virtual": false
+ },
+ {
+  "iso": "KH",
+  "country": "Cambodia",
+  "city": "Phnom Penh",
+  "lat": 11.56,
+  "lon": 104.92,
+  "virtual": false
+ },
+ {
+  "iso": "LV",
+  "country": "Latvia",
+  "city": "Riga",
+  "lat": 56.95,
+  "lon": 24.11,
+  "virtual": false
+ },
+ {
+  "iso": "ES",
+  "country": "Spain",
+  "city": "Madrid",
+  "lat": 40.42,
+  "lon": -3.7,
+  "virtual": false
+ },
+ {
+  "iso": "HK",
+  "country": "Hong Kong",
+  "city": "Hong Kong",
+  "lat": 22.32,
+  "lon": 114.17,
+  "virtual": false
+ },
+ {
+  "iso": "AR",
+  "country": "Argentina",
+  "city": "Buenos Aires",
+  "lat": -34.6,
+  "lon": -58.38,
+  "virtual": false
+ },
+ {
+  "iso": "RU",
+  "country": "Russia",
+  "city": "Moscow",
+  "lat": 55.76,
+  "lon": 37.62,
+  "virtual": true
+ },
+ {
+  "iso": "NG",
+  "country": "Nigeria",
+  "city": "Lagos",
+  "lat": 6.52,
+  "lon": 3.38,
+  "virtual": false
+ },
+ {
+  "iso": "JP",
+  "country": "Japan",
+  "city": "Tokyo",
+  "lat": 35.68,
+  "lon": 139.69,
+  "virtual": false
+ },
+ {
+  "iso": "VN",
+  "country": "Vietnam",
+  "city": "Hanoi",
+  "lat": 21.03,
+  "lon": 105.85,
+  "virtual": false
+ },
+ {
+  "iso": "NP",
+  "country": "Nepal",
+  "city": "Kathmandu",
+  "lat": 27.72,
+  "lon": 85.32,
+  "virtual": false
+ },
+ {
+  "iso": "AE",
+  "country": "UAE",
+  "city": "Dubai",
+  "lat": 25.2,
+  "lon": 55.27,
+  "virtual": false
+ },
+ {
+  "iso": "CY",
+  "country": "Cyprus",
+  "city": "Nicosia",
+  "lat": 35.19,
+  "lon": 33.38,
+  "virtual": false
+ },
+ {
+  "iso": "IN",
+  "country": "India",
+  "city": "Mumbai",
+  "lat": 19.08,
+  "lon": 72.88,
+  "virtual": true
+ }
+]

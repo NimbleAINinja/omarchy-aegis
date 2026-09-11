@@ -1,0 +1,2 @@
+> AdGuard VPN v1.8.3 is now available
+You can update to the latest version by running `adguardvpn-cli update`

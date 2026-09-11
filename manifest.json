@@ -1,0 +1,78 @@
+{
+  "schemaVersion": 1,
+  "id": "io.github.nimbleaininja.aegis",
+  "name": "Aegis",
+  "version": "0.2.0",
+  "author": "nimbleaininja",
+  "license": "MIT",
+  "homepage": "https://github.com/nimbleaininja/aegis",
+  "repository": "https://github.com/nimbleaininja/aegis",
+  "description": "AdGuard VPN in the Omarchy bar: one-click locations on a dot-matrix world map, with a live arc to your exit city.",
+  "keywords": [
+    "vpn",
+    "adguard",
+    "network",
+    "map",
+    "privacy"
+  ],
+  "kinds": [
+    "bar-widget"
+  ],
+  "entryPoints": {
+    "barWidget": "Panel.qml"
+  },
+  "barWidget": {
+    "displayName": "Aegis",
+    "description": "AdGuard VPN: connect, switch locations, favorites, exclusions and account, with a map of the tunnel.",
+    "category": "Network",
+    "allowMultiple": false,
+    "defaultSection": "right",
+    "defaults": {
+      "barMode": "icon",
+      "refreshIntervalSec": 30,
+      "autoConnect": true,
+      "killSwitch": false,
+      "killApps": ""
+    },
+    "schema": [
+      {
+        "key": "barMode",
+        "type": "enum",
+        "label": "Bar label",
+        "options": [
+          "icon",
+          "iso",
+          "rate"
+        ],
+        "defaultValue": "icon"
+      },
+      {
+        "key": "refreshIntervalSec",
+        "type": "integer",
+        "label": "Refresh interval (seconds)",
+        "min": 5,
+        "max": 3600,
+        "step": 5,
+        "defaultValue": 30
+      },
+      {
+        "key": "autoConnect",
+        "type": "boolean",
+        "label": "Reconnect at login if the VPN was on",
+        "defaultValue": true
+      },
+      {
+        "key": "killSwitch",
+        "type": "boolean",
+        "label": "Kill switch: close apps if the tunnel drops",
+        "defaultValue": false
+      },
+      {
+        "key": "killApps",
+        "type": "string",
+        "label": "Apps to close (comma separated process names)",
+        "defaultValue": ""
+      }
+    ]
+  }
+}
