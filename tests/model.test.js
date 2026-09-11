@@ -901,6 +901,20 @@ test("queueFront puts one snapshot first without reordering anything else", () =
   assert.deepEqual(Model.queueFront([write], { verb: "config" }), [{ verb: "config" }, write])
 })
 
+test("Service.qml starts up with the snapshot first in the queue", () => {
+  const src = require("node:fs").readFileSync(require("node:path").join(__dirname, "..", "Service.qml"), "utf8")
+  const block = /Component\.onCompleted:\s*\{[\s\S]*?\n  \}/.exec(src)
+  assert.ok(block, "Component.onCompleted present")
+  const body = block[0]
+  const at = name => body.indexOf(name)
+  assert.ok(at("refresh()") !== -1, "enqueues a snapshot")
+  assert.ok(at("refresh()") < at("refreshHomeCache()"), "snapshot before the home cache read")
+  assert.ok(at("refresh()") < at("refreshLocations()"), "snapshot before the 24 s locations refresh")
+  // The privacy gate and its setting guard stay exactly as they were.
+  assert.match(body, /maybeRefreshHome\(\)/)
+  assert.match(body, /if \(locateHome\) refreshHomeCache\(\)/)
+})
+
 test("Service.qml uses tunnel.log's FileView as a trigger only, and urgent snapshots jump the queue", () => {
   const src = require("node:fs").readFileSync(require("node:path").join(__dirname, "..", "Service.qml"), "utf8")
   const block = /FileView\s*\{[\s\S]*?\n  \}/.exec(src)

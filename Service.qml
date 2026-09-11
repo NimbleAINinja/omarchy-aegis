@@ -793,6 +793,12 @@ Item {
   onActionStatusChanged: if (actionStatus !== "") actionStatusTimer.restart()
   Component.onCompleted: {
     tzProcess.running = true
+    // First in the queue, ahead of everything else here: the bar icon,
+    // startupSettled, startup auto-connect and the tunnel.log watch all wait
+    // on the first status, and a `locations` refresh alone can hold the one
+    // serialized queue for 24 s. refreshTimer's own triggeredOnStart tick
+    // costs nothing extra — enqueue's dedupe folds it into this job.
+    refresh()
     // A no-op here (startupSettled is still false) — kept so every
     // refreshHome() call site is gated the same way; the real first lookup
     // fires from applySnapshot once startup settles and auto-connect's fate
