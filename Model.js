@@ -932,6 +932,25 @@ function queueAppend(queue, job) {
   return out
 }
 
+// How long a `procs` answer stays good enough to reuse. KillSwitchView
+// refetches the running-process list every time its "add app" field takes
+// focus, and the set of programs a user has running does not turn over in
+// seconds — where it matters (they just started the app they mean to list),
+// ten seconds of typing is plenty for it to be picked up.
+var PROCS_TTL_MS = 10000
+
+// Whether Service may skip a `procs` refresh. appliedAtMs is 0 before the
+// first successful answer; a failed one is never stamped, so it retries.
+function procsFresh(appliedAtMs, nowMs, maxAgeMs) {
+  var at = num(appliedAtMs, 0)
+  if (at <= 0) return false
+  var age = num(nowMs, 0) - at
+  // A stamp in the future is a clock that moved; refetch rather than sit out
+  // the difference.
+  if (age < 0) return false
+  return age < num(maxAgeMs, PROCS_TTL_MS)
+}
+
 function filterProcs(procs, query, chosen, limit) {
   var q = str(query).trim().toLowerCase()
   if (q === "") return []
@@ -1176,6 +1195,8 @@ if (typeof module !== "undefined") {
     confirmDrop: confirmDrop,
     queueFront: queueFront,
     queueAppend: queueAppend,
+    PROCS_TTL_MS: PROCS_TTL_MS,
+    procsFresh: procsFresh,
     filterProcs: filterProcs,
     addApp: addApp,
     removeApp: removeApp,

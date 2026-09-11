@@ -901,6 +901,49 @@ test("queueFront puts one snapshot first without reordering anything else", () =
   assert.deepEqual(Model.queueFront([write], { verb: "config" }), [{ verb: "config" }, write])
 })
 
+test("procsFresh reuses a process list for ten seconds and always fetches the first one", () => {
+  const now = 1_700_000_000_000
+  const ttl = Model.PROCS_TTL_MS
+  assert.equal(ttl, 10000)
+  assert.equal(Model.procsFresh(0, now, ttl), false)
+  assert.equal(Model.procsFresh(null, now, ttl), false)
+  assert.equal(Model.procsFresh(now - 1, now, ttl), true)
+  assert.equal(Model.procsFresh(now - (ttl - 1), now, ttl), true)
+  assert.equal(Model.procsFresh(now - ttl, now, ttl), false)
+  assert.equal(Model.procsFresh(now - (ttl + 1), now, ttl), false)
+  assert.equal(Model.procsFresh(now + 5000, now, ttl), false)
+  assert.equal(Model.procsFresh(now - 1, now), true)
+  assert.equal(Model.procsFresh(now - (ttl + 1), now), false)
+})
+
+test("Service.qml runs the lock-free verbs off the CLI queue without reordering home.json", () => {
+  const src = require("node:fs").readFileSync(require("node:path").join(__dirname, "..", "Service.qml"), "utf8")
+  // The three verbs agvpn.py answers without ever calling run_cli.
+  assert.match(src, /sideEnqueue\(\["procs"\], "procs", false\)/)
+  assert.match(src, /sideEnqueue\(\["home", "cached"\], "homeCache", false\)/)
+  assert.match(src, /sideEnqueue\(\["home", "forget"\], "home", true\)/)
+  // ...and nothing else: every CLI-backed verb keeps the serialized queue.
+  const side = src.match(/sideEnqueue\(\[[^\]]*\]/g) || []
+  assert.equal(side.length, 3)
+  assert.equal(new Set(side).size, 3)
+  assert.doesNotMatch(src, /sideEnqueue\(\["(snapshot|locations|account|connect|disconnect|logout|config|exclusions|update-check)"/)
+  // The TTL gate sits in front of the procs job.
+  assert.match(src, /if \(Model\.procsFresh\(_procsAt, Date\.now\(\), Model\.PROCS_TTL_MS\)\) return/)
+  assert.match(src, /_procsAt = Date\.now\(\)/)
+  // A home job on the side channel still orders against the `home` lookup,
+  // which writes the same file from the CLI-serialized queue.
+  assert.match(src, /next\.verb !== "procs" && \(\(jobProcess\.running && jobProcess\.verb === "home"\) \|\| queued\("home"\)\)/)
+  assert.match(src, /root\.pump\(\)\n\s*\/\/[\s\S]*?\n\s*root\.sidePump\(\)/)
+  // The write still reports its failures; the reads still stay quiet.
+  assert.match(src, /else if \(mutate\) root\.noteError\(/)
+  // Turning locateHome off still forgets the cached location on the spot.
+  const setter = /function setLocateHome\(on\) \{[\s\S]*?\n  \}/.exec(src)
+  assert.ok(setter)
+  assert.match(setter[0], /home = null/)
+  assert.match(setter[0], /homeStale = true/)
+  assert.match(setter[0], /sideEnqueue\(\["home", "forget"\], "home", true\)/)
+})
+
 test("logScanDue rations the rearm's tail read without ever blocking the first one", () => {
   const now = 1_700_000_000_000
   const ttl = Model.LOG_SCAN_TTL_MS

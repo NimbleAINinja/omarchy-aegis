@@ -174,7 +174,7 @@ Item {
   // refreshHome's so enqueue's dedupe never lets one swallow the other: both
   // jobs run agvpn.py with args[0] "home" (same Model.watchdogMs budget —
   // see HELPER_BUDGET_SEC), but they are different queue entries.
-  function refreshHomeCache() { enqueue(["home", "cached"], "homeCache", true) }
+  function refreshHomeCache() { sideEnqueue(["home", "cached"], "homeCache", false) }
 
   // The only place that decides whether an ipinfo.io lookup may actually
   // run (Model.mayLocateHome) — every call site that used to call
@@ -285,11 +285,61 @@ Item {
     if (!v) {
       home = null
       homeStale = true
-      enqueue(["home", "forget"], "home", false, true)
+      sideEnqueue(["home", "forget"], "home", true)
     }
   }
 
-  function refreshProcs() { enqueue(["procs"], "procs", true) }
+  // When applyProcs last landed a list (epoch ms, 0 = never).
+  property real _procsAt: 0
+  function refreshProcs() {
+    // Every caller is an autosuggest field taking focus, so this is asked for
+    // far more often than the answer changes — see Model.procsFresh.
+    if (Model.procsFresh(_procsAt, Date.now(), Model.PROCS_TTL_MS)) return
+    sideEnqueue(["procs"], "procs", false)
+  }
+
+  // --- the lock-free side channel ---------------------------------------------
+  // `procs`, `home cached` and `home forget` never reach agvpn.py's run_cli
+  // (the CLI lock lives there and nowhere else), so nothing about them can
+  // make adguardvpn-cli overlap itself — yet they queued with everything
+  // that does, which meant focusing the kill-switch field could sit behind an
+  // 84-second connect. They get their own Process. Every CLI-backed verb
+  // still shares the one serialized queue above, unchanged.
+  //
+  // `mutate` marks the one write here (`home forget`), whose failure must
+  // surface as an action error just as it did on the main queue.
+  property var _sideQueue: []
+
+  function sideEnqueue(args, verb, mutate) {
+    // Reads dedupe against an identical job already running or waiting; the
+    // write never does, so turning locateHome off always reaches the helper.
+    if (mutate !== true) {
+      if (sideProcess.running && sideProcess.verb === verb && !sideProcess.mutate) return
+      for (var i = 0; i < _sideQueue.length; i++) if (_sideQueue[i].verb === verb && !_sideQueue[i].mutate) return
+    }
+    _sideQueue = _sideQueue.concat([{ args: args, verb: verb, mutate: mutate === true }])
+    sidePump()
+  }
+
+  function sidePump() {
+    if (sideProcess.running || _sideQueue.length === 0) return
+    var next = _sideQueue[0]
+    // home.json is written by the CLI-serialized `home` lookup too, and the
+    // single queue is what used to order these against it: a cache read must
+    // not answer with a location a lookup has already replaced, and a forget
+    // must not be overtaken by a lookup that writes the file back. So a home
+    // job here waits for any `home` job on the main queue (jobProcess.onExited
+    // pumps this channel again). `procs` touches nothing shared and never waits.
+    if (next.verb !== "procs" && ((jobProcess.running && jobProcess.verb === "home") || queued("home"))) return
+    _sideQueue = _sideQueue.slice(1)
+    sideProcess.verb = next.verb
+    sideProcess.mutate = next.mutate === true
+    sideProcess.output = ""
+    sideProcess.command = helper(next.args)
+    sideProcess.running = true
+    sideWatchdog.interval = Model.watchdogMs(next.args[0])
+    sideWatchdog.restart()
+  }
 
   // Pausing takes the domain out of the CLI list but keeps it in our own
   // paused list (per mode), so resume can put it back.
@@ -635,6 +685,8 @@ Item {
   function applyProcs(obj) {
     if (obj.ok === false) return
     procs = Model.toList(obj.procs)
+    // Only a successful answer starts the TTL, so a failed one retries.
+    _procsAt = Date.now()
   }
 
   function applyConfig(obj) {
@@ -910,6 +962,38 @@ Item {
     }
   }
 
+  Timer {
+    id: sideWatchdog
+    // The same last resort jobWatchdog is, without its SIGTERM-then-SIGKILL
+    // dance: no verb on this channel starts an adguardvpn-cli child, so
+    // there is no CLI lock a leftover child could keep holding — stopping
+    // the helper is the whole cleanup. Interval is set per job in sidePump.
+    interval: Model.watchdogMs("procs")
+    onTriggered: if (sideProcess.running) sideProcess.running = false
+  }
+
+  Process {
+    id: sideProcess
+    property string verb: ""
+    property bool mutate: false
+    property string output: ""
+    stdout: StdioCollector { waitForEnd: true; onStreamFinished: sideProcess.output = text }
+    onExited: function(exitCode) {
+      sideWatchdog.stop()
+      var verb = sideProcess.verb
+      var mutate = sideProcess.mutate === true
+      var obj = root.parseJson(sideProcess.output)
+      sideProcess.output = ""
+      // Same parse and apply path as the main queue's jobs.
+      if (obj.ok !== false && exitCode === 0) root.applyJob(verb, obj, exitCode)
+      // A failed background read stays as quiet as it was on the main queue;
+      // the one write here (`home forget`) still reports, as it did there.
+      else if (mutate) root.noteError(obj.ok === false ? obj
+        : { error: "AdGuard VPN helper exited " + exitCode, code: "unknown" }, "action", null)
+      root.sidePump()
+    }
+  }
+
   Process {
     id: countersProcess
     stdout: StdioCollector { waitForEnd: true; onStreamFinished: root.applyCounters(text) }
@@ -993,6 +1077,9 @@ Item {
           delayedRefresh.restart()
       }
       root.pump()
+      // A home job on the side channel waits while a `home` lookup is in
+      // flight here (see sidePump); this is where that wait ends.
+      root.sidePump()
     }
   }
 }
