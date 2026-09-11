@@ -9,7 +9,8 @@ location, it connects. That is the whole interface.
 ## Highlights
 
 - One-click locations, sorted by ping, with favorites pinned at the top
-- Map with an animated link from your real location to the exit city
+- Map with an animated link from your real location to the exit city: marching
+  dashes while it connects, beads riding the arc once the tunnel is actually up
 - Hero switch turns the VPN off, or back on to your last location
 - Bar icon lights up when connected; optional country code or live rates
 - Site exclusions (general or selective) and account state in the same panel

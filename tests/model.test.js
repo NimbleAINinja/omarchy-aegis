@@ -472,6 +472,33 @@ test("pingTier buckets latency", () => {
   assert.equal(Model.pingTier(NaN), "none")
 })
 
+test("linkState: a pending connect is always 'connecting', connected or not", () => {
+  // The bug this fixes: switching location while connected moves the map's
+  // exit to the pending city straight away, and vpnState is still
+  // "connected", so the beads rode an arc to a city the traffic does not
+  // reach yet.
+  assert.equal(Model.linkState("connected", "Tokyo"), "connecting")
+  assert.equal(Model.linkState("connected", ""), "connected")
+  assert.equal(Model.linkState("connecting", ""), "connecting")
+  assert.equal(Model.linkState("connecting", "Tokyo"), "connecting")
+  assert.equal(Model.linkState("disconnected", "Tokyo"), "connecting")
+  assert.equal(Model.linkState("disconnected", ""), "none")
+  assert.equal(Model.linkState("logged_out", ""), "none")
+  assert.equal(Model.linkState("unknown", ""), "none")
+  assert.equal(Model.linkState("", ""), "none")
+  assert.equal(Model.linkState(null, null), "none")
+  assert.equal(Model.linkState(undefined, undefined), "none")
+})
+
+test("Service.qml takes linkState from Model, pendingLocation included", () => {
+  const fs = require("node:fs"), path = require("node:path")
+  const src = fs.readFileSync(path.join(__dirname, "..", "Service.qml"), "utf8")
+  assert.match(src, /readonly property string linkState: Model\.linkState\(vpnState, pendingLocation\)/)
+  // The old inline rule read "connected" straight off vpnState, which is
+  // exactly what let the beads ride a tunnel that wasn't up yet.
+  assert.doesNotMatch(src, /linkState: vpnState === "connected"/)
+})
+
 test("formatRate stays within four characters", () => {
   assert.equal(Model.formatRate(0), "0")
   assert.equal(Model.formatRate(512), "512")

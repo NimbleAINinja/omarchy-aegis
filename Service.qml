@@ -54,8 +54,9 @@ Item {
   property int _desired: -1
   readonly property bool connected: vpnState === "connected"
   readonly property bool active: _desired === -1 ? (vpnState === "connected" || vpnState === "connecting") : _desired === 1
-  readonly property string linkState: vpnState === "connected" ? "connected"
-    : (vpnState === "connecting" || pendingLocation !== "" ? "connecting" : "none")
+  // "connecting" while a connect is pending even if the CLI still says
+  // connected — the old tunnel is on its way out. See Model.linkState.
+  readonly property string linkState: Model.linkState(vpnState, pendingLocation)
   readonly property var homePoint: home ? home : Model.homeFromTimezone(timezone)
   readonly property int refreshIntervalSec: Model.clampInt(setting("refreshIntervalSec", 30), 30, 5, 3600)
   readonly property string barMode: String(setting("barMode", "icon"))

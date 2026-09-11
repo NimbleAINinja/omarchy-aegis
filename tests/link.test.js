@@ -123,6 +123,82 @@ test("polyline samples the arc up to tEnd", () => {
   assert.deepEqual(Link.polyline(seg, 0, 10), [{ x: 0, y: 0 }])
 })
 
+// Arc length of a polyline, and the same for a list of them.
+const runLength = pts => pts.slice(1).reduce((sum, p, i) => sum + Math.hypot(p.x - pts[i].x, p.y - pts[i].y), 0)
+const dashLength = parts => parts.reduce((sum, p) => sum + runLength(p), 0)
+// Distance from a point to the real quadratic, found by dense sampling.
+function offCurve(seg, p) {
+  let best = Infinity
+  for (let k = 0; k <= 4000; k++) {
+    const q = Link.pointOnQuad(seg.x0, seg.y0, seg.cx, seg.cy, seg.x1, seg.y1, k / 4000)
+    best = Math.min(best, Math.hypot(q.x - p.x, q.y - p.y))
+  }
+  return best
+}
+
+test("dashes cut the arc into a marching pattern of the right length", () => {
+  // Qt's Canvas has no setLineDash, so the dashes are polylines the caller
+  // strokes; the pattern is measured along the curve, not the chord.
+  const seg = Link.segments(PARIS, TOKYO, px, py, W)[0]
+  const total = runLength(Link.polyline(seg, 1, 64))
+  const parts = Link.dashes(seg, 1, 6, 4, 0)
+  assert.ok(parts.length > 10, "plenty of dashes on a Paris-Tokyo arc: " + parts.length)
+  // Every dash is 6 px except the last, which the end of the arc may clip.
+  parts.slice(0, -1).forEach((p, i) => assert.ok(Math.abs(runLength(p) - 6) < 0.01, "dash " + i))
+  assert.ok(runLength(parts[parts.length - 1]) <= 6 + 0.01, "the last dash is clipped, never stretched")
+  // 60% of the pattern is dash, so the inked length follows the total.
+  assert.ok(Math.abs(dashLength(parts) - total * 0.6) < 6, "inked length ~60% of " + total)
+  // The dashes stay on the curve, corners and all.
+  for (const part of parts) for (const p of part) assert.ok(offCurve(seg, p) < 0.1, "point on the curve")
+  // ...and in order, from home toward the exit.
+  const starts = parts.map(p => p[0].x)
+  for (let i = 1; i < starts.length; i++) assert.ok(starts[i] > starts[i - 1], "dash " + i + " is further along")
+})
+
+test("dashes start at the phase offset and march toward the exit", () => {
+  const seg = Link.segments(PARIS, TOKYO, px, py, W)[0]
+  const pts = Link.polyline(seg, 1, 64)
+  const at = [0]
+  for (let i = 1; i < pts.length; i++) at.push(at[i - 1] + Math.hypot(pts[i].x - pts[i - 1].x, pts[i].y - pts[i - 1].y))
+  const lengthOf = p => Math.hypot(p.x - pts[0].x, p.y - pts[0].y)
+  assert.ok(lengthOf(Link.dashes(seg, 1, 6, 4, 0)[0][0]) < 0.01, "offset 0 starts at home")
+  // An offset inside the gap pushes the first dash that far along; the exact
+  // point is the one pointAtLength gives for that arc length.
+  for (const off of [1, 2.5, 4]) {
+    const first = Link.dashes(seg, 1, 6, 4, off)[0][0]
+    const want = Link.pointAtLength(pts, at, off)
+    assert.ok(Math.hypot(first.x - want.x, first.y - want.y) < 1e-9, "offset " + off)
+  }
+  // Past the gap the pattern wraps: a dash is already under way at the start,
+  // clipped rather than dropped, so the link never blinks at home.
+  const wrapped = Link.dashes(seg, 1, 6, 4, 6)
+  assert.ok(lengthOf(wrapped[0][0]) < 0.01, "clipped leading dash starts at home")
+  assert.ok(Math.abs(runLength(wrapped[0]) - 2) < 0.01, "4 px of its 6 have marched off the end")
+  // One whole period on is the same pattern again.
+  const zero = Link.dashes(seg, 1, 6, 4, 0)
+  const period = Link.dashes(seg, 1, 6, 4, 10)
+  assert.equal(period.length, zero.length)
+  assert.ok(Math.hypot(period[1][0].x - zero[1][0].x, period[1][0].y - zero[1][0].y) < 1e-9)
+})
+
+test("dashes respect tEnd and refuse a pattern they cannot draw", () => {
+  const seg = { x0: 0, y0: 0, cx: 50, cy: 0, x1: 100, y1: 0 }
+  const half = Link.dashes(seg, 0.5, 6, 4, 0)
+  const full = Link.dashes(seg, 1, 6, 4, 0)
+  assert.ok(dashLength(half) < dashLength(full) * 0.55)
+  const last = half[half.length - 1]
+  assert.ok(last[last.length - 1].x <= 50.001, "nothing is drawn past tEnd")
+  assert.deepEqual(Link.dashes(seg, 0, 6, 4, 0), [])
+  assert.deepEqual(Link.dashes(seg, -1, 6, 4, 0), [])
+  assert.deepEqual(Link.dashes(seg, 1, 0, 4, 0), [], "a zero-length dash is no dash")
+  assert.deepEqual(Link.dashes({ x0: 7, y0: 7, cx: 7, cy: 7, x1: 7, y1: 7 }, 1, 6, 4, 0), [], "a zero-length link")
+  // tEnd above 1 is the whole segment, as polyline treats it.
+  assert.equal(dashLength(Link.dashes(seg, 4, 6, 4, 0)), dashLength(full))
+  // No gap: one dash covering everything.
+  const solid = Link.dashes(seg, 1, 6, 0, 0)
+  assert.ok(Math.abs(dashLength(solid) - runLength(Link.polyline(seg, 1, 64))) < 1e-6)
+})
+
 test("progressSegments clips a two-segment link by overall progress", () => {
   const segs = SPLIT
   const lenA = chordLength(segs[0])

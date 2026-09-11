@@ -25,7 +25,7 @@ TestCase {
   }
 
   function fakeContext() {
-    var record = { rects: [], fillStyles: [], strokeStyles: [], arcs: [], texts: [], quads: [], lines: [], strokes: 0, fills: 0, moves: 0, measures: [] }
+    var record = { rects: [], fillStyles: [], strokeStyles: [], arcs: [], texts: [], quads: [], lines: [], starts: [], strokes: 0, fills: 0, moves: 0, measures: [] }
     return {
       record: record,
       font: "",
@@ -40,7 +40,9 @@ TestCase {
       get strokeStyle() { return record.strokeStyles[record.strokeStyles.length - 1] },
       fillRect: function(x, y, w, h) { record.rects.push({ x: x, y: y, w: w, h: h }) },
       beginPath: function() {},
-      moveTo: function(x, y) { record.moves++ },
+      // `starts` is where each subpath begins: with dashes there is one per
+      // dash, and where they begin is the whole point of the pattern.
+      moveTo: function(x, y) { record.moves++; record.starts.push({ x: x, y: y }) },
       lineTo: function(x, y) { record.lines.push({ x: x, y: y }) },
       quadraticCurveTo: function(cx, cy, x, y) { record.quads.push({ cx: cx, cy: cy, x: x, y: y }) },
       arc: function(x, y, r) { record.arcs.push({ x: x, y: y, r: r }) },
@@ -125,7 +127,8 @@ TestCase {
     // One trace, stroked twice: the path survives a stroke.
     compare(ctx.record.quads.length, 1)
     compare(ctx.record.strokes, 2)
-    compare(ctx.record.lines.length, 0)
+    compare(ctx.record.lines.length, 0, "one solid curve, never dashes")
+    compare(ctx.lineCap, "round")
     compare(ctx.record.arcs.length, 4)
     compare(ctx.record.fills, 4)
     // Fat translucent stroke under a thin bright one.
@@ -136,23 +139,52 @@ TestCase {
     for (var i = 0; i < 4; i++) verify(ctx.record.arcs[i].y <= chordY + 0.001)
   }
 
-  function test_link_connecting_draws_partial_polyline_without_beads() {
+  function test_link_connecting_draws_marching_dashes_without_beads() {
+    // Qt's Canvas has no setLineDash, so a connecting link is a run of
+    // polylines (Link.dashes) instead of one curve — and no beads: they only
+    // ride a tunnel that is actually up.
     var map = makeMap({ home: paris, exit: tokyo, linkState: "connecting" })
     compare(map.drawProgress, 0)
     map.drawProgress = 0.5
     var ctx = fakeContext()
     map.paintLink(ctx)
     compare(ctx.record.quads.length, 0)
-    compare(ctx.record.arcs.length, 0)
-    verify(ctx.record.lines.length > 4)
-    compare(ctx.record.moves, 1, "one trace, stroked twice")
-    compare(ctx.record.strokes, 2)
-    // The polyline ends about halfway along the chord in x.
+    compare(ctx.record.arcs.length, 0, "no beads while connecting")
+    compare(ctx.record.fills, 0)
+    verify(ctx.record.moves > 4, "one moveTo per dash: " + ctx.record.moves)
+    verify(ctx.record.lines.length > ctx.record.moves, "each dash bends with the arc")
+    compare(ctx.record.strokes, 2, "one trace of every dash, stroked halo then core")
+    compare(ctx.lineCap, "butt", "round caps would close the gaps")
+    // The dashes stop about halfway along the chord in x, where the draw-in has
+    // got to, and there is a real gap between one dash and the next.
     var x0 = map.pointFor(paris.lat, paris.lon).x
     var x1 = map.pointFor(tokyo.lat, tokyo.lon).x
     var last = ctx.record.lines[ctx.record.lines.length - 1]
     verify(last.x > x0 + (x1 - x0) * 0.3)
     verify(last.x < x0 + (x1 - x0) * 0.7)
+  }
+
+  function test_connecting_dashes_march_with_the_phase() {
+    var map = makeMap({ home: paris, exit: tokyo, linkState: "connecting" })
+    // Fully drawn in: the pattern, not the draw-in, is what moves here.
+    map.drawProgress = 1
+    compare(map.dashPhase, 0)
+    var still = fakeContext()
+    map.paintLink(still)
+    map.phase = 3
+    verify(map.dashPhase > 0, "the phase walks the pattern along the arc")
+    var moved = fakeContext()
+    map.paintLink(moved)
+    // The same pattern, shifted: one dash may fall off the end as another
+    // appears at home, never more.
+    verify(Math.abs(moved.record.moves - still.record.moves) <= 1)
+    // Every dash begins further along the arc than it did.
+    var a = still.record.starts[still.record.starts.length - 1]
+    var b = moved.record.starts[moved.record.starts.length - 1]
+    verify(Math.abs(b.x - a.x) > 0.01 || Math.abs(b.y - a.y) > 0.01, "the dashes moved")
+    // One whole period on (20 phase units) the pattern repeats exactly.
+    map.phase = 20
+    compare(map.dashPhase, 0)
   }
 
   function test_link_state_transitions_reset_progress() {

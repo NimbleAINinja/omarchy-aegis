@@ -431,6 +431,22 @@ function pingTier(ms) {
   return "poor"
 }
 
+// What the map draws: "connected" (solid arc with beads riding it),
+// "connecting" (the arc drawing itself in, dashed and marching), "none".
+//
+// A pending connect is "connecting" even while the CLI still reports the old
+// tunnel as connected. Switching location while connected moves the map's
+// exit to the pending city the moment it is clicked (Panel's exitPoint), so
+// reading vpnState alone had the beads riding an arc to a city the traffic
+// does not go through yet — the one thing the beads are there to say.
+function linkState(vpnState, pendingLocation) {
+  if (str(pendingLocation) !== "") return "connecting"
+  var state = str(vpnState)
+  if (state === "connected") return "connected"
+  if (state === "connecting") return "connecting"
+  return "none"
+}
+
 function formatRate(bytesPerSec) {
   var v = num(bytesPerSec, 0)
   if (v <= 0) return "0"
@@ -1406,6 +1422,7 @@ if (typeof module !== "undefined") {
     filterLocations: filterLocations,
     toggleFavorite: toggleFavorite,
     pingTier: pingTier,
+    linkState: linkState,
     formatRate: formatRate,
     formatUptime: formatUptime,
     rateFrom: rateFrom,

@@ -73,6 +73,15 @@ Item {
 
   readonly property int beadCount: 4
 
+  // The marching dash pattern used while connecting, in pixels along the arc.
+  readonly property real dashLength: 6
+  readonly property real dashGap: 4
+  // Where the pattern starts. `phase` steps by 3 every 60 ms and wraps at 100,
+  // a multiple of 20, so taking it modulo 20 walks one whole dash + gap every
+  // 20 phase units — about 25 px/s toward the exit, the pace of the beads it
+  // stands in for — and stays continuous across the wrap.
+  readonly property real dashPhase: (phase % 20) / 20 * (dashLength + dashGap)
+
   implicitHeight: Math.round(width * (latMax - latMin) / 360)
 
   // Land cells for the current size, rebuilt only when geometry changes.
@@ -241,12 +250,27 @@ Item {
     }
   }
 
+  // One traced path holding every dash as its own subpath: a stroke covers
+  // them all, so the halo and the core still cost one trace and two strokes.
+  // Butt caps, or the halo's 4px round ends would close the 4px gaps and the
+  // dashes would read as a solid line again.
+  function traceDashes(ctx, seg, tEnd) {
+    var parts = Link.dashes(seg, tEnd < 0 ? 1 : tEnd, dashLength, dashGap, dashPhase)
+    ctx.beginPath()
+    for (var i = 0; i < parts.length; i++) {
+      var points = parts[i]
+      ctx.moveTo(points[0].x, points[0].y)
+      for (var k = 1; k < points.length; k++) ctx.lineTo(points[k].x, points[k].y)
+    }
+  }
+
   // A fat translucent halo under a thin bright core. The path survives a
   // stroke, so both share one trace; tEnd < 0 means the whole segment.
-  function strokeLink(ctx, seg, tEnd) {
-    ctx.lineCap = "round"
+  function strokeLink(ctx, seg, tEnd, dashed) {
+    ctx.lineCap = dashed ? "butt" : "round"
     ctx.lineJoin = "round"
-    if (tEnd < 0) traceSegment(ctx, seg)
+    if (dashed) traceDashes(ctx, seg, tEnd)
+    else if (tEnd < 0) traceSegment(ctx, seg)
     else tracePartial(ctx, seg, tEnd)
     ctx.strokeStyle = cssLinkHalo
     ctx.lineWidth = 4
@@ -259,9 +283,13 @@ Item {
   function paintLink(ctx) {
     var segs = segments
     if (segs.length === 0) return
+    // Dashes marching toward the exit while the tunnel is coming up; a solid
+    // arc the moment it is up. The beads below say the same thing, and they
+    // may only ride a link that carries traffic.
+    var dashed = linkState === "connecting"
     var progress = Math.max(0, Math.min(1, drawProgress))
     if (progress >= 1) {
-      for (var i = 0; i < segs.length; i++) strokeLink(ctx, segs[i], -1)
+      for (var i = 0; i < segs.length; i++) strokeLink(ctx, segs[i], -1, dashed)
     } else {
       // Progress runs across the whole link by chord length, so segment B
       // only starts once A is fully drawn.
@@ -269,7 +297,7 @@ Item {
       for (var j = 0; j < parts.length; j++) {
         var part = parts[j]
         if (part.tEnd <= 0) continue
-        strokeLink(ctx, part, part.tEnd)
+        strokeLink(ctx, part, part.tEnd, dashed)
       }
     }
     if (linkState !== "connected") return
@@ -418,7 +446,9 @@ Item {
     else drawProgress = 0
     dotCanvas.requestPaint()
   }
-  onPhaseChanged: if (beadsVisible) dotCanvas.requestPaint()
+  // While connecting the phase moves the dashes, not the beads, so the
+  // dynamic layer has to follow it there too.
+  onPhaseChanged: if (beadsVisible || linkState === "connecting") dotCanvas.requestPaint()
   onDrawProgressChanged: dotCanvas.requestPaint()
   onMarkerColorChanged: dotCanvas.requestPaint()
   onAccentChanged: dotCanvas.requestPaint()

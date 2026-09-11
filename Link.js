@@ -122,6 +122,77 @@ function polyline(seg, tEnd, steps) {
   return out
 }
 
+// The point `s` pixels along a sampled curve, interpolated inside the sample
+// it falls in. `at[i]` is the arc length of pts[i] from the start.
+function pointAtLength(pts, at, s) {
+  var last = at.length - 1
+  if (!(s > 0)) return { x: pts[0].x, y: pts[0].y }
+  if (s >= at[last]) return { x: pts[last].x, y: pts[last].y }
+  var i = 1
+  while (i < last && at[i] < s) i++
+  var span = at[i] - at[i - 1]
+  var f = span > 0 ? (s - at[i - 1]) / span : 0
+  return { x: pts[i - 1].x + (pts[i].x - pts[i - 1].x) * f,
+    y: pts[i - 1].y + (pts[i].y - pts[i - 1].y) * f }
+}
+
+// One dash, from arc length `a` to `b`: the two cut points with every sample
+// between them kept, so a dash bends with the arc instead of chording it.
+function dashCut(pts, at, a, b) {
+  var out = [pointAtLength(pts, at, a)]
+  for (var i = 0; i < pts.length; i++) {
+    if (at[i] > a && at[i] < b) out.push({ x: pts[i].x, y: pts[i].y })
+  }
+  out.push(pointAtLength(pts, at, b))
+  return out
+}
+
+// The link cut into marching dashes, for the connecting state. Qt's Canvas 2D
+// context has no setLineDash (the symbol isn't in libQt6Quick at all), so the
+// pattern is cut here and handed back as polylines the caller strokes.
+//   seg: one quadratic segment; tEnd: how much of it to cover (0..1)
+//   dashLen/gapLen: the pattern in pixels, measured along the curve
+//   phaseOffset: how far along the curve the pattern starts, so raising it
+//     over time walks the dashes toward the exit
+// → [[{x, y}, ...], ...], every point on the curve. The dash the offset pushed
+// off the start is kept, clipped: without it the first pixels of the link
+// would blink in and out as the pattern marched past them.
+function dashes(seg, tEnd, dashLen, gapLen, phaseOffset) {
+  var end = Number(tEnd)
+  if (!(end > 0)) return []
+  if (end > 1) end = 1
+  var dash = Number(dashLen)
+  if (!(dash > 0)) return []
+  var gap = Number(gapLen)
+  if (!(gap > 0)) gap = 0
+  var period = dash + gap
+  var pts = polyline(seg, end, 64)
+  var at = [0]
+  var total = 0
+  for (var i = 1; i < pts.length; i++) {
+    var dx = pts[i].x - pts[i - 1].x
+    var dy = pts[i].y - pts[i - 1].y
+    total += Math.sqrt(dx * dx + dy * dy)
+    at.push(total)
+  }
+  if (!(total > 0)) return []
+  var off = Number(phaseOffset)
+  if (!isFinite(off)) off = 0
+  off = off % period
+  if (off < 0) off += period
+  var out = []
+  for (var start = off - period; start < total; start += period) {
+    var a = start
+    var b = start + dash
+    if (b <= 0) continue
+    if (a < 0) a = 0
+    if (b > total) b = total
+    if (b <= a) continue
+    out.push(dashCut(pts, at, a, b))
+  }
+  return out
+}
+
 // Split an overall progress (0..1 by chord length) into per-segment tEnd
 // values; segments not yet reached are omitted.
 function progressSegments(segs, progress) {
@@ -209,6 +280,8 @@ if (typeof module !== "undefined") {
     beadParams: beadParams,
     beadPositions: beadPositions,
     polyline: polyline,
+    pointAtLength: pointAtLength,
+    dashes: dashes,
     progressSegments: progressSegments,
     nearest: nearest,
     nearestProjected: nearestProjected
