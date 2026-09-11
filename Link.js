@@ -31,8 +31,14 @@ function pointOnQuad(x0, y0, cx, cy, x1, y1, t) {
 }
 
 function finiteCoord(p) {
-  return !!p && isFinite(Number(p.lat)) && isFinite(Number(p.lon))
-    && p.lat !== null && p.lon !== null
+  if (!p) return false
+  var lat = p.lat, lon = p.lon
+  // Number(null) and Number("") are both 0 — a finite number — so a
+  // location missing coordinates entirely (null from the JSON, or an empty
+  // string from somewhere loose) must be rejected explicitly, not left to
+  // isFinite() to catch.
+  if (lat === null || lat === undefined || lat === "" || lon === null || lon === undefined || lon === "") return false
+  return isFinite(Number(lat)) && isFinite(Number(lon))
 }
 
 function makeSegment(x0, y0, x1, y1) {
@@ -149,9 +155,11 @@ function nearest(points, x, y, projectX, projectY, maxDist) {
   if (!(bestDist > 0)) return null
   for (var i = 0; i < list.length; i++) {
     var p = list[i]
-    if (!p) continue
+    // Number(null)/Number("") coerce to 0 — a finite number — so without
+    // finiteCoord a location missing coordinates would be placed at 0,0
+    // and could be hovered/clicked there. See also finiteCoord's own doc.
+    if (!finiteCoord(p)) continue
     var lat = Number(p.lat), lon = Number(p.lon)
-    if (!isFinite(lat) || !isFinite(lon)) continue
     var dx = projectX(lon) - x
     var dy = projectY(lat) - y
     var d = Math.sqrt(dx * dx + dy * dy)

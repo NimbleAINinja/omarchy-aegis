@@ -613,6 +613,35 @@ class ConfigVerbs(unittest.TestCase):
         for name in ("firefox", "sleepy", "transmission-gtk"):
             self.assertFalse(agvpn._is_denied(name), name)
 
+    def test_kill_denylist_covers_session_and_security_critical_additions(self):
+        # hyprlock/hypridle in particular: killing the lock screen on a VPN
+        # drop would UNLOCK the session instead of protecting it.
+        for name in ("hyprlock", "HYPRLOCK", "hypridle", "uwsm", "Xwayland", "xwayland",
+                     "xdg-desktop-portal-hyprland", "xdg-desktop-portal-gtk",
+                     "polkit", "polkitd", "hyprpolkitagent",
+                     "gnome-keyring-daemon", "ssh-agent", "gpg-agent", "login", "agetty",
+                     "swayosd-server", "mako", "walker", "elephant"):
+            self.assertTrue(agvpn._is_denied(name), name)
+
+    def test_kill_denylist_catches_the_kernel_truncated_comm_of_a_long_denied_name(self):
+        # ps/pkill -x only ever see gnome-keyring-daemon truncated to
+        # COMM_LEN bytes; the truncated spelling itself must be denied too.
+        self.assertTrue(agvpn._is_denied("gnome-keyring-d"), "truncated comm of a denied name")
+        self.assertFalse(agvpn._is_denied("gnome-keyring"), "a shorter, unrelated name must not be denied")
+        self.assertFalse(agvpn._is_denied("gnome-keyring-daemon-extra"), "a longer, unrelated name must not be denied")
+
+    def test_kill_skips_the_truncated_comm_of_a_long_denied_name(self):
+        with tempfile.TemporaryDirectory() as d:
+            log = Path(d, "argv.log")
+            rc, out, _ = run_verb("kill", "gnome-keyring-d", "sleepy",
+                                  env_extra={"FAKE_LOG": str(log), "AEGIS_PKILL": str(ROOT / "tests" / "fake-pkill.sh")})
+            argv = log.read_text()
+        j = self.check_json(out)
+        self.assertTrue(j["ok"])
+        self.assertEqual(j["killed"], ["sleepy"])
+        self.assertEqual(j["skipped"], ["gnome-keyring-d"])
+        self.assertNotIn("gnome-keyring", argv)
+
     def test_procs_lists_unique_sorted_user_process_names(self):
         with tempfile.TemporaryDirectory() as proc:
             os.makedirs(os.path.join(proc, "42"))

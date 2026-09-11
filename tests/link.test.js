@@ -155,3 +155,23 @@ test("nearest picks the closest projected point within maxDist, else null", () =
   assert.equal(Link.nearest([], paris.x, paris.y, px, py, 12), null)
   assert.equal(Link.nearest(pts, paris.x, paris.y, px, py, 0), null, "maxDist 0 never matches")
 })
+
+test("nearest never returns a location missing coordinates, even right at 0,0", () => {
+  // The bug: Number(null) and Number("") are both 0 (a finite number), so a
+  // location without coordinates used to be placed at 0,0 on the map and
+  // could be hovered/clicked there.
+  const pts = [
+    { city: "NullCoords", lat: null, lon: null },
+    { city: "UndefinedCoords", lat: undefined, lon: undefined },
+    { city: "EmptyStringCoords", lat: "", lon: "" },
+    { city: "MixedCoords", lat: 10, lon: "" },
+    { city: "Paris", lat: 48.86, lon: 2.35 }
+  ]
+  const nullIsland = { x: px(0), y: py(0) }
+  // Right on top of where a coordinate-less point would land at 0,0: still
+  // nothing found, and definitely not one of the coordinate-less points.
+  assert.equal(Link.nearest(pts, nullIsland.x, nullIsland.y, px, py, 12), null)
+  // The real point is still found normally elsewhere on the map.
+  const paris = { x: px(2.35), y: py(48.86) }
+  assert.equal(Link.nearest(pts, paris.x, paris.y, px, py, 12).point.city, "Paris")
+})

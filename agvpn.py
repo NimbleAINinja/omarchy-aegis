@@ -869,20 +869,29 @@ COMM_LEN = 15  # the kernel truncates a process's comm to this many bytes
 # Process names a VPN kill switch must never offer or touch: shell
 # interpreters, this helper's own interpreter and the `ps` it shells out to,
 # init/session/login, the desktop's IPC and audio backbone, the compositor
-# and bar shell (whichever binary name it runs under), the VPN CLI itself,
-# and privilege escalation. Keep this in sync with PROCS_DENY in Model.js
-# (that file points back here) — this list is the one verb_kill actually
-# enforces against pkill; Model.js additionally keeps the UI from ever
-# offering or accepting these names in the first place.
+# and bar shell (whichever binary name it runs under), idle/lock/session
+# plumbing (killing hyprlock on a VPN drop would UNLOCK the session instead
+# of protecting it), the notification daemon the kill switch's own alert
+# depends on (see notify() in Service.qml), the app launcher, the VPN CLI
+# itself, and privilege escalation. Keep this in sync with PROCS_DENY in
+# Model.js (that file points back here) — this list is the one verb_kill
+# actually enforces against pkill; Model.js additionally keeps the UI from
+# ever offering or accepting these names in the first place.
 PROCS_DENY = frozenset([
     "sh", "bash", "zsh", "fish", "dash", "python3", "python", "ps",
-    "systemd", "init", "sddm", "gdm", "gdm3", "lightdm",
+    "systemd", "init", "sddm", "gdm", "gdm3", "lightdm", "login", "agetty",
     "dbus-daemon", "dbus-broker", "pipewire", "wireplumber",
     "Hyprland", "hyprland", "quickshell", "qs", "omarchy-shell",
+    "hyprlock", "hypridle", "uwsm", "Xwayland",
+    "polkitd", "hyprpolkitagent", "gnome-keyring-daemon", "ssh-agent", "gpg-agent",
+    "mako", "swayosd-server", "walker", "elephant",
     "adguardvpn-cli", "sudo", "env",
 ])
 PROCS_DENY_LOWER = frozenset(n.lower() for n in PROCS_DENY)
-PROCS_DENY_PREFIXES = ("dbus-broker", "systemd-", "pipewire")
+PROCS_DENY_PREFIXES = ("dbus-broker", "systemd-", "pipewire", "polkit", "xdg-desktop")
+# Every deny-listed name too long for the kernel's comm field, truncated the
+# same way `ps`/`pkill -x` would see it — see _is_denied.
+PROCS_DENY_TRUNCATED = frozenset(n.lower()[:COMM_LEN] for n in PROCS_DENY if len(n) > COMM_LEN)
 PROCS_CAP = 400
 
 
@@ -891,7 +900,13 @@ def _is_denied(name):
     # deny list itself is compared case-insensitively so e.g. "HYPRLAND" is
     # refused too, not just the exact spellings on the list.
     lower = name.lower()
-    return lower in PROCS_DENY_LOWER or lower.startswith(PROCS_DENY_PREFIXES)
+    if lower in PROCS_DENY_LOWER or lower.startswith(PROCS_DENY_PREFIXES):
+        return True
+    # `ps` and `pkill -x` only ever see a process's comm truncated to
+    # COMM_LEN bytes, so a name that IS that truncation of a longer denied
+    # name (e.g. "gnome-keyring-d" for "gnome-keyring-daemon") must be
+    # refused too — pkill -x on it would still hit the real process.
+    return len(lower) == COMM_LEN and lower in PROCS_DENY_TRUNCATED
 
 
 def verb_kill(names):

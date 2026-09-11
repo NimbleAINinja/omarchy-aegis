@@ -67,6 +67,7 @@ then `omarchy plugin enable io.github.nimbleaininja.aegis --section right`.
 | `p` | pause or resume the exclusion under the cursor |
 | `x` | remove the exclusion under the cursor |
 | `Tab` (in the kill-switch field) | add the highlighted running app |
+| `Enter` (in the kill-switch field) | add exactly what you typed, or the highlighted app if you've arrowed to one |
 | `r` | refresh |
 | `Esc` | back, then close |
 | `Tab` | next bar panel |

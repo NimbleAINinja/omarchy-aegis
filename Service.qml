@@ -121,13 +121,22 @@ Item {
 
   // Pausing takes the domain out of the CLI list but keeps it in our own
   // paused list (per mode), so resume can put it back.
+  // Domains are case-insensitive: exclusionRows always shows them lowercase
+  // (Model.mergeExclusions/cleanDomains), but exclusions.domains holds
+  // whatever case the CLI itself returned for each one. Removing a domain
+  // from the CLI's list needs that exact stored spelling — Model.
+  // findExclusionDomain does the case-insensitive lookup.
   function setExclusionPaused(domain, paused) {
     var d = String(domain || "").trim().toLowerCase()
     if (d === "") return
     clearError()
     persist({ pausedExclusions: Model.setPaused(pausedExclusions, exclusions.mode, d, paused) })
-    if (paused) enqueue(["exclusions", "remove", d], "exclusions", false, true)
-    else enqueue(["exclusions", "add", d], "exclusions", false, true)
+    if (paused) {
+      var stored = Model.findExclusionDomain(exclusions.domains, d)
+      if (stored !== null) enqueue(["exclusions", "remove", stored], "exclusions", false, true)
+    } else {
+      enqueue(["exclusions", "add", d], "exclusions", false, true)
+    }
   }
 
   function forgetExclusion(domain) {
@@ -136,7 +145,8 @@ Item {
     clearError()
     if (Model.setPaused(pausedExclusions, exclusions.mode, d, false)[exclusions.mode].length !== (pausedExclusions[exclusions.mode] || []).length)
       persist({ pausedExclusions: Model.setPaused(pausedExclusions, exclusions.mode, d, false) })
-    if (exclusions.domains.indexOf(d) !== -1) enqueue(["exclusions", "remove", d], "exclusions", false, true)
+    var stored = Model.findExclusionDomain(exclusions.domains, d)
+    if (stored !== null) enqueue(["exclusions", "remove", stored], "exclusions", false, true)
   }
 
   function refreshConfig() { enqueue(["config", "show"], "config", true) }
@@ -203,7 +213,9 @@ Item {
     enqueue(["exclusions", "mode", String(mode)], "exclusions", false, true)
   }
   function addExclusion(domain) {
-    var d = String(domain || "").trim()
+    // Lowercased so the domain lands in the CLI's list in the same case
+    // exclusionRows will later display and compare it in.
+    var d = String(domain || "").trim().toLowerCase()
     if (d === "") return
     clearError()
     enqueue(["exclusions", "add", d], "exclusions", false, true)

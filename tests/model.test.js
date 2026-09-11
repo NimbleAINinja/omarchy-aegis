@@ -219,6 +219,35 @@ test("homeFromTimezone uses the table and falls back to central Europe", () => {
   assert.deepEqual(Model.homeFromTimezone(null), { lat: 48, lon: 10 })
 })
 
+test("normalizeTimezone strips zoneinfo/posix/right path prefixes and whitespace", () => {
+  assert.equal(Model.normalizeTimezone("/usr/share/zoneinfo/Asia/Tokyo"), "Asia/Tokyo")
+  assert.equal(Model.normalizeTimezone("/usr/share/zoneinfo/posix/Asia/Tokyo"), "Asia/Tokyo")
+  assert.equal(Model.normalizeTimezone("posix/Asia/Tokyo"), "Asia/Tokyo")
+  assert.equal(Model.normalizeTimezone("right/Asia/Tokyo"), "Asia/Tokyo")
+  assert.equal(Model.normalizeTimezone("Asia/Tokyo\n"), "Asia/Tokyo")
+  assert.equal(Model.normalizeTimezone("  Asia/Tokyo  "), "Asia/Tokyo")
+  assert.equal(Model.normalizeTimezone("Europe/Berlin"), "Europe/Berlin")
+  assert.equal(Model.normalizeTimezone(""), "")
+  assert.equal(Model.normalizeTimezone(null), "")
+})
+
+test("homeFromTimezone resolves full zoneinfo paths and stays region-anchored, not a loose substring match", () => {
+  assert.deepEqual(Model.homeFromTimezone("/usr/share/zoneinfo/Asia/Tokyo"), { lat: 35.68, lon: 139.69 })
+  // The bug: a full path never matched TZ_TABLE, so Tokyo fell all the way
+  // back to central Europe.
+  assert.deepEqual(Model.homeFromTimezone("/usr/share/zoneinfo/Europe/Berlin"), { lat: 52.52, lon: 13.41 })
+  assert.deepEqual(Model.homeFromTimezone("/usr/share/zoneinfo/America/New_York"), { lat: 40.71, lon: -74.01 })
+  // The bug: Pacific/Auckland used to hit the loose "Pacific" fallback rule
+  // and land in Los Angeles instead of its own real coordinates.
+  assert.deepEqual(Model.homeFromTimezone("/usr/share/zoneinfo/Pacific/Auckland"), { lat: -36.85, lon: 174.76 })
+  assert.deepEqual(Model.homeFromTimezone("posix/Asia/Tokyo"), { lat: 35.68, lon: 139.69 })
+  assert.deepEqual(Model.homeFromTimezone("right/Asia/Tokyo"), { lat: 35.68, lon: 139.69 })
+  assert.deepEqual(Model.homeFromTimezone("Asia/Tokyo\n"), { lat: 35.68, lon: 139.69 }, "trailing newline")
+  assert.deepEqual(Model.homeFromTimezone("UTC"), { lat: 0, lon: 0 }, "bare name that is a real table key")
+  assert.deepEqual(Model.homeFromTimezone("Tokyo"), { lat: 48, lon: 10 }, "bare city with no region falls back")
+  assert.deepEqual(Model.homeFromTimezone("not a real timezone"), { lat: 48, lon: 10 }, "garbage falls back")
+})
+
 test("elideStatus collapses whitespace and caps length", () => {
   assert.equal(Model.elideStatus("  a \n b  "), "a b")
   assert.equal(Model.elideStatus(null), "")
@@ -386,6 +415,15 @@ test("errorResolved clears a connect error only once the snapshot is connected t
   assert.equal(Model.errorResolved({ verb: "connect", target: "" }, { state: "connected", location: "" }), false)
 })
 
+test("errorResolved compares the connect target case- and whitespace-insensitively", () => {
+  const intent = { verb: "connect", target: "Paris" }
+  assert.equal(Model.errorResolved(intent, { state: "connected", location: "PARIS" }), true)
+  assert.equal(Model.errorResolved(intent, { state: "connected", location: "paris" }), true)
+  assert.equal(Model.errorResolved(intent, { state: "connected", location: " Paris " }), true)
+  assert.equal(Model.errorResolved({ verb: "connect", target: " paris " }, { state: "connected", location: "Paris" }), true)
+  assert.equal(Model.errorResolved(intent, { state: "connected", location: "Paris, France" }), false)
+})
+
 test("errorResolved clears a disconnect error once the snapshot is disconnected, regardless of location", () => {
   const intent = { verb: "disconnect" }
   assert.equal(Model.errorResolved(intent, { state: "disconnected", location: "" }), true)
@@ -508,6 +546,64 @@ test("setPaused adds or removes a domain in the right mode without mutating inpu
   assert.deepEqual(Model.setPaused(paused, "selective", "x.io", true), { general: ["a.com", "b.org"], selective: ["x.io"] })
   assert.deepEqual(Model.setPaused(paused, "weird", "x.io", true), paused)
   assert.deepEqual(Model.setPaused(null, "general", "a.com", true), { general: ["a.com"], selective: [] })
+})
+
+test("findExclusionDomain finds the CLI's stored spelling case-insensitively", () => {
+  const domains = ["Example.com", "b.org", " C.io "]
+  assert.equal(Model.findExclusionDomain(domains, "example.com"), "Example.com")
+  assert.equal(Model.findExclusionDomain(domains, "EXAMPLE.COM"), "Example.com")
+  assert.equal(Model.findExclusionDomain(domains, "b.org"), "b.org")
+  assert.equal(Model.findExclusionDomain(domains, "c.io"), " C.io ", "matches despite the CLI's own stray whitespace")
+  assert.equal(Model.findExclusionDomain(domains, "nope.com"), null)
+  assert.equal(Model.findExclusionDomain(domains, ""), null)
+  assert.equal(Model.findExclusionDomain(null, "example.com"), null)
+})
+
+test("chooseKillSwitchName: Tab always takes the highlighted suggestion; Enter takes exactly what was typed unless navigated", () => {
+  const suggestions = ["steamwebhelper", "steam-native"]
+  // The bug: typing "steam" while steamwebhelper is running always added
+  // the top suggestion, so "steam" itself could never be added.
+  assert.equal(Model.chooseKillSwitchName("steam", suggestions, 0, false, "enter"), "steam")
+  assert.equal(Model.chooseKillSwitchName("steam", suggestions, 0, false, "tab"), "steamwebhelper")
+  // Enter after arrowing (Up/Down, or hovering) takes the highlighted one.
+  assert.equal(Model.chooseKillSwitchName("steam", suggestions, 1, true, "enter"), "steam-native")
+  assert.equal(Model.chooseKillSwitchName("steam", suggestions, 1, true, "tab"), "steam-native")
+  // No suggestions at all: both keys fall back to the typed text.
+  assert.equal(Model.chooseKillSwitchName("firefox", [], 0, false, "enter"), "firefox")
+  assert.equal(Model.chooseKillSwitchName("firefox", [], 0, false, "tab"), "firefox")
+  // Typed text exactly matching the top suggestion behaves the same either way.
+  assert.equal(Model.chooseKillSwitchName("steamwebhelper", suggestions, 0, false, "enter"), "steamwebhelper")
+  // An out-of-range highlight index is clamped.
+  assert.equal(Model.chooseKillSwitchName("steam", suggestions, 9, true, "tab"), "steam-native")
+  assert.equal(Model.chooseKillSwitchName("  steam  ", [], 0, false, "enter"), "steam", "typed text is trimmed")
+})
+
+test("isDeniedApp covers the session/security-critical additions, case-insensitively", () => {
+  const names = ["hyprlock", "HYPRLOCK", "hypridle", "uwsm", "xwayland", "Xwayland",
+    "xdg-desktop-portal-hyprland", "polkit", "polkitd", "hyprpolkitagent",
+    "gnome-keyring-daemon", "ssh-agent", "gpg-agent", "login", "agetty",
+    "swayosd-server", "mako", "walker", "elephant"]
+  for (const name of names) assert.equal(Model.isDeniedApp(name), true, name)
+  // ps/pkill only ever see a comm truncated to 15 bytes, so the truncated
+  // form of a longer denied name must be denied too.
+  assert.equal(Model.isDeniedApp("gnome-keyring-d"), true, "truncated comm of a denied name")
+  assert.equal(Model.isDeniedApp("gnome-keyring"), false, "a shorter, unrelated name must not be denied")
+})
+
+test("PROCS_DENY / PROCS_DENY_PREFIXES stay in sync with agvpn.py's _is_denied", () => {
+  const { execFileSync } = require("node:child_process")
+  const path = require("node:path")
+  const env = Object.assign({}, process.env, { PYTHONDONTWRITEBYTECODE: "1" })
+  for (const k of Object.keys(env)) if (k.startsWith("AEGIS_")) delete env[k]
+  const script = [
+    "import importlib.util, json",
+    "spec = importlib.util.spec_from_file_location('agvpn', 'agvpn.py')",
+    "m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)",
+    "print(json.dumps({'deny': sorted(m.PROCS_DENY_LOWER), 'prefixes': sorted(m.PROCS_DENY_PREFIXES)}))",
+  ].join("\n")
+  const info = JSON.parse(execFileSync("python3", ["-c", script], { cwd: path.join(__dirname, ".."), env, encoding: "utf8" }))
+  assert.deepEqual(Model.PROCS_DENY.map(n => n.toLowerCase()).sort(), info.deny)
+  assert.deepEqual(Model.PROCS_DENY_PREFIXES.slice().sort(), info.prefixes)
 })
 
 test("normalizeSnapshot keeps the tunnel mode and SOCKS listen address", () => {

@@ -122,27 +122,36 @@ Column {
       id: appsField
       width: parent.width
       foreground: panel.foreground
-      placeholderText: "Add a running app, e.g. firefox"
+      placeholderText: "Add app, e.g. firefox (Tab picks the highlighted match)"
       property int suggestIndex: 0
+      // Whether the highlight was moved on purpose (Up/Down, or hovering a
+      // suggestion) since the text last changed, as opposed to just
+      // defaulting to the top match. Enter only takes the highlighted
+      // suggestion when this is true — see Model.chooseKillSwitchName.
+      property bool suggestNavigated: false
       readonly property var suggestions: vpn ? Model.filterProcs(vpn.procs, text, vpn.killApps, 6) : []
-      onTextChanged: suggestIndex = 0
+      onTextChanged: { suggestIndex = 0; suggestNavigated = false }
       onActiveFocusChanged: if (activeFocus && vpn) vpn.refreshProcs()
-      function acceptSuggestion() {
-        var name = suggestions.length > 0 ? suggestions[Math.min(suggestIndex, suggestions.length - 1)] : text.trim()
+      // key: "tab" | "enter" — see Model.chooseKillSwitchName for the rules.
+      function acceptSuggestion(key) {
+        var name = Model.chooseKillSwitchName(text, suggestions, suggestIndex, suggestNavigated, key)
         if (name === "") return
         panel.persistSettings({ killApps: Model.formatAppList(Model.addApp(vpn.killApps, name)) })
         text = ""
+        suggestNavigated = false
       }
-      onAccepted: acceptSuggestion()
+      onAccepted: acceptSuggestion("enter")
       Keys.onPressed: function(event) {
-        if (event.key === Qt.Key_Tab) { acceptSuggestion(); event.accepted = true }
-        else if (event.key === Qt.Key_Down) { suggestIndex = Math.min(suggestions.length - 1, suggestIndex + 1); event.accepted = true }
-        else if (event.key === Qt.Key_Up) { suggestIndex = Math.max(0, suggestIndex - 1); event.accepted = true }
+        if (event.key === Qt.Key_Tab) { acceptSuggestion("tab"); event.accepted = true }
+        else if (event.key === Qt.Key_Down) { suggestIndex = Math.min(suggestions.length - 1, suggestIndex + 1); suggestNavigated = true; event.accepted = true }
+        else if (event.key === Qt.Key_Up) { suggestIndex = Math.max(0, suggestIndex - 1); suggestNavigated = true; event.accepted = true }
         else if (event.key === Qt.Key_Escape) { text = ""; panel.keyCatcherFocus(); event.accepted = true }
       }
     }
 
-    // Suggestions from your running processes; Tab or Enter adds the highlighted one.
+    // Suggestions from your running processes. Tab (or a click) always adds
+    // the highlighted one; Enter adds exactly what you typed unless you've
+    // arrowed to a suggestion first — see Model.chooseKillSwitchName.
     Column {
       width: parent.width
       visible: appsField.activeFocus && appsField.suggestions.length > 0
@@ -172,8 +181,8 @@ Column {
           MouseArea {
             anchors.fill: parent
             hoverEnabled: true
-            onEntered: appsField.suggestIndex = index
-            onClicked: { appsField.suggestIndex = index; appsField.acceptSuggestion(); appsField.forceActiveFocus() }
+            onEntered: { appsField.suggestIndex = index; appsField.suggestNavigated = true }
+            onClicked: { appsField.suggestIndex = index; appsField.suggestNavigated = true; appsField.acceptSuggestion("tab"); appsField.forceActiveFocus() }
           }
         }
       }

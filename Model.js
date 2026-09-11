@@ -308,14 +308,35 @@ var TZ_TABLE = {
   "UTC": [0, 0]
 }
 
+// Reduce whatever the timezone source handed us to a bare IANA name so it
+// can be looked up in TZ_TABLE. Service.qml reads /etc/localtime (or $TZ)
+// with `readlink -f`, which yields a full path like
+// "/usr/share/zoneinfo/Asia/Tokyo" — never a bare "Asia/Tokyo" — so without
+// this the table lookup never matches. Also strips the "posix/" and
+// "right/" alternate-tree prefixes some distros use, and stray whitespace.
+function normalizeTimezone(tz) {
+  var s = str(tz).replace(/^\s+|\s+$/g, "")
+  var zi = s.lastIndexOf("zoneinfo/")
+  if (zi !== -1) s = s.substring(zi + "zoneinfo/".length)
+  s = s.replace(/^(posix|right)\//, "")
+  return s.replace(/\/+$/, "")
+}
+
 function homeFromTimezone(tz) {
-  var name = str(tz)
+  var name = normalizeTimezone(tz)
   if (name !== "" && TZ_TABLE[name]) return { lat: TZ_TABLE[name][0], lon: TZ_TABLE[name][1] }
   if (name !== "") {
-    if (name.indexOf("Stockholm") !== -1) return { lat: 59.33, lon: 18.07 }
-    if (name.indexOf("London") !== -1) return { lat: 51.51, lon: -0.13 }
-    if (name.indexOf("Pacific") !== -1) return { lat: 34.05, lon: -118.24 }
-    if (name.indexOf("Eastern") !== -1 || name.indexOf("New_York") !== -1) return { lat: 40.71, lon: -74.01 }
+    // Last-ditch fallback for a zone that isn't a TZ_TABLE key at all (e.g.
+    // a distro-local alias/symlink). Anchored to the city — the last path
+    // segment — so a real, merely-unlisted IANA region/city never matches
+    // an unrelated one just because a loose substring happened to appear
+    // somewhere in the full name: "Pacific/Auckland" must never fall
+    // through to the US Pacific rule below.
+    var city = name.substring(name.lastIndexOf("/") + 1)
+    if (city.indexOf("Stockholm") !== -1) return { lat: 59.33, lon: 18.07 }
+    if (city.indexOf("London") !== -1) return { lat: 51.51, lon: -0.13 }
+    if (city === "Pacific" || city.indexOf("Los_Angeles") !== -1) return { lat: 34.05, lon: -118.24 }
+    if (city === "Eastern" || city.indexOf("New_York") !== -1) return { lat: 40.71, lon: -74.01 }
   }
   return { lat: 48, lon: 10 }
 }
@@ -386,12 +407,31 @@ var APP_NAME = /^[A-Za-z0-9._+-]{1,64}$/
 // offer these names as suggestions or accept them into killApps.
 var PROCS_DENY = [
   "sh", "bash", "zsh", "fish", "dash", "python3", "python", "ps",
-  "systemd", "init", "sddm", "gdm", "gdm3", "lightdm",
+  "systemd", "init", "sddm", "gdm", "gdm3", "lightdm", "login", "agetty",
   "dbus-daemon", "dbus-broker", "pipewire", "wireplumber",
   "hyprland", "quickshell", "qs", "omarchy-shell",
+  // Idle/lock and Wayland/session plumbing: killing hyprlock on a VPN drop
+  // would UNLOCK the session instead of protecting it, so it (and the idle
+  // daemon that triggers it) must never be offered or accepted.
+  "hyprlock", "hypridle", "uwsm", "xwayland",
+  "polkitd", "hyprpolkitagent", "gnome-keyring-daemon", "ssh-agent", "gpg-agent",
+  // The kill switch's own notification depends on this notification daemon
+  // (Service.qml's notify() → `omarchy notification send`); swayosd is the
+  // volume/brightness OSD and walker/elephant the app launcher, all
+  // session-critical enough not to offer.
+  "mako", "swayosd-server", "walker", "elephant",
   "adguardvpn-cli", "sudo", "env"
 ]
-var PROCS_DENY_PREFIXES = ["dbus-broker", "systemd-", "pipewire"]
+var PROCS_DENY_PREFIXES = ["dbus-broker", "systemd-", "pipewire", "polkit", "xdg-desktop"]
+
+// The kernel truncates a process's comm to this many bytes; `ps` and
+// `pkill -x` only ever see that truncation. Kept in sync with COMM_LEN /
+// PROCS_DENY_TRUNCATED in agvpn.py's _is_denied.
+var COMM_LEN = 15
+var PROCS_DENY_TRUNCATED = []
+for (var _pi = 0; _pi < PROCS_DENY.length; _pi++) {
+  if (PROCS_DENY[_pi].length > COMM_LEN) PROCS_DENY_TRUNCATED.push(PROCS_DENY[_pi].slice(0, COMM_LEN))
+}
 
 function isDeniedApp(name) {
   var lower = str(name).toLowerCase()
@@ -399,6 +439,10 @@ function isDeniedApp(name) {
   for (var i = 0; i < PROCS_DENY_PREFIXES.length; i++) {
     if (lower.indexOf(PROCS_DENY_PREFIXES[i]) === 0) return true
   }
+  // A name that IS the truncated comm of a longer denied name (e.g.
+  // "gnome-keyring-d" for "gnome-keyring-daemon") must be refused too:
+  // pkill -x on it would still hit the real, longer-named process.
+  if (lower.length === COMM_LEN && PROCS_DENY_TRUNCATED.indexOf(lower) !== -1) return true
   return false
 }
 
@@ -503,8 +547,12 @@ function errorProtected(source) {
 function errorResolved(intent, snap) {
   if (!intent || typeof intent !== "object" || !snap || typeof snap !== "object") return false
   if (intent.verb === "connect") {
-    var target = str(intent.target)
-    return target !== "" && snap.state === "connected" && str(snap.location) === target
+    // pendingLocation (the UI's city, or a raw CLI name typed via IPC
+    // `connect <city>`) and the helper's matched city name can differ only
+    // in case/whitespace — that must still count as the same place.
+    var target = str(intent.target).replace(/^\s+|\s+$/g, "").toLowerCase()
+    var got = str(snap.location).replace(/^\s+|\s+$/g, "").toLowerCase()
+    return target !== "" && snap.state === "connected" && got === target
   }
   if (intent.verb === "disconnect") return snap.state === "disconnected"
   return false
@@ -590,6 +638,31 @@ function filterProcs(procs, query, chosen, limit) {
   return prefix.concat(inner).slice(0, max)
 }
 
+// What KillSwitchView's "add app" field should add when the user submits
+// it. Tab (and clicking a suggestion, which moves the highlight to the
+// clicked row first) always takes the highlighted suggestion — that's the
+// autocomplete affordance. Enter takes exactly what was typed, unless the
+// user has moved the highlight with Up/Down or the mouse, in which case it
+// takes that highlighted suggestion too. Without this distinction, typing
+// "steam" while "steamwebhelper" is running would always add
+// "steamwebhelper" (the default top match) and the kill switch could never
+// be told to close "steam" itself.
+//   typed: the field's current text
+//   suggestions: the filtered suggestion list, top match first
+//   highlightIndex: the currently highlighted row
+//   navigated: whether the user moved the highlight since last typing, as
+//     opposed to it merely defaulting to the top match
+//   key: "tab" | "enter"
+// Returns the trimmed name to add, or "" if there is nothing to add.
+function chooseKillSwitchName(typed, suggestions, highlightIndex, navigated, key) {
+  var text = str(typed).trim()
+  var list = toList(suggestions).map(str)
+  if (list.length === 0) return text
+  var idx = Math.min(Math.max(0, num(highlightIndex, 0)), list.length - 1)
+  if (key === "tab" || navigated === true) return list[idx]
+  return text
+}
+
 function addApp(list, name) {
   var out = toList(list).map(str)
   var clean = str(name).trim()
@@ -661,6 +734,23 @@ function exclusionKeys(rows) {
   return toList(rows).map(function(row) { return row && typeof row === "object" ? str(row.domain) : "" })
 }
 
+// Case-insensitive lookup of a domain's stored spelling in a CLI-returned
+// list. exclusionRows (via mergeExclusions/cleanDomains) always lowercases
+// what it shows, but exclusions.domains holds whatever case the CLI itself
+// returned — which might not be lowercase for a domain added before this
+// normalisation existed, or one the CLI reformatted on its own. Remove/pause
+// must hand the CLI back the exact spelling it has on file, or it silently
+// does nothing. Returns the stored spelling, or null if it isn't found.
+function findExclusionDomain(domains, needle) {
+  var want = str(needle).replace(/^\s+|\s+$/g, "").toLowerCase()
+  if (want === "") return null
+  var list = toList(domains)
+  for (var i = 0; i < list.length; i++) {
+    if (str(list[i]).replace(/^\s+|\s+$/g, "").toLowerCase() === want) return str(list[i])
+  }
+  return null
+}
+
 // agvpn.py verb_budgets(): each helper verb's overall budget in seconds
 // (every sub-call timeout on its longest path, plus one CLI call's worth of
 // lock wait). The helper enforces it and answers a timeout itself; this copy
@@ -710,6 +800,7 @@ if (typeof module !== "undefined") {
     nextBarMode: nextBarMode,
     heroMeta: heroMeta,
     homeFromTimezone: homeFromTimezone,
+    normalizeTimezone: normalizeTimezone,
     elideStatus: elideStatus,
     clampInt: clampInt,
     findLocation: findLocation,
@@ -722,6 +813,9 @@ if (typeof module !== "undefined") {
     parseAppList: parseAppList,
     formatAppList: formatAppList,
     isDeniedApp: isDeniedApp,
+    PROCS_DENY: PROCS_DENY,
+    PROCS_DENY_PREFIXES: PROCS_DENY_PREFIXES,
+    chooseKillSwitchName: chooseKillSwitchName,
     tunnelLoss: tunnelLoss,
     settleStatus: settleStatus,
     errorProtected: errorProtected,
@@ -740,6 +834,7 @@ if (typeof module !== "undefined") {
     mergeExclusions: mergeExclusions,
     setPaused: setPaused,
     exclusionKeys: exclusionKeys,
+    findExclusionDomain: findExclusionDomain,
     HELPER_BUDGET_SEC: HELPER_BUDGET_SEC,
     WATCHDOG_SLACK_MS: WATCHDOG_SLACK_MS,
     WATCHDOG_KILL_MS: WATCHDOG_KILL_MS,

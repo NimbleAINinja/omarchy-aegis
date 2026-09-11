@@ -255,8 +255,12 @@ Item {
     // Highlight: the candidate under the pointer wins over the list cursor.
     // A ring around the city plus a bright dot, drawn over the land dots so it
     // reads even where the link passes; a hovered candidate also gets a label.
-    var focus = hoverCandidate && isFinite(Number(hoverCandidate.lat)) && isFinite(Number(hoverCandidate.lon)) ? hoverCandidate : hover
-    if (focus && isFinite(Number(focus.lat)) && isFinite(Number(focus.lon))) {
+    // Number(null)/Number("") coerce to a finite 0, so this reuses
+    // Link.finiteCoord rather than isFinite(Number(...)) directly — the
+    // same trap that once put coordinate-less locations at 0,0 in
+    // Link.nearest (see Link.js).
+    var focus = Link.finiteCoord(hoverCandidate) ? hoverCandidate : hover
+    if (Link.finiteCoord(focus)) {
       var vx = projectX(Number(focus.lon))
       var vy = projectY(Number(focus.lat))
       if (focus === hoverCandidate) {
