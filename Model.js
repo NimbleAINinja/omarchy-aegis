@@ -194,6 +194,129 @@ function copyLocation(loc) {
   return out
 }
 
+// Whether two rows render identically: a shallow comparison of every own
+// field, which is all a delegate can read.
+function sameRow(a, b) {
+  if (a === b) return true
+  if (!a || !b || typeof a !== "object" || typeof b !== "object") return false
+  var k
+  for (k in a) {
+    if (!Object.prototype.hasOwnProperty.call(a, k)) continue
+    if (!Object.prototype.hasOwnProperty.call(b, k) || a[k] !== b[k]) return false
+  }
+  for (k in b) {
+    if (Object.prototype.hasOwnProperty.call(b, k) && !Object.prototype.hasOwnProperty.call(a, k)) return false
+  }
+  return true
+}
+
+function rowKeys(rows, keyOf) {
+  var out = []
+  for (var i = 0; i < rows.length; i++) out.push(str(keyOf(rows[i])))
+  return out
+}
+
+function hasDuplicateKey(keys) {
+  var seen = {}
+  for (var i = 0; i < keys.length; i++) {
+    if (Object.prototype.hasOwnProperty.call(seen, keys[i])) return true
+    seen[keys[i]] = true
+  }
+  return false
+}
+
+// The edit script that turns `oldRows` into `newRows`, for applying to a QML
+// ListModel in place. Handing a ListView a brand-new JS array — which is what
+// every keystroke in the search field and every location snapshot did —
+// destroys and rebuilds every visible delegate, about eleven rows of layout,
+// text and animation each. Almost none of them changed: typing a letter only
+// takes rows away, a snapshot usually changes a ping or nothing at all.
+//
+//   ops → [{ op: "remove", index, count } | { op: "insert", index, row }
+//          | { op: "set", index, row } | { op: "reset", rows }]
+//
+// Applied in order, they leave the model holding exactly newRows in exactly
+// that order, so its count and every index match the plain-array model the
+// ListView used to be given. That is load-bearing: Panel.qml's keyboard cursor
+// IS an index into this list (README's j/k/Enter rules), and the row it points
+// at must be the same row before and after.
+//
+// `keyOf` identifies a row across updates (locationKey for locations). Keys
+// that repeat can't do that, so such a list is rebuilt wholesale rather than
+// guessed at; so is the first fill, where there is nothing to preserve.
+function diffRows(oldRows, newRows, keyOf) {
+  var oldList = toList(oldRows)
+  var newList = toList(newRows)
+  var key = typeof keyOf === "function" ? keyOf : locationKey
+  var oldKeys = rowKeys(oldList, key)
+  var newKeys = rowKeys(newList, key)
+  if (oldList.length === 0 && newList.length === 0) return []
+  if (oldList.length === 0 || hasDuplicateKey(oldKeys) || hasDuplicateKey(newKeys))
+    return [{ op: "reset", rows: newList }]
+
+  var wanted = {}
+  for (var w = 0; w < newKeys.length; w++) wanted[newKeys[w]] = true
+  var ops = []
+  var keys = oldKeys.slice()
+  var rows = oldList.slice()
+
+  // 1. Drop the rows that are gone, in contiguous runs: filtering a list down
+  //    to one match is then a couple of removes, not eighty.
+  var i = 0
+  while (i < keys.length) {
+    if (Object.prototype.hasOwnProperty.call(wanted, keys[i])) { i++; continue }
+    var n = 1
+    while (i + n < keys.length && !Object.prototype.hasOwnProperty.call(wanted, keys[i + n])) n++
+    ops.push({ op: "remove", index: i, count: n })
+    keys.splice(i, n)
+    rows.splice(i, n)
+  }
+
+  // 2. Walk the target order, fixing one position at a time. Everything before
+  //    `j` already matches, and keys are unique, so a row that belongs at `j`
+  //    and isn't there is either further down (it moved) or new.
+  for (var j = 0; j < newKeys.length; j++) {
+    if (j < keys.length && keys[j] === newKeys[j]) {
+      if (!sameRow(rows[j], newList[j])) {
+        ops.push({ op: "set", index: j, row: newList[j] })
+        rows[j] = newList[j]
+      }
+      continue
+    }
+    var at = -1
+    for (var k = j + 1; k < keys.length; k++) if (keys[k] === newKeys[j]) { at = k; break }
+    if (at !== -1) {
+      ops.push({ op: "remove", index: at, count: 1 })
+      keys.splice(at, 1)
+      rows.splice(at, 1)
+    }
+    ops.push({ op: "insert", index: j, row: newList[j] })
+    keys.splice(j, 0, newKeys[j])
+    rows.splice(j, 0, newList[j])
+  }
+
+  // 3. Backstop: unique keys make this unreachable, but the model must end up
+  //    holding newRows and nothing else even if that ever stops being true.
+  if (keys.length > newKeys.length)
+    ops.push({ op: "remove", index: newKeys.length, count: keys.length - newKeys.length })
+  return ops
+}
+
+// Applying diffRows' ops to a plain array — what LocationList.qml's ListModel
+// does, so the tests can check the two agree.
+function applyRowOps(rows, ops) {
+  var out = toList(rows)
+  var list = toList(ops)
+  for (var i = 0; i < list.length; i++) {
+    var op = list[i]
+    if (op.op === "reset") out = toList(op.rows)
+    else if (op.op === "remove") out.splice(op.index, op.count)
+    else if (op.op === "insert") out.splice(op.index, 0, op.row)
+    else if (op.op === "set") out[op.index] = op.row
+  }
+  return out
+}
+
 function orderLocations(list, favorites, lastLocation) {
   var items = toList(list)
   var favs = toList(favorites).map(str)
@@ -1245,6 +1368,9 @@ if (typeof module !== "undefined") {
     LOCATIONS_TTL_MS: LOCATIONS_TTL_MS,
     locationsFresh: locationsFresh,
     locationKey: locationKey,
+    sameRow: sameRow,
+    diffRows: diffRows,
+    applyRowOps: applyRowOps,
     orderLocations: orderLocations,
     foldText: foldText,
     filterLocations: filterLocations,

@@ -23,6 +23,40 @@ Column {
 
   spacing: Style.space(6)
 
+  // The ListView is backed by a ListModel kept in step with `rows` rather than
+  // by `rows` itself: assigning a JS array to `model` resets the view, which
+  // destroys and rebuilds every visible delegate — ~11 rows of layout, text,
+  // tooltip and animation — on every keystroke in the search field and every
+  // location snapshot, however little actually changed. Model.diffRows says
+  // what changed; remove/insert/set leave the untouched delegates alone.
+  //
+  // The model must always hold exactly `rows`, in order: the keyboard cursor
+  // (panel.cursorIndex) is an index into it, and diffRows' tests pin that down.
+  // dynamicRoles is what lets one role carry the whole location object with its
+  // nulls intact (pingMs, lat, lon) instead of ListModel inferring a type per
+  // field from whichever row happened to land first.
+  ListModel { id: rowModel; dynamicRoles: true }
+  // What rowModel currently holds, to diff the next `rows` against.
+  property var modelRows: []
+
+  function syncRows() {
+    var next = Model.toList(root.rows)
+    var ops = Model.diffRows(modelRows, next, Model.locationKey)
+    for (var i = 0; i < ops.length; i++) {
+      var op = ops[i]
+      if (op.op === "reset") {
+        rowModel.clear()
+        for (var j = 0; j < op.rows.length; j++) rowModel.append({ entry: op.rows[j] })
+      } else if (op.op === "remove") rowModel.remove(op.index, op.count)
+      else if (op.op === "insert") rowModel.insert(op.index, { entry: op.row })
+      else if (op.op === "set") rowModel.set(op.index, { entry: op.row })
+    }
+    modelRows = next
+  }
+
+  onRowsChanged: syncRows()
+  Component.onCompleted: syncRows()
+
   function activate(index) {
     if (index < 0 || index >= rows.length) return
     var loc = rows[index]
@@ -89,14 +123,16 @@ Column {
     clip: true
     boundsBehavior: Flickable.StopAtBounds
     interactive: contentHeight > height
-    model: root.rows
+    model: rowModel
     ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
 
+    // `entry` is rowModel's one role; the name avoids colliding with
+    // LocationRow's own `loc` property and its `row` id.
     delegate: LocationRow {
-      required property var modelData
+      required property var entry
       required property int index
       width: list.width
-      loc: modelData
+      loc: entry
       rowIndex: index
     }
   }

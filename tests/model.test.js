@@ -98,6 +98,149 @@ test("orderLocations pins favorites in favorites order and flags last-used", () 
   assert.deepEqual(Model.orderLocations(list, null, "").map(l => l.city), ["Montreal", "New York", "Tel Aviv", "Madrid"])
 })
 
+// A stand-in for the QML ListModel LocationList.qml drives: the same four
+// operations, so what the tests apply is what the ListView sees.
+function fakeListModel(rows) {
+  return {
+    items: (rows || []).slice(),
+    get count() { return this.items.length },
+    clear() { this.items = [] },
+    append(entry) { this.items.push(entry) },
+    insert(index, entry) { this.items.splice(index, 0, entry) },
+    remove(index, count) { this.items.splice(index, count) },
+    set(index, entry) { this.items[index] = entry }
+  }
+}
+
+function applyToModel(model, ops) {
+  for (const op of ops) {
+    if (op.op === "reset") { model.clear(); for (const r of op.rows) model.append(r) }
+    else if (op.op === "remove") model.remove(op.index, op.count)
+    else if (op.op === "insert") model.insert(op.index, op.row)
+    else if (op.op === "set") model.set(op.index, op.row)
+    else assert.fail("unknown op " + op.op)
+  }
+  return model
+}
+
+function diffAndApply(oldRows, newRows) {
+  const ops = Model.diffRows(oldRows, newRows, Model.locationKey)
+  const model = applyToModel(fakeListModel(oldRows), ops)
+  // The model and the pure applier must agree, and both must equal newRows
+  // exactly — same count, same order, same content, since the keyboard cursor
+  // is an index into this list.
+  assert.deepEqual(model.items, newRows)
+  assert.deepEqual(Model.applyRowOps(oldRows, ops), newRows)
+  return ops
+}
+
+test("diffRows turns one list into the other, index for index", () => {
+  const a = loc("CA", "Canada", "Montreal", 15)
+  const b = loc("US", "United States", "New York", 23)
+  const c = loc("IL", "Israel", "Tel Aviv", 140)
+  const d = loc("ES", "Spain", "Madrid", 60)
+
+  assert.deepEqual(Model.diffRows([], [], Model.locationKey), [])
+  assert.deepEqual(diffAndApply([a, b, c], [a, b, c]), [], "an unchanged list needs no operations")
+  // First fill: nothing to preserve.
+  assert.deepEqual(diffAndApply([], [a, b]), [{ op: "reset", rows: [a, b] }])
+  diffAndApply([a, b, c, d], [])
+  diffAndApply([a, b, c, d], [b, c])
+  diffAndApply([a, b], [a, b, c, d])
+  diffAndApply([a, d], [d, a])
+  diffAndApply([a, b, c, d], [d, c, b, a])
+  diffAndApply([a, b, c], [d, c, a])
+  diffAndApply([a], [b])
+})
+
+test("diffRows touches only the rows that changed", () => {
+  const rows = []
+  for (let i = 0; i < 12; i++) rows.push(loc("C" + i, "Country " + i, "City " + i, i * 10))
+  // Typing narrows the list: contiguous blocks leave, nothing else is touched.
+  const typed = rows.filter((r, i) => i === 3 || i === 4 || i === 9)
+  const narrow = diffAndApply(rows, typed)
+  assert.ok(narrow.every(op => op.op === "remove"), JSON.stringify(narrow))
+  assert.equal(narrow.length, 3, "three contiguous runs removed, not nine rows")
+
+  // A snapshot with one new ping: exactly one set, nothing rebuilt.
+  const repinged = rows.map((r, i) => i === 5 ? Object.assign({}, r, { pingMs: 999 }) : r)
+  const one = diffAndApply(rows, repinged)
+  assert.deepEqual(one, [{ op: "set", index: 5, row: repinged[5] }])
+
+  // A row object rebuilt field-for-field is not a change.
+  assert.deepEqual(diffAndApply(rows, rows.map(r => Object.assign({}, r))), [])
+
+  // Starring a row flips one flag on one row.
+  const starred = rows.map((r, i) => Object.assign({}, r, { favorite: i === 2 }))
+  const first = diffAndApply(rows, starred)
+  assert.equal(first.length, rows.length, "adding a field to every row sets every row")
+  const restarred = starred.map((r, i) => Object.assign({}, r, { favorite: i === 7 }))
+  assert.deepEqual(diffAndApply(starred, restarred).map(op => op.op), ["set", "set"])
+})
+
+test("diffRows rebuilds wholesale rather than guess at repeated keys", () => {
+  const a = loc("CA", "Canada", "Montreal", 15)
+  const dup = loc("CA", "Canada", "Montreal", 20)
+  const b = loc("US", "United States", "New York", 23)
+  assert.deepEqual(Model.locationKey(a), Model.locationKey(dup))
+  assert.deepEqual(diffAndApply([a, dup, b], [b, a]), [{ op: "reset", rows: [b, a] }])
+  assert.deepEqual(diffAndApply([a, b], [a, dup, b]), [{ op: "reset", rows: [a, dup, b] }])
+  // A key function that cannot tell rows apart is the same situation.
+  const ops = Model.diffRows([a, b], [b, a], () => "same")
+  assert.deepEqual(ops, [{ op: "reset", rows: [b, a] }])
+  // Default key function is locationKey.
+  assert.deepEqual(Model.diffRows([a, b], [a, b]), [])
+})
+
+test("diffRows survives whatever the list does, over many random steps", () => {
+  const pool = []
+  for (let i = 0; i < 24; i++) pool.push(loc("C" + i, "Country " + i, "City " + i, i))
+  let seed = 20260911
+  const rand = n => { seed = (seed * 1103515245 + 12345) & 0x7fffffff; return seed % n }
+  let cur = pool.slice(0, 8)
+  for (let step = 0; step < 400; step++) {
+    const next = []
+    for (const row of pool) {
+      if (rand(3) === 0) continue
+      next.push(rand(5) === 0 ? Object.assign({}, row, { pingMs: rand(500) }) : row)
+    }
+    for (let s = next.length - 1; s > 0; s--) { const t = rand(s + 1); const tmp = next[s]; next[s] = next[t]; next[t] = tmp }
+    diffAndApply(cur, next)
+    cur = next
+  }
+})
+
+test("LocationList.qml drives a ListModel through diffRows, not a fresh array", () => {
+  const fs = require("node:fs"), path = require("node:path")
+  const src = fs.readFileSync(path.join(__dirname, "..", "LocationList.qml"), "utf8")
+  assert.match(src, /ListModel \{ id: rowModel; dynamicRoles: true \}/)
+  assert.match(src, /model: rowModel/)
+  assert.doesNotMatch(src, /model: root\.rows/)
+  assert.match(src, /Model\.diffRows\(modelRows, next, Model\.locationKey\)/)
+  // Every operation diffRows can emit has to be applied, or the model and the
+  // cursor's indexes drift apart.
+  for (const op of ["reset", "remove", "insert", "set"]) assert.match(src, new RegExp('op\\.op === "' + op + '"'))
+  assert.match(src, /onRowsChanged: syncRows\(\)/)
+  assert.match(src, /Component\.onCompleted: syncRows\(\)/)
+  // tests/qml/tst_rowmodel.qml runs the same loop against a real ListModel.
+  const qml = fs.readFileSync(path.join(__dirname, "qml", "tst_rowmodel.qml"), "utf8")
+  assert.match(qml, /Model\.diffRows\(modelRows, next, Model\.locationKey\)/)
+})
+
+test("sameRow compares every field a delegate can read", () => {
+  const a = loc("CA", "Canada", "Montreal", 15)
+  assert.equal(Model.sameRow(a, a), true)
+  assert.equal(Model.sameRow(a, Object.assign({}, a)), true)
+  assert.equal(Model.sameRow(a, Object.assign({}, a, { pingMs: 16 })), false)
+  assert.equal(Model.sameRow(a, Object.assign({}, a, { favorite: false })), false, "an added field is a change")
+  const extra = Object.assign({}, a, { favorite: true })
+  assert.equal(Model.sameRow(extra, a), false, "a removed field is a change")
+  assert.equal(Model.sameRow(null, null), true)
+  assert.equal(Model.sameRow(null, a), false)
+  // null and NaN-free numbers only: pingMs null on both sides is equal.
+  assert.equal(Model.sameRow(loc("X", "Y", "Z", null), loc("X", "Y", "Z", null)), true)
+})
+
 test("orderLocations' lastLocation only sets a flag, never the order", () => {
   // What makes Panel.qml's frozen `orderLast` safe: whatever the last-connected
   // city is, the rows and their indexes are identical, so a value one panel-open
