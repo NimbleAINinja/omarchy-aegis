@@ -6,7 +6,7 @@ Admin 0 Countries dataset, with Antarctica left out. Natural Earth data is in
 the public domain. Source: https://www.naturalearthdata.com/
 
 The raster and `Grid.js` are taken unchanged from the Omachron World Clock
-plugin (https://github.com/nimbleaininja/omachron, MIT), which builds it with
+plugin (https://github.com/NimbleAINinja/omarchy-omachron, MIT), which builds it with
 `tools/build-land-grid.mjs`; no vector data is shipped with this plugin.
 
 `locations.json` lists the AdGuard VPN exit cities with hand-entered

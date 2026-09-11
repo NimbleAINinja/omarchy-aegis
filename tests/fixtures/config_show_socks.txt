@@ -1,5 +1,5 @@
 Current configuration:
-	Data directory: /home/hydrox/.local/share/adguardvpn-cli
+	Data directory: /home/user/.local/share/adguardvpn-cli
 	Mode: socks
 	SOCKS port: 1085
 	SOCKS host: 0.0.0.0

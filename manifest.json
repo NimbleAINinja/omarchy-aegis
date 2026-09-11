@@ -5,8 +5,8 @@
   "version": "0.2.0",
   "author": "nimbleaininja",
   "license": "MIT",
-  "homepage": "https://github.com/nimbleaininja/aegis",
-  "repository": "https://github.com/nimbleaininja/aegis",
+  "homepage": "https://github.com/NimbleAINinja/omarchy-aegis",
+  "repository": "https://github.com/NimbleAINinja/omarchy-aegis",
   "description": "AdGuard VPN in the Omarchy bar: one-click locations on a dot-matrix world map, with a live arc to your exit city.",
   "keywords": [
     "vpn",

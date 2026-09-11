@@ -28,7 +28,7 @@ location, it connects. That is the whole interface.
 ## Install
 
 ```bash
-omarchy plugin add https://github.com/nimbleaininja/aegis.git --enable
+omarchy plugin add https://github.com/NimbleAINinja/omarchy-aegis.git --enable
 ```
 
 Or by hand: copy this folder to `~/.config/omarchy/plugins/io.github.nimbleaininja.aegis/`,
@@ -39,11 +39,11 @@ then `omarchy plugin enable io.github.nimbleaininja.aegis --section right`.
 - `adguardvpn-cli` (the official AdGuard VPN CLI), logged in
 - A sudoers rule so the CLI can start its tunnel without a password prompt.
   The CLI runs `sudo env HOME=… XDG_DATA_HOME=… DISPLAY=… DBUS_SESSION_BUS_ADDRESS=… /opt/adguardvpn_cli/adguardvpn-cli …`,
-  so the rule must match that command. Colons inside values have to be escaped:
+  so the rule must match that command. Colons inside values have to be escaped (replace `youruser` and `1000` with your user name and `id -u`):
 
   ```
   # /etc/sudoers.d/adguardvpn-cli  (mode 0440, check with: visudo -cf <file>)
-  hydrox ALL=(root) NOPASSWD: /usr/bin/env HOME=/home/hydrox XDG_DATA_HOME=/home/hydrox/.local/share DISPLAY=\:[0-9] DBUS_SESSION_BUS_ADDRESS=unix\:path=/run/user/1000/bus /opt/adguardvpn_cli/adguardvpn-cli *
+  youruser ALL=(root) NOPASSWD: /usr/bin/env HOME=/home/youruser XDG_DATA_HOME=/home/youruser/.local/share DISPLAY=\:[0-9] DBUS_SESSION_BUS_ADDRESS=unix\:path=/run/user/1000/bus /opt/adguardvpn_cli/adguardvpn-cli *
   ```
 
   When the rule is missing or broken the panel shows “sudo needs a password”.
