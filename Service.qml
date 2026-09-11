@@ -73,6 +73,10 @@ Item {
   property var config: Model.normalizeConfig(null)
   property bool configLoaded: false
   property var update: Model.normalizeUpdate(null)
+  // Epoch ms after which a failed background update check may retry; 0 means
+  // no failure is pending. Not persisted — a fresh shell start always gets
+  // its own startup check regardless of a stale backoff from last time.
+  property real _updateRetryAt: 0
   property bool autoConnectAttempted: false
   // Auto-connect is decided once, on the first definite status after the
   // shell starts. A drop later in the session notifies (and runs the kill
@@ -402,10 +406,16 @@ Item {
   }
 
   function applyUpdate(obj, notifyIfAvailable) {
+    // A failed/indeterminate check (agvpn.py returns ok: false rather than
+    // guessing upToDate) never reaches here — see jobProcess.onExited, which
+    // keeps it quiet (no noteError) and schedules a backoff retry instead.
+    // So reaching this function at all means the check actually succeeded:
+    // safe to persist lastUpdateCheck and clear any pending retry.
     if (obj.ok === false) { noteError(obj); return }
     var info = Model.normalizeUpdate(obj)
     info.checkedAt = Date.now()
     update = info
+    root._updateRetryAt = 0
     persist({ lastUpdateCheck: Math.floor(Date.now() / 1000) })
     if (notifyIfAvailable && !info.upToDate && info.latest)
       notify("AdGuard VPN update", info.latest + " is available")
@@ -454,7 +464,16 @@ Item {
     running: true
     repeat: true
     triggeredOnStart: true
-    onTriggered: root.refresh()
+    onTriggered: {
+      root.refresh()
+      // A failed background update check backs off instead of persisting
+      // lastUpdateCheck (see applyUpdate/jobProcess.onExited); retry it here
+      // once the backoff has elapsed, still gated by updateCheckDue so it
+      // never fires more than once per successful 24h cycle either.
+      if (root._updateRetryAt !== 0 && Date.now() >= root._updateRetryAt
+          && !root.updateChecking && Model.updateCheckDue(root.lastUpdateCheck, Date.now()))
+        root.checkUpdate(true)
+    }
   }
 
   Timer {
@@ -590,6 +609,11 @@ Item {
             (isAction || mutate) ? "action" : "", intent)
         if (isAction) { root._desired = -1; root.pendingLocation = "" }
         if (verb === "config" && mutate) root._configHintPending = false
+        // A failed/indeterminate background update check stays quiet (no
+        // noteError above, no lastUpdateCheck persisted in applyUpdate,
+        // which is never reached) but must still retry sooner than the next
+        // 24h-due check, without hammering the CLI — see refreshTimer.
+        if (verb === "update") root._updateRetryAt = Date.now() + 30 * 60 * 1000
       } else {
         root.applyJob(verb, obj, exitCode)
         // The "Applies on the next connect" hint only fires once the set

@@ -3,8 +3,16 @@
 # shells, and the helper's own interpreter. Logs argv. FAKE_PS_FAIL=1 → exit 1.
 # pid 42 has a fake /proc entry (see AEGIS_PROC in the tests) whose exe is
 # /usr/bin/transmission-gtk while comm is the kernel-truncated form.
+# `ps -o etimes= -p PID` (read_since's daemon-uptime lookup) is handled
+# separately: prints $FAKE_PS_ETIMES seconds, or fails like a dead pid would
+# when that is unset (so a test that never sets it exercises "no daemon").
 [[ -n ${FAKE_LOG:-} ]] && printf 'ps %s\n' "$*" >> "$FAKE_LOG"
 [[ -n ${FAKE_PS_FAIL:-} ]] && exit 1
+if [[ "$*" == *etimes* ]]; then
+  [[ -n ${FAKE_PS_ETIMES:-} ]] || exit 1
+  printf '%s\n' "$FAKE_PS_ETIMES"
+  exit 0
+fi
 cat <<'LIST'
    11 firefox
    42 transmission-gt

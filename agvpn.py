@@ -223,6 +223,12 @@ def parse_config(text):
 
 
 def parse_update(text, version_text):
+    """upToDate is True/False only once check-update's own output was
+    recognised (either the "latest version" message or a parseable "new
+    version" line, see the fixtures); otherwise it is None, meaning the
+    check itself failed or produced something this parser doesn't know
+    (e.g. no network) — that must never be read as "up to date" just
+    because --version (which needs no network) still answered."""
     clean = strip_ansi(text)
     current = None
     m = VERSION.search(strip_ansi(version_text or ""))
@@ -238,9 +244,9 @@ def parse_update(text, version_text):
         if m:
             latest = m.group(1)
             break
-    if latest is None:
-        return {"upToDate": True, "current": current, "latest": None}
-    return {"upToDate": latest == current, "current": current, "latest": latest}
+    if latest is not None:
+        return {"upToDate": latest == current, "current": current, "latest": latest}
+    return {"upToDate": None, "current": current, "latest": None}
 
 
 # -------------------------------------------------------------- locations --
@@ -303,21 +309,36 @@ def read_counters(iface_dir):
 
 
 def read_since(directory, connected_at=None):
-    """Epoch seconds the tunnel came up: from the daemon pid's elapsed time,
-    else from the timestamp of the last VPN_SS_CONNECTED log line."""
+    """Epoch seconds the *current* connection came up.
+
+    The daemon (vpn.pid) stays running across a location switch — it just
+    disconnects and reconnects on the same process — so its own elapsed time
+    (ps etimes) is the daemon's uptime, not this connection's. tunnel.log's
+    last VPN_SS_CONNECTED line is the better source: prefer it, but only
+    when it is not older than the daemon itself (a leftover line from a
+    previous, already-rotated-out daemon would otherwise understate the
+    uptime). With both available, use whichever is more recent
+    (max(daemon start, last connect)); with only one, use that one."""
+    daemon_start = None
     try:
         pid = int((Path(directory) / "vpn.pid").read_text().strip())
-        out = subprocess.run(["ps", "-o", "etimes=", "-p", str(pid)], capture_output=True, text=True, timeout=3)
+        ps = os.environ.get("AEGIS_PS") or shutil.which("ps") or "ps"
+        out = subprocess.run([ps, "-o", "etimes=", "-p", str(pid)], capture_output=True, text=True, timeout=3)
         if out.returncode == 0 and out.stdout.strip().isdigit():
-            return int(time.time()) - int(out.stdout.strip())
+            daemon_start = int(time.time()) - int(out.stdout.strip())
     except (OSError, ValueError, subprocess.SubprocessError):
         pass
+    log_connected = None
     if connected_at:
         try:
-            return int(datetime.strptime(connected_at, LOG_STAMP).timestamp())
+            log_connected = int(datetime.strptime(connected_at, LOG_STAMP).timestamp())
         except ValueError:
             pass
-    return None
+    if log_connected is not None and daemon_start is not None:
+        return max(daemon_start, log_connected)
+    if log_connected is not None:
+        return log_connected
+    return daemon_start
 
 
 # -------------------------------------------------------------------- cli --
@@ -651,7 +672,10 @@ def verb_update_check():
     rc, out, err = run_cli(["check-update"])
     rc2, version, _ = run_cli(["--version"])
     result = parse_update(out + "\n" + err, version)
-    if result["current"] is None and result["latest"] is None:
+    if result["upToDate"] is None:
+        # check-update's own output wasn't recognised (e.g. no network 20s
+        # after login) — report the failure rather than guessing up to date;
+        # Service.qml must not persist this as a successful check.
         code, message = classify_failure(out, err, "parse")
         raise CliError(code, message if code != "parse" else "could not read update status")
     result["ok"] = True
@@ -664,14 +688,50 @@ PROCESS_NAME = re.compile(r"^[A-Za-z0-9._+-]{1,64}$")
 COMM_LEN = 15  # the kernel truncates a process's comm to this many bytes
 
 
+# Process names a VPN kill switch must never offer or touch: shell
+# interpreters, this helper's own interpreter and the `ps` it shells out to,
+# init/session/login, the desktop's IPC and audio backbone, the compositor
+# and bar shell (whichever binary name it runs under), the VPN CLI itself,
+# and privilege escalation. Keep this in sync with PROCS_DENY in Model.js
+# (that file points back here) — this list is the one verb_kill actually
+# enforces against pkill; Model.js additionally keeps the UI from ever
+# offering or accepting these names in the first place.
+PROCS_DENY = frozenset([
+    "sh", "bash", "zsh", "fish", "dash", "python3", "python", "ps",
+    "systemd", "init", "sddm", "gdm", "gdm3", "lightdm",
+    "dbus-daemon", "dbus-broker", "pipewire", "wireplumber",
+    "Hyprland", "hyprland", "quickshell", "qs", "omarchy-shell",
+    "adguardvpn-cli", "sudo", "env",
+])
+PROCS_DENY_LOWER = frozenset(n.lower() for n in PROCS_DENY)
+PROCS_DENY_PREFIXES = ("dbus-broker", "systemd-", "pipewire")
+PROCS_CAP = 400
+
+
+def _is_denied(name):
+    # pkill -x matches the exact (truncated) comm case-sensitively, but the
+    # deny list itself is compared case-insensitively so e.g. "HYPRLAND" is
+    # refused too, not just the exact spellings on the list.
+    lower = name.lower()
+    return lower in PROCS_DENY_LOWER or lower.startswith(PROCS_DENY_PREFIXES)
+
+
 def verb_kill(names):
+    """Kill listed apps by exact process name via pkill -x. Never touches a
+    deny-listed name (PROCS_DENY) even if it slipped in through free text
+    (KillSwitchView's field or a hand-edited killApps setting string) —
+    Model.js keeps the UI from offering or accepting one, but this is the
+    layer that actually calls pkill, so it enforces the rule again."""
     pkill = os.environ.get("AEGIS_PKILL") or shutil.which("pkill") or "pkill"
-    killed, missing, rejected = [], [], []
+    killed, missing, rejected, skipped = [], [], [], []
     for name in names:
         if not (name or "").strip():
             continue
         if not PROCESS_NAME.match(name):
             rejected.append(name)
+            continue
+        if _is_denied(name):
+            skipped.append(name)
             continue
         # pkill -x compares against the truncated comm, so a long executable
         # name only matches by its first COMM_LEN characters.
@@ -680,17 +740,7 @@ def verb_kill(names):
             (killed if p.returncode == 0 else missing).append(name)
         except (OSError, subprocess.SubprocessError):
             missing.append(name)
-    return {"ok": True, "killed": killed, "missing": missing, "rejected": rejected}
-
-
-# Process names a VPN kill switch must never offer or touch.
-PROCS_DENY = frozenset([
-    "ps", "sh", "bash", "zsh", "fish", "python3", "python", "systemd", "dbus-daemon", "dbus-broker",
-    "pipewire", "wireplumber", "Hyprland", "hyprland", "quickshell", "omarchy-shell", "adguardvpn-cli",
-    "sudo", "env",
-])
-PROCS_DENY_PREFIXES = ("dbus-broker", "systemd-", "pipewire")
-PROCS_CAP = 400
+    return {"ok": True, "killed": killed, "missing": missing, "rejected": rejected, "skipped": skipped}
 
 
 def verb_procs():
@@ -721,8 +771,7 @@ def verb_procs():
                 name = exe
         except OSError:
             pass
-        if (not name or name in seen or name in PROCS_DENY or name.startswith(PROCS_DENY_PREFIXES)
-                or not PROCESS_NAME.match(name)):
+        if not name or name in seen or _is_denied(name) or not PROCESS_NAME.match(name):
             continue
         seen.add(name)
         names.append(name)

@@ -1,0 +1,1 @@
+Error: failed to check for updates: Get "https://static.adguard-vpn-cli.com/version.json": dial tcp: lookup static.adguard-vpn-cli.com: no such host

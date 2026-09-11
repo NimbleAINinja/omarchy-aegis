@@ -300,6 +300,27 @@ test("parseAppList splits, trims, dedupes and drops invalid names; formatAppList
   assert.equal(Model.formatAppList(null), "")
 })
 
+test("isDeniedApp refuses session-critical process names case-insensitively", () => {
+  assert.equal(Model.isDeniedApp("bash"), true)
+  assert.equal(Model.isDeniedApp("BASH"), true)
+  assert.equal(Model.isDeniedApp("Hyprland"), true)
+  assert.equal(Model.isDeniedApp("hyprland"), true)
+  assert.equal(Model.isDeniedApp("HYPRLAND"), true)
+  assert.equal(Model.isDeniedApp("quickshell"), true)
+  assert.equal(Model.isDeniedApp("qs"), true)
+  assert.equal(Model.isDeniedApp("adguardvpn-cli"), true)
+  assert.equal(Model.isDeniedApp("systemd-logind"), true) // prefix match
+  assert.equal(Model.isDeniedApp("firefox"), false)
+  assert.equal(Model.isDeniedApp("systemd"), true)
+})
+
+test("parseAppList and addApp never admit a deny-listed name, even edited by hand", () => {
+  assert.deepEqual(Model.parseAppList("firefox, bash, Hyprland, SUDO, qs"), ["firefox"])
+  assert.deepEqual(Model.addApp(["firefox"], "bash"), ["firefox"])
+  assert.deepEqual(Model.addApp(["firefox"], "Hyprland"), ["firefox"])
+  assert.deepEqual(Model.addApp(["firefox"], "omarchy-shell"), ["firefox"])
+})
+
 test("tunnelLoss splits connected→down into drop vs requested disconnect", () => {
   assert.equal(Model.tunnelLoss("connected", "disconnected", false), "drop")
   assert.equal(Model.tunnelLoss("connected", "disconnected", undefined), "drop")

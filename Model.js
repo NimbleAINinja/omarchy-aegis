@@ -379,6 +379,29 @@ var MODES = ["tun", "socks"]
 var PROTOCOLS = ["auto", "http2", "quic"]
 var APP_NAME = /^[A-Za-z0-9._+-]{1,64}$/
 
+// Process names a VPN kill switch must never offer or touch, checked
+// case-insensitively. Keep this in sync with PROCS_DENY / PROCS_DENY_PREFIXES
+// in agvpn.py (that file points back here) — the CLI helper is the one that
+// actually calls pkill and enforces this too, but the UI should never even
+// offer these names as suggestions or accept them into killApps.
+var PROCS_DENY = [
+  "sh", "bash", "zsh", "fish", "dash", "python3", "python", "ps",
+  "systemd", "init", "sddm", "gdm", "gdm3", "lightdm",
+  "dbus-daemon", "dbus-broker", "pipewire", "wireplumber",
+  "hyprland", "quickshell", "qs", "omarchy-shell",
+  "adguardvpn-cli", "sudo", "env"
+]
+var PROCS_DENY_PREFIXES = ["dbus-broker", "systemd-", "pipewire"]
+
+function isDeniedApp(name) {
+  var lower = str(name).toLowerCase()
+  if (PROCS_DENY.indexOf(lower) !== -1) return true
+  for (var i = 0; i < PROCS_DENY_PREFIXES.length; i++) {
+    if (lower.indexOf(PROCS_DENY_PREFIXES[i]) === 0) return true
+  }
+  return false
+}
+
 function normalizeConfig(obj) {
   var o = obj && typeof obj === "object" ? obj : {}
   var mode = str(o.mode).toLowerCase()
@@ -417,7 +440,7 @@ function parseAppList(text) {
   var out = []
   for (var i = 0; i < parts.length; i++) {
     var name = parts[i].trim()
-    if (name === "" || !APP_NAME.test(name) || seen[name]) continue
+    if (name === "" || !APP_NAME.test(name) || isDeniedApp(name) || seen[name]) continue
     seen[name] = true
     out.push(name)
   }
@@ -570,7 +593,7 @@ function filterProcs(procs, query, chosen, limit) {
 function addApp(list, name) {
   var out = toList(list).map(str)
   var clean = str(name).trim()
-  if (!APP_NAME.test(clean) || out.indexOf(clean) !== -1) return out
+  if (!APP_NAME.test(clean) || isDeniedApp(clean) || out.indexOf(clean) !== -1) return out
   out.push(clean)
   return out
 }
@@ -674,6 +697,7 @@ if (typeof module !== "undefined") {
     normalizeUpdate: normalizeUpdate,
     parseAppList: parseAppList,
     formatAppList: formatAppList,
+    isDeniedApp: isDeniedApp,
     tunnelLoss: tunnelLoss,
     settleStatus: settleStatus,
     errorProtected: errorProtected,

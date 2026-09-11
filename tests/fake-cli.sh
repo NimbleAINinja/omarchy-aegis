@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Stand-in for adguardvpn-cli driven by $FAKE_MODE; prints fixtures verbatim.
-#   FAKE_MODE=connected|disconnected|connecting|login|sudo|hang|excl2|selective|socks|newversion
+#   FAKE_MODE=connected|disconnected|connecting|login|sudo|hang|excl2|selective|socks|newversion|updatefail
 # Every invocation is appended to $FAKE_LOG when set, so tests can assert argv.
 fixtures="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/fixtures"
 mode="${FAKE_MODE:-connected}"
@@ -47,6 +47,7 @@ case "$1" in
   check-update)
     # The real CLI exits 17 even when up to date.
     if [[ $mode == newversion ]]; then cat "$fixtures/check_update_new.txt"; exit 0; fi
+    if [[ $mode == updatefail ]]; then cat "$fixtures/check_update_failed.txt" >&2; exit 1; fi
     cat "$fixtures/check_update_latest.txt"; exit 17 ;;
   --version|-v) echo "AdGuard VPN CLI v1.7.12" ;;
   *) echo "The following argument was not expected: $1" >&2; exit 106 ;;

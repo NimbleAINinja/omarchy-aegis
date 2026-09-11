@@ -9,8 +9,11 @@ import os
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
+from datetime import datetime
 from pathlib import Path
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parent.parent
 FIX = ROOT / "tests" / "fixtures"
@@ -189,6 +192,57 @@ class Counters(unittest.TestCase):
 
     def test_missing_iface_is_zero(self):
         self.assertEqual(agvpn.read_counters(Path("/nonexistent/tunX")), (0, 0))
+
+
+FAKE_PS = ROOT / "tests" / "fake-ps.sh"
+
+
+class ReadSince(unittest.TestCase):
+    """The daemon (vpn.pid) outlives a location switch — tunnel_tail.txt shows
+    one daemon serving several consecutive connects — so its own ps etimes is
+    the daemon's uptime, not the current connection's. read_since must prefer
+    the tunnel log's latest connect, only falling back to (or being floored
+    by) the daemon's start time when the log has nothing usable."""
+
+    def _stamp(self, epoch):
+        return datetime.fromtimestamp(epoch).strftime(agvpn.LOG_STAMP)
+
+    def test_several_connects_in_one_daemon_uses_the_latest_connect(self):
+        with tempfile.TemporaryDirectory() as d:
+            Path(d, "vpn.pid").write_text("4242\n")
+            now = time.time()
+            last_connect = now - 60          # switched location a minute ago
+            with mock.patch.dict(os.environ, {"AEGIS_PS": str(FAKE_PS), "FAKE_PS_ETIMES": "3600"}):
+                since = agvpn.read_since(d, self._stamp(last_connect))
+        self.assertAlmostEqual(since, int(last_connect), delta=2)
+
+    def test_no_log_entries_falls_back_to_daemon_start(self):
+        with tempfile.TemporaryDirectory() as d:
+            Path(d, "vpn.pid").write_text("4242\n")
+            now = time.time()
+            with mock.patch.dict(os.environ, {"AEGIS_PS": str(FAKE_PS), "FAKE_PS_ETIMES": "120"}):
+                since = agvpn.read_since(d, None)
+        self.assertAlmostEqual(since, int(now - 120), delta=2)
+
+    def test_stale_log_older_than_daemon_uses_daemon_start(self):
+        with tempfile.TemporaryDirectory() as d:
+            Path(d, "vpn.pid").write_text("4242\n")
+            now = time.time()
+            stale_connect = now - 7200       # a leftover line from a rotated-out daemon
+            with mock.patch.dict(os.environ, {"AEGIS_PS": str(FAKE_PS), "FAKE_PS_ETIMES": "60"}):
+                since = agvpn.read_since(d, self._stamp(stale_connect))
+        self.assertAlmostEqual(since, int(now - 60), delta=2)
+
+    def test_no_pid_file_falls_back_to_log(self):
+        with tempfile.TemporaryDirectory() as d:
+            now = time.time()
+            since = agvpn.read_since(d, self._stamp(now - 30))
+        self.assertAlmostEqual(since, int(now - 30), delta=2)
+
+    def test_nothing_usable_is_none(self):
+        with tempfile.TemporaryDirectory() as d:
+            self.assertIsNone(agvpn.read_since(d, None))
+            self.assertIsNone(agvpn.read_since(d, "garbage"))
 
 
 def run_verb(*args, mode="connected", env_extra=None, cli=None, timeout=None):
@@ -429,6 +483,15 @@ class ParseUpdate(unittest.TestCase):
         u = agvpn.parse_update(fixture("check_update_new.txt"), "AdGuard VPN CLI v1.7.12")
         self.assertEqual(u, {"upToDate": False, "current": "1.7.12", "latest": "1.8.3"})
 
+    def test_unrecognised_output_is_indeterminate_not_up_to_date(self):
+        # e.g. no network: --version still answers (it needs none) but
+        # check-update's own output isn't a recognised message, so this must
+        # not be reported as upToDate: True.
+        u = agvpn.parse_update(fixture("check_update_failed.txt"), "AdGuard VPN CLI v1.7.12")
+        self.assertIsNone(u["upToDate"])
+        self.assertEqual(u["current"], "1.7.12")
+        self.assertIsNone(u["latest"])
+
 
 class ConfigVerbs(unittest.TestCase):
     check_json = Verbs.check_json
@@ -498,6 +561,14 @@ class ConfigVerbs(unittest.TestCase):
         self.assertFalse(j["upToDate"])
         self.assertEqual(j["latest"], "1.8.3")
 
+    def test_update_check_failure_is_ok_false_not_up_to_date(self):
+        rc, out, _ = run_verb("update-check", mode="updatefail")
+        j = self.check_json(out)
+        self.assertFalse(j["ok"])
+        self.assertNotIn("upToDate", j)
+        self.assertIn(j["code"], ("parse", "network"))
+        self.assertLessEqual(len(j["error"]), 160)
+
     def test_kill_uses_exact_names_only(self):
         with tempfile.TemporaryDirectory() as d:
             log = Path(d, "argv.log")
@@ -509,9 +580,36 @@ class ConfigVerbs(unittest.TestCase):
         self.assertEqual(j["killed"], ["sleepy"])
         self.assertEqual(j["missing"], ["ghost"])
         self.assertEqual(j["rejected"], ["bad name"])
+        self.assertEqual(j["skipped"], [])
         self.assertIn("pkill -x -- sleepy", argv)
         self.assertNotIn("-f", argv)
         self.assertNotIn("bad name", argv)
+
+    def test_kill_refuses_denylisted_names_even_when_well_formed(self):
+        with tempfile.TemporaryDirectory() as d:
+            log = Path(d, "argv.log")
+            # "SUDO" and "Hyprland" aren't the exact-case entries pkill -x
+            # would ever be asked to match against here — the deny check
+            # must still catch them case-insensitively, before pkill runs.
+            rc, out, _ = run_verb("kill", "bash", "Hyprland", "SUDO", "adguardvpn-cli", "sleepy",
+                                  env_extra={"FAKE_LOG": str(log), "AEGIS_PKILL": str(ROOT / "tests" / "fake-pkill.sh")})
+            argv = log.read_text()
+        j = self.check_json(out)
+        self.assertTrue(j["ok"])
+        self.assertEqual(j["killed"], ["sleepy"])
+        self.assertEqual(j["missing"], [])
+        self.assertEqual(j["rejected"], [])
+        self.assertEqual(sorted(j["skipped"]), sorted(["bash", "Hyprland", "SUDO", "adguardvpn-cli"]))
+        self.assertNotIn("bash", argv)
+        self.assertNotIn("Hyprland", argv)
+        self.assertNotIn("SUDO", argv)
+        self.assertNotIn("adguardvpn-cli", argv)
+
+    def test_kill_denylist_prefixes_and_is_case_insensitive(self):
+        for name in ("systemd-logind", "SYSTEMD-LOGIND", "pipewire-pulse", "dbus-broker-launch"):
+            self.assertTrue(agvpn._is_denied(name), name)
+        for name in ("firefox", "sleepy", "transmission-gtk"):
+            self.assertFalse(agvpn._is_denied(name), name)
 
     def test_procs_lists_unique_sorted_user_process_names(self):
         with tempfile.TemporaryDirectory() as proc:
