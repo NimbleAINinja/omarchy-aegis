@@ -245,11 +245,15 @@ Panel {
   }
   onListCountChanged: ensureCursor()
 
+  // A connect is not a reason to move the user somewhere else: clicking a city
+  // on the map, or connecting from the settings tab, used to yank the panel
+  // back to the location list the moment the tunnel came up, hiding the very
+  // view the click came from. The only state change that still forces a view is
+  // being signed out, where nothing else is usable.
   Connections {
     target: vpn
     function onPersist(values) { root.persistSettings(values) }
     function onVpnStateChanged() { if (vpn.vpnState === "logged_out") root.view = "account" }
-    function onActionFinished(verb, ok) { if (ok && verb === "connect") root.view = "list" }
   }
 
   // Views take the service through a differently named alias: a `vpn: vpn`

@@ -335,6 +335,20 @@ test("Panel.qml looks a country up in a map, not by walking the location list", 
   assert.match(panel, /function countryFor\(iso\) \{ return Model\.countryFrom\(countryByIso, iso\) \}/)
 })
 
+test("Panel.qml leaves the view alone when a connect finishes", () => {
+  const fs = require("node:fs"), path = require("node:path")
+  const panel = fs.readFileSync(path.join(__dirname, "..", "Panel.qml"), "utf8")
+  const conn = /Connections \{[\s\S]*?\n  \}/.exec(panel)
+  assert.ok(conn, "Connections on the service present")
+  // Clicking a city on the map connects from whatever view is on screen; the
+  // panel must stay there instead of snapping back to the list.
+  assert.doesNotMatch(conn[0], /onActionFinished/)
+  assert.doesNotMatch(panel, /root\.view = "list"/)
+  // Being signed out is the one state change that still forces a view: it is
+  // the only one the user can act on.
+  assert.match(conn[0], /onVpnStateChanged\(\) \{ if \(vpn\.vpnState === "logged_out"\) root\.view = "account" \}/)
+})
+
 test("Panel.qml's footer model is constant and in footerAction's order", () => {
   const fs = require("node:fs"), path = require("node:path")
   const panel = fs.readFileSync(path.join(__dirname, "..", "Panel.qml"), "utf8")
