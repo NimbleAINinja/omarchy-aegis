@@ -56,8 +56,8 @@ Panel {
   }
 
   // --- ui state --------------------------------------------------------------------
-  // list | exclusions | account | settings | killswitch. Remembered for as
-  // long as the shell runs, so closing the panel on the settings tab and
+  // list | exclusions | account | settings | killswitch | traffic. Remembered
+  // for as long as the shell runs, so closing the panel on the settings tab and
   // reopening it lands back on the settings tab; never persisted, so every
   // shell start opens on the list.
   property string view: "list"
@@ -68,7 +68,7 @@ Panel {
   // model is a literal there (a Repeater given a new model rebuilds every
   // button, so it must not be an expression); tests/model.test.js reads the
   // literal and checks this number against its length.
-  readonly property int footerLastIndex: 6
+  readonly property int footerLastIndex: 7
   property bool cursorActive: false
   property string query: ""
   property double nowMs: Date.now()
@@ -198,7 +198,8 @@ Panel {
     else if (index === 2) switchView("account")
     else if (index === 3) switchView("settings")
     else if (index === 4) switchView("killswitch")
-    else if (index === 5) cycleBarMode()
+    else if (index === 5) switchView("traffic")
+    else if (index === 6) cycleBarMode()
     // The footer's refresh button is an explicit ask: refetch the location
     // list even if the one on screen is still within its TTL.
     else vpn.refreshAll(true)
@@ -216,6 +217,8 @@ Panel {
   }
 
   function handleTextKey(t) {
+    // Before the lowercasing below, where plain t is the VPN toggle.
+    if (t === "T") { switchView("traffic"); return }
     var k = t.toLowerCase()
     if (k === "t") { vpn.toggleVpn(); return }
     if (k === "d") { if (vpn.active) vpn.down(); return }
@@ -281,6 +284,8 @@ Panel {
     id: vpn
     settings: root.settings
     panelOpen: root.opened
+    // The graph wants a sample a second, and only while it is on screen.
+    trafficVisible: root.opened && root.view === "traffic"
   }
 
   Timer {
@@ -320,7 +325,7 @@ Panel {
     }
     function view(name: string): string {
       var v = String(name)
-      if (["list", "exclusions", "account", "settings", "killswitch"].indexOf(v) === -1) return "unknown view"
+      if (["list", "exclusions", "account", "settings", "killswitch", "traffic"].indexOf(v) === -1) return "unknown view"
       root.switchView(v)
       if (root.view !== v) root.switchView(v)
       return root.view
@@ -580,7 +585,8 @@ Panel {
         sourceComponent: root.view === "exclusions" ? exclusionsView
           : (root.view === "account" ? accountView
           : (root.view === "settings" ? settingsView
-          : (root.view === "killswitch" ? killSwitchView : locationView)))
+          : (root.view === "killswitch" ? killSwitchView
+          : (root.view === "traffic" ? trafficView : locationView))))
       }
     }
   }
@@ -611,7 +617,7 @@ Panel {
           // buttons, to change one glyph on one of them. The per-button
           // expressions now live in the delegate, where they change a
           // property on a button that stays put.
-          model: ["list", "exclusions", "account", "settings", "killswitch", "barmode", "refresh"]
+          model: ["list", "exclusions", "account", "settings", "killswitch", "traffic", "barmode", "refresh"]
           PanelActionButton {
             required property string modelData
             required property int index
@@ -626,6 +632,7 @@ Panel {
               if (modelData === "account") return "󰀄"
               if (modelData === "settings") return "󰒓"
               if (modelData === "killswitch") return vpn.killSwitch ? "󰯆" : "󰯇"
+              if (modelData === "traffic") return "󰄨"
               if (modelData === "barmode") return root.barMode === "iso" ? "󰬴" : (root.barMode === "rate" ? "󰓅" : "󰒘")
               return "󰑐"
             }
@@ -635,6 +642,7 @@ Panel {
               if (modelData === "account") return "Account (a)"
               if (modelData === "settings") return "Settings (s)"
               if (modelData === "killswitch") return vpn.killSwitch ? "Kill switch armed (K)" : "Kill switch (K)"
+              if (modelData === "traffic") return "Traffic (T)"
               if (modelData === "barmode") return "Bar shows " + root.barMode
               return "Refresh (r)"
             }
@@ -662,6 +670,7 @@ Panel {
   Component { id: accountView; AccountView { panel: root; vpn: root.service } }
   Component { id: settingsView; SettingsView { panel: root; vpn: root.service } }
   Component { id: killSwitchView; KillSwitchView { panel: root; vpn: root.service } }
+  Component { id: trafficView; TrafficView { panel: root; vpn: root.service } }
 
   // --- assets -------------------------------------------------------------------------
   property var landGrid: null

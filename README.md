@@ -25,6 +25,8 @@ location, it connects. That is the whole interface.
 - Hover the map: the nearest city lights up with its name, click to connect
 - The row under your cursor rings its city on the map
 - Kill switch has its own tab (skull in the footer, filled and lit while armed)
+- Traffic tab: a dot-matrix graph of the last couple of minutes of throughput,
+  sent above the centre line and received below, each half on its own scale
 - Reopens on the tab you left it on; `Esc` just closes, from any tab
 - Daily CLI update check with a one-click update
 - Fully keyboard driven
@@ -77,6 +79,7 @@ then `omarchy plugin enable io.github.nimbleaininja.aegis --section right`.
 | `a` | account |
 | `s` | settings |
 | `K` (Shift+k) | kill switch tab (plain `k` is cursor-up) |
+| `T` (Shift+t) | traffic tab (plain `t` toggles the VPN) |
 | `L` (Shift+l) | back to the locations (plain `l` is cursor-right) |
 | `h` / `l` | switch chips (mode, protocol) in settings |
 | `p` | pause or resume the exclusion under the cursor |
@@ -98,7 +101,7 @@ omarchy-shell io.github.nimbleaininja.aegis down
 omarchy-shell io.github.nimbleaininja.aegis toggleVpn
 omarchy-shell io.github.nimbleaininja.aegis status           # JSON
 omarchy-shell io.github.nimbleaininja.aegis barMode rate     # icon | iso | rate
-omarchy-shell io.github.nimbleaininja.aegis view exclusions  # list | exclusions | account | settings | killswitch
+omarchy-shell io.github.nimbleaininja.aegis view exclusions  # list | exclusions | account | settings | killswitch | traffic
 ```
 
 ## Configure

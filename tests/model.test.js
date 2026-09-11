@@ -390,7 +390,7 @@ test("Panel.qml's footer model is constant and in footerAction's order", () => {
   const panel = fs.readFileSync(path.join(__dirname, "..", "Panel.qml"), "utf8")
   // The map pin comes first: the way back to the locations is where the eye
   // lands, and it is the view every other one toggles back to.
-  const ids = ["list", "exclusions", "account", "settings", "killswitch", "barmode", "refresh"]
+  const ids = ["list", "exclusions", "account", "settings", "killswitch", "traffic", "barmode", "refresh"]
   const model = /Repeater \{[\s\S]*?\n *model: (\[[^\]]*\])/.exec(panel)
   assert.ok(model, "footer Repeater model present")
   assert.deepEqual(JSON.parse(model[1].replace(/"/g, '"')), ids)
@@ -405,13 +405,16 @@ test("Panel.qml's footer model is constant and in footerAction's order", () => {
   assert.match(action[0], /index === 2\) switchView\("account"\)/)
   assert.match(action[0], /index === 3\) switchView\("settings"\)/)
   assert.match(action[0], /index === 4\) switchView\("killswitch"\)/)
-  assert.match(action[0], /index === 5\) cycleBarMode\(\)/)
+  assert.match(action[0], /index === 5\) switchView\("traffic"\)/)
+  assert.match(action[0], /index === 6\) cycleBarMode\(\)/)
   assert.match(action[0], /else vpn\.refreshAll\(true\)/)
   // Every button has a glyph and a tooltip of its own.
   const delegate = /Repeater \{[\s\S]*?\n {8}\}/.exec(panel)
   for (const id of ids.slice(0, -1)) assert.match(delegate[0], new RegExp(`modelData === "${id}"`))
   assert.match(delegate[0], /if \(modelData === "list"\) return "󰍎"/)
   assert.match(delegate[0], /if \(modelData === "list"\) return "Locations \(L\)"/)
+  assert.match(delegate[0], /if \(modelData === "traffic"\) return "󰄨"/)
+  assert.match(delegate[0], /if \(modelData === "traffic"\) return "Traffic \(T\)"/)
   // The cursor clamp is one number, and it has to be the last index of that
   // model — add a button and both move together.
   assert.match(panel, new RegExp(`readonly property int footerLastIndex: ${ids.length - 1}\\b`))
@@ -422,9 +425,45 @@ test("Panel.qml's footer model is constant and in footerAction's order", () => {
   const keys = /function handleTextKey\(t\) \{[\s\S]*?\n  \}/.exec(panel)
   assert.ok(keys, "handleTextKey present")
   assert.match(keys[0], /if \(t === "L"\) \{ switchView\("list"\); return \}/)
+  // Shift+T is the traffic tab and plain t toggles the VPN, so the capital
+  // has to be tested before the text is lowercased at all.
+  assert.match(keys[0], /if \(t === "T"\) \{ switchView\("traffic"\); return \}[\s\S]*var k = t\.toLowerCase\(\)/)
   // switchView("list") must land on the list from the list, not toggle away:
   // "list" is the fallback of its own toggle.
   assert.match(panel, /view = view === next \? "list" : next/)
+})
+
+test("the traffic tab is reachable from the footer, the keyboard and IPC, and only samples while shown", () => {
+  const fs = require("node:fs"), path = require("node:path")
+  const dir = path.join(__dirname, "..")
+  const panel = fs.readFileSync(path.join(dir, "Panel.qml"), "utf8")
+  // Every way in: the view Loader, the Component that feeds it, and the IPC
+  // whitelist that `view traffic` has to pass.
+  assert.match(panel, /root\.view === "traffic" \? trafficView : locationView/)
+  assert.match(panel, /Component \{ id: trafficView; TrafficView \{ panel: root; vpn: root\.service \} \}/)
+  assert.match(panel, /\["list", "exclusions", "account", "settings", "killswitch", "traffic"\]\.indexOf\(v\) === -1/)
+  // The faster sampler costs a process spawn a second, so it is tied to the
+  // tab being on screen — not merely to the panel being open.
+  assert.match(panel, /trafficVisible: root\.opened && root\.view === "traffic"/)
+  // No rows of its own: the cursor has to step header → footer without
+  // landing anywhere, and nothing in the view swallows keys.
+  const view = fs.readFileSync(path.join(dir, "TrafficView.qml"), "utf8")
+  assert.match(view, /readonly property int count: 0/)
+  assert.match(view, /readonly property bool editing: false/)
+  // The legend reads its peaks off the very object the graph scaled its dots
+  // from, so the two can never disagree.
+  assert.match(view, /readonly property var sampleWindow: graph\.columns/)
+  assert.match(view, /history: vpn \? vpn\.trafficHistory : \[\]/)
+  assert.match(view, /floorRate: Model\.TRAFFIC_FLOOR/)
+  assert.match(view, /dotPitch: Style\.space\(4\)/)
+  // "Not connected" is the caption whenever there is no tunnel to measure.
+  assert.match(view, /if \(!vpn \|\| !vpn\.connected\) return "Not connected"/)
+  // The graph itself stays free of the shell's modules, or it could not be
+  // linted strictly or rendered headlessly.
+  const graph = fs.readFileSync(path.join(dir, "TrafficGraph.qml"), "utf8")
+  assert.doesNotMatch(graph, /import qs\./)
+  assert.match(graph, /import QtQuick\nimport "Model\.js" as Model/)
+  assert.match(fs.readFileSync(path.join(dir, "tests", "run"), "utf8"), /"\$lint" TrafficGraph\.qml/)
 })
 
 test("Panel.qml freezes both ordering inputs for as long as the panel is open", () => {

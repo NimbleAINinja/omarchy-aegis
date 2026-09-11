@@ -37,7 +37,7 @@ if [[ -x $lint ]]; then
   "$lint" WorldMap.qml
   "$lint" TrafficGraph.qml
   # The rest import Quickshell and the shell's own modules; only hard errors matter there.
-  for f in Panel.qml Service.qml LocationList.qml ExclusionsView.qml AccountView.qml SettingsView.qml KillSwitchView.qml; do
+  for f in Panel.qml Service.qml LocationList.qml ExclusionsView.qml AccountView.qml SettingsView.qml KillSwitchView.qml TrafficView.qml; do
     [[ -s $f ]] || continue
     if "$lint" -I /usr/share/omarchy/shell "$f" 2>&1 | grep -qi "error"; then
       "$lint" -I /usr/share/omarchy/shell "$f" 2>&1 | grep -i "error" >&2
