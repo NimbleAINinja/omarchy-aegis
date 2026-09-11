@@ -61,6 +61,18 @@ Item {
   // shorter way round crosses the antimeridian).
   readonly property var segments: computeSegments(home, exit, linkState, width, height, latMin, latMax)
 
+  // The dynamic layer only has to follow `phase` while the beads ride the
+  // link or the link is drawing itself in; the disconnected pulse ring
+  // animates itself (see homePulse).
+  readonly property bool beadsVisible: linkState === "connected" && segments.length > 0
+  readonly property bool phaseActive: home !== null && (beadsVisible || linkState === "connecting")
+
+  // Home pulse, while there is no link. Ramps out to dotPitch * 2.2 and fades.
+  readonly property bool pulseVisible: home !== null && linkState === "none" && Link.finiteCoord(home)
+  property real pulseT: 0
+  readonly property real pulseRadius: dotPitch * 2.2 * pulseT
+  readonly property real pulseOpacity: 0.5 * (1 - pulseT)
+
   function projectX(lon) { return (lon + 180) / 360 * width }
   function projectY(lat) { return (latMax - lat) / (latMax - latMin) * height }
   function lonAt(x) { return x / width * 360 - 180 }
@@ -236,14 +248,7 @@ Item {
       var hx = projectX(home.lon)
       var hy = projectY(home.lat)
       var radius = dotPitch * 0.6
-      if (linkState === "none") {
-        var t = (phase % 100) / 100
-        ctx.beginPath()
-        ctx.arc(hx, hy, dotPitch * 2.2 * t, 0, Math.PI * 2)
-        ctx.strokeStyle = css(accent, 0.5 * (1 - t))
-        ctx.lineWidth = 1
-        ctx.stroke()
-      }
+      // The pulse ring around it is the homePulse item, below this canvas.
       ctx.beginPath()
       ctx.arc(hx, hy, radius, 0, Math.PI * 2)
       ctx.fillStyle = css(accent, 1)
@@ -343,7 +348,7 @@ Item {
     else drawProgress = 0
     dotCanvas.requestPaint()
   }
-  onPhaseChanged: dotCanvas.requestPaint()
+  onPhaseChanged: if (beadsVisible) dotCanvas.requestPaint()
   onDrawProgressChanged: dotCanvas.requestPaint()
   onMarkerColorChanged: dotCanvas.requestPaint()
   onAccentChanged: dotCanvas.requestPaint()
@@ -353,14 +358,29 @@ Item {
   onLabelPixelSizeChanged: dotCanvas.requestPaint()
   Component.onCompleted: repaintAll()
 
+  // Every tick repaints the dynamic layer, so the tick costs a canvas paint
+  // and not just the step it takes. At 60 ms with proportionally larger steps
+  // the beads travel and the link draws in at exactly the same speed as they
+  // did at 40 ms, for two paints a second less than half the paints.
   Timer {
-    interval: 40
+    interval: 60
     repeat: true
-    running: root.animate && root.visible && root.home !== null
+    running: root.animate && root.visible && root.phaseActive
     onTriggered: {
-      root.phase = (root.phase + 2) % 100
-      if (root.linkState === "connecting") root.drawProgress = Math.min(1, root.drawProgress + 0.04)
+      root.phase = (root.phase + 3) % 100
+      if (root.linkState === "connecting") root.drawProgress = Math.min(1, root.drawProgress + 0.06)
     }
+  }
+
+  // One cycle of the pulse ring, 2 s, exactly as 50 phase ticks used to be.
+  NumberAnimation {
+    target: root
+    property: "pulseT"
+    from: 0
+    to: 1
+    duration: 2000
+    loops: Animation.Infinite
+    running: root.pulseVisible && root.animate && root.visible
   }
 
   // Static layer: graticule and the ~1800 land dots. Neither depends on the
@@ -380,6 +400,26 @@ Item {
       root.paintGrid(ctx)
       root.paintDots(ctx)
     }
+  }
+
+  // The home pulse, as an item so that it can animate without repainting a
+  // canvas. It belongs between the two layers, which is where the canvas
+  // stroke that drew it used to sit: it only ever shows while there is no
+  // link, and the markers above it still cover it. A ring of radius r stroked
+  // 1px wide covers [r - 0.5, r + 0.5], which is a 2r + 1 wide rounded
+  // rectangle with a 1px inner border.
+  Rectangle {
+    id: homePulse
+    visible: root.pulseVisible && root.pulseRadius > 0
+    width: root.pulseRadius * 2 + 1
+    height: width
+    radius: width / 2
+    x: (root.pulseVisible ? root.projectX(Number(root.home.lon)) : 0) - width / 2
+    y: (root.pulseVisible ? root.projectY(Number(root.home.lat)) : 0) - height / 2
+    color: "transparent"
+    border.width: 1
+    border.color: root.withAlpha(root.accent, root.pulseOpacity)
+    antialiasing: true
   }
 
   // Dynamic layer: the link with its beads, and the markers with their labels.

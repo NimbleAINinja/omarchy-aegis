@@ -247,20 +247,58 @@ TestCase {
   }
 
   function test_home_pulses_only_when_disconnected() {
-    var map = makeMap({ home: paris, exit: null, linkState: "none", phase: 50 })
+    // The pulse is an item under the dynamic canvas, not a canvas stroke, so
+    // that it can animate without repainting the link and the markers.
+    var map = makeMap({ home: paris, exit: null, linkState: "none", pulseT: 0.5 })
+    verify(map.pulseVisible)
+    fuzzyCompare(map.pulseRadius, map.dotPitch * 2.2 * 0.5, 1e-6)
+    fuzzyCompare(map.pulseOpacity, 0.5 * (1 - 0.5), 1e-6)
+    map.pulseT = 0
+    compare(map.pulseRadius, 0)
+    fuzzyCompare(map.pulseOpacity, 0.5, 1e-6)
+    map.pulseT = 1
+    fuzzyCompare(map.pulseRadius, map.dotPitch * 2.2, 1e-6)
+    fuzzyCompare(map.pulseOpacity, 0, 1e-6)
+
+    // The canvas draws the home circle alone, in either state.
     var ctx = fakeContext()
     map.paintMarkers(ctx)
-    // Pulse ring (stroked, drawn first so it sits under the dot) plus the home circle.
-    compare(ctx.record.arcs.length, 2)
-    compare(ctx.record.strokes, 1)
-    fuzzyCompare(ctx.record.arcs[0].r, map.dotPitch * 2.2 * 0.5, 1e-6)
-    fuzzyCompare(ctx.record.arcs[1].r, map.dotPitch * 0.6, 1e-6)
+    compare(ctx.record.arcs.length, 1)
+    compare(ctx.record.strokes, 0)
+    fuzzyCompare(ctx.record.arcs[0].r, map.dotPitch * 0.6, 1e-6)
     var connected = fakeContext()
     map.exit = tokyo
     map.linkState = "connected"
+    verify(!map.pulseVisible)
     map.paintMarkers(connected)
     compare(connected.record.arcs.length, 1)
     compare(connected.record.strokes, 0)
+  }
+
+  function test_the_pulse_needs_a_home_with_coordinates() {
+    var map = makeMap({ home: null, exit: null, linkState: "none", pulseT: 0.5 })
+    verify(!map.pulseVisible)
+    map.home = { lat: null, lon: null, label: "Nowhere" }
+    verify(!map.pulseVisible, "a home without coordinates never pulses at 0,0")
+    map.home = paris
+    verify(map.pulseVisible)
+  }
+
+  function test_the_phase_timer_only_runs_for_the_beads_and_the_draw_in() {
+    // Nothing on the dynamic canvas follows `phase` unless the beads are
+    // riding the link, so the timer that repaints it has to stop otherwise.
+    var map = makeMap({ home: paris, exit: null, linkState: "none" })
+    verify(!map.phaseActive, "disconnected: the pulse ring animates itself")
+    map.linkState = "connecting"
+    verify(map.phaseActive, "the link is drawing itself in")
+    map.linkState = "connected"
+    verify(!map.beadsVisible)
+    verify(!map.phaseActive, "connected without an exit: no beads to move")
+    map.exit = tokyo
+    verify(map.beadsVisible)
+    verify(map.phaseActive)
+    map.home = null
+    verify(!map.phaseActive)
   }
 
   function test_no_home_paints_no_markers() {
