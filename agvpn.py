@@ -39,9 +39,10 @@ timeouts; budgets scale with it), AEGIS_BUDGET (seconds, a verb's overall
 budget), AEGIS_STOP_GRACE (seconds between SIGTERM and SIGKILL for the CLI
 child when stopped), AEGIS_LOCK (lock file, used as given — its directory is
 not checked, the file itself still is), AEGIS_CURL (curl binary), AEGIS_PKILL
-(pkill binary), AEGIS_PS (ps binary). Also honoured: XDG_RUNTIME_DIR (CLI
-lock) and XDG_CACHE_HOME (home.json, and the CLI lock when XDG_RUNTIME_DIR
-can't be trusted).
+(pkill binary), AEGIS_PS (ps binary), AEGIS_PROC (the /proc to read process
+start times and executables from). Also honoured: XDG_RUNTIME_DIR (CLI lock)
+and XDG_CACHE_HOME (home.json, and the CLI lock when XDG_RUNTIME_DIR can't be
+trusted).
 """
 import errno
 import fcntl
@@ -65,7 +66,7 @@ HERE = Path(__file__).resolve().parent
 ANSI = re.compile(r"\x1b\[[0-9;]*m")
 CLI_TIMEOUT = 12.0
 CONNECT_TIMEOUT = 60.0
-PS_TIMEOUT = 3.0       # read_since's ps
+PS_TIMEOUT = 3.0       # read_since's ps fallback
 PROCS_TIMEOUT = 5.0    # verb_procs's ps
 ROUTE_TIMEOUT = 3.0    # default_gateway's ip route
 CURL_TIMEOUT = 8.0     # fetch_home's curl
@@ -352,6 +353,41 @@ def read_counters(iface_dir):
         return 0, 0
 
 
+def proc_root():
+    return os.environ.get("AEGIS_PROC") or "/proc"
+
+
+def proc_start_epoch(pid):
+    """Epoch seconds process `pid` started, straight out of /proc — no fork.
+
+    /proc/<pid>/stat field 22 (starttime) counts clock ticks since boot and
+    follows the comm field, which can hold spaces and brackets of its own, so
+    the line is split after its last ")"; /proc/uptime turns ticks since boot
+    back into an epoch. OSError/ValueError/IndexError (no /proc, a dead pid,
+    a line shaped differently) is read_since's cue to fall back to `ps`."""
+    with open(os.path.join(proc_root(), str(pid), "stat"), "rb") as f:
+        fields = f.read().decode("utf-8", "replace").rsplit(")", 1)[1].split()
+    ticks = float(fields[19])  # field 22 counting the pid and comm before it
+    with open(os.path.join(proc_root(), "uptime"), "rb") as f:
+        uptime = float(f.read().split()[0])
+    return int(time.time() - uptime + ticks / os.sysconf("SC_CLK_TCK"))
+
+
+def ps_start_epoch(pid):
+    """Epoch seconds `pid` started per `ps -o etimes=`, or None. The fallback
+    for a kernel whose /proc doesn't answer (see proc_start_epoch); AEGIS_PS
+    points the tests at their own stand-in."""
+    ps = os.environ.get("AEGIS_PS") or shutil.which("ps") or "ps"
+    try:
+        out = subprocess.run([ps, "-o", "etimes=", "-p", str(pid)], capture_output=True, text=True,
+                             timeout=time_left(PS_TIMEOUT))
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if out.returncode == 0 and out.stdout.strip().isdigit():
+        return int(time.time()) - int(out.stdout.strip())
+    return None
+
+
 def read_since(directory, connected_at=None):
     """Epoch seconds the *current* connection came up.
 
@@ -366,13 +402,13 @@ def read_since(directory, connected_at=None):
     daemon_start = None
     try:
         pid = int((Path(directory) / "vpn.pid").read_text().strip())
-        ps = os.environ.get("AEGIS_PS") or shutil.which("ps") or "ps"
-        out = subprocess.run([ps, "-o", "etimes=", "-p", str(pid)], capture_output=True, text=True,
-                             timeout=time_left(PS_TIMEOUT))
-        if out.returncode == 0 and out.stdout.strip().isdigit():
-            daemon_start = int(time.time()) - int(out.stdout.strip())
-    except (OSError, ValueError, subprocess.SubprocessError):
-        pass
+    except (OSError, ValueError):
+        pid = None
+    if pid is not None:
+        try:
+            daemon_start = proc_start_epoch(pid)
+        except (OSError, ValueError, IndexError):
+            daemon_start = ps_start_epoch(pid)  # no /proc to read: fork `ps` after all
     log_connected = None
     if connected_at:
         try:
@@ -544,7 +580,10 @@ def verb_budgets():
     listed: it is not a queued job, and each pkill must get its chance."""
     cli = timeout_for(CLI_TIMEOUT)
     lock_wait = cli
-    snapshot = cli + PS_TIMEOUT                           # status, ps for the daemon's age
+    # The daemon's age comes from /proc, so a snapshot is one CLI call: the
+    # `ps` fallback only runs when /proc has no answer, and time_left clips
+    # it to whatever is left of the budget anyway.
+    snapshot = cli                                        # status
     calls = {
         "snapshot": snapshot,
         "locations": cli,
@@ -1346,7 +1385,6 @@ def verb_procs():
     basename from /proc/<pid>/exe is preferred when it is readable, so long
     names such as transmission-gtk are offered in full."""
     ps = os.environ.get("AEGIS_PS") or shutil.which("ps") or "ps"
-    proc_root = os.environ.get("AEGIS_PROC") or "/proc"
     try:
         p = subprocess.run([ps, "-u", str(os.getuid()), "-o", "pid=,comm="], capture_output=True, text=True,
                            timeout=time_left(PROCS_TIMEOUT))
@@ -1363,7 +1401,7 @@ def verb_procs():
         pid, comm = parts[0], parts[1].strip()
         name = comm
         try:
-            exe = os.path.basename(os.readlink(os.path.join(proc_root, pid, "exe")))
+            exe = os.path.basename(os.readlink(os.path.join(proc_root(), pid, "exe")))
             if exe and exe[:COMM_LEN] == comm[:COMM_LEN]:
                 name = exe
         except OSError:

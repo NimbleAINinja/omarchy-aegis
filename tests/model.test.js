@@ -739,7 +739,7 @@ test("every helper verb Service.qml enqueues has a watchdog budget; unknown verb
   const longest = Math.max(...Object.values(Model.HELPER_BUDGET_SEC)) * 1000 + Model.WATCHDOG_SLACK_MS
   assert.equal(Model.watchdogMs("frobnicate"), longest)
   assert.equal(Model.watchdogMs(undefined), longest)
-  assert.equal(Model.watchdogMs("connect"), 87000 + Model.WATCHDOG_SLACK_MS)
+  assert.equal(Model.watchdogMs("connect"), 84000 + Model.WATCHDOG_SLACK_MS)
   assert.equal(Model.watchdogMs("update-check"), 36000 + Model.WATCHDOG_SLACK_MS)
 })
 

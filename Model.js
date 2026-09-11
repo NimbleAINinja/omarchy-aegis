@@ -971,7 +971,7 @@ function findExclusionDomain(domains, needle) {
 // only sizes Service.qml's jobWatchdog, and tests/model.test.js checks it
 // against agvpn.py, so change both together.
 var HELPER_BUDGET_SEC = {
-  "snapshot": 27, "locations": 24, "connect": 87, "disconnect": 39, "account": 24, "logout": 24,
+  "snapshot": 24, "locations": 24, "connect": 84, "disconnect": 36, "account": 24, "logout": 24,
   "exclusions": 48, "home": 35, "config": 39, "update-check": 36, "procs": 17
 }
 // On top of a budget: python start-up, reaping a timed-out CLI, the answer.

@@ -239,20 +239,66 @@ FAKE_PS = ROOT / "tests" / "fake-ps.sh"
 
 class ReadSince(unittest.TestCase):
     """The daemon (vpn.pid) outlives a location switch — tunnel_tail.txt shows
-    one daemon serving several consecutive connects — so its own ps etimes is
+    one daemon serving several consecutive connects — so its own start time is
     the daemon's uptime, not the current connection's. read_since must prefer
     the tunnel log's latest connect, only falling back to (or being floored
-    by) the daemon's start time when the log has nothing usable."""
+    by) the daemon's start time when the log has nothing usable.
+
+    That start time comes from /proc; `ps -o etimes=` is only forked when
+    /proc has no answer, which is what AEGIS_PROC pointed at an empty
+    directory arranges for the ps tests below."""
+
+    UPTIME = 100000.0  # seconds since boot, for the fake /proc
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.proc = Path(tmp.name)  # a /proc with nothing in it, unless a test fills it
 
     def _stamp(self, epoch):
         return datetime.fromtimestamp(epoch).strftime(agvpn.LOG_STAMP)
+
+    def ps_env(self, etimes):
+        return {"AEGIS_PS": str(FAKE_PS), "FAKE_PS_ETIMES": str(etimes), "AEGIS_PROC": str(self.proc)}
+
+    def fake_proc(self, pid, age, comm="(adguardvpn (tun) daemon)"):
+        """Fill the fake /proc so `pid` looks like it started `age` seconds
+        ago. The comm field holds spaces and brackets on purpose: field 22 is
+        only findable after the line's last ")"."""
+        ticks = int((self.UPTIME - age) * os.sysconf("SC_CLK_TCK"))
+        fields = ["S"] + ["0"] * 18 + [str(ticks)]  # starttime is field 22 overall
+        Path(self.proc, str(pid)).mkdir()
+        Path(self.proc, str(pid), "stat").write_text("%d %s %s\n" % (pid, comm, " ".join(fields)))
+        Path(self.proc, "uptime").write_text("%.2f 50000.00\n" % self.UPTIME)
+
+    def test_daemon_start_comes_from_proc_without_forking_ps(self):
+        with tempfile.TemporaryDirectory() as d:
+            Path(d, "vpn.pid").write_text("4242\n")
+            self.fake_proc(4242, 120)
+            now = time.time()
+            ps_log = Path(d, "ps.log")
+            with mock.patch.dict(os.environ, {"AEGIS_PS": str(FAKE_PS), "AEGIS_PROC": str(self.proc),
+                                              "FAKE_PS_ETIMES": "999", "FAKE_LOG": str(ps_log)}):
+                since = agvpn.read_since(d, None)
+            self.assertFalse(ps_log.exists(), "ps must not be forked when /proc answers")
+        self.assertAlmostEqual(since, int(now - 120), delta=2)
+
+    def test_an_unreadable_proc_entry_falls_back_to_ps(self):
+        with tempfile.TemporaryDirectory() as d:
+            Path(d, "vpn.pid").write_text("4242\n")
+            Path(self.proc, "4242").mkdir()
+            Path(self.proc, "4242", "stat").write_text("4242 (vpn) S not-a-number\n")  # too few fields
+            now = time.time()
+            with mock.patch.dict(os.environ, self.ps_env(90)):
+                since = agvpn.read_since(d, None)
+        self.assertAlmostEqual(since, int(now - 90), delta=2)
 
     def test_several_connects_in_one_daemon_uses_the_latest_connect(self):
         with tempfile.TemporaryDirectory() as d:
             Path(d, "vpn.pid").write_text("4242\n")
             now = time.time()
             last_connect = now - 60          # switched location a minute ago
-            with mock.patch.dict(os.environ, {"AEGIS_PS": str(FAKE_PS), "FAKE_PS_ETIMES": "3600"}):
+            with mock.patch.dict(os.environ, self.ps_env(3600)):
                 since = agvpn.read_since(d, self._stamp(last_connect))
         self.assertAlmostEqual(since, int(last_connect), delta=2)
 
@@ -260,7 +306,7 @@ class ReadSince(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             Path(d, "vpn.pid").write_text("4242\n")
             now = time.time()
-            with mock.patch.dict(os.environ, {"AEGIS_PS": str(FAKE_PS), "FAKE_PS_ETIMES": "120"}):
+            with mock.patch.dict(os.environ, self.ps_env(120)):
                 since = agvpn.read_since(d, None)
         self.assertAlmostEqual(since, int(now - 120), delta=2)
 
@@ -269,7 +315,7 @@ class ReadSince(unittest.TestCase):
             Path(d, "vpn.pid").write_text("4242\n")
             now = time.time()
             stale_connect = now - 7200       # a leftover line from a rotated-out daemon
-            with mock.patch.dict(os.environ, {"AEGIS_PS": str(FAKE_PS), "FAKE_PS_ETIMES": "60"}):
+            with mock.patch.dict(os.environ, self.ps_env(60)):
                 since = agvpn.read_since(d, self._stamp(stale_connect))
         self.assertAlmostEqual(since, int(now - 60), delta=2)
 
@@ -1111,10 +1157,10 @@ class Budgets(unittest.TestCase):
     """agvpn.py is the authority on how long a verb may take; Model.js only
     copies verb_budgets() for the watchdog (checked in tests/model.test.js)."""
 
-    # Non-CLI sub-calls on each verb's longest path. connect/disconnect end in
-    # a full snapshot, so they pay for its ps lookup too.
-    EXTRA = {"snapshot": agvpn.PS_TIMEOUT, "connect": agvpn.PS_TIMEOUT, "disconnect": agvpn.PS_TIMEOUT,
-             "home": agvpn.ROUTE_TIMEOUT + agvpn.CURL_TIMEOUT}
+    # Non-CLI sub-calls on each verb's longest path. A snapshot has none: the
+    # daemon's age comes from /proc, and its `ps` fallback is clipped to
+    # whatever is left of the budget.
+    EXTRA = {"home": agvpn.ROUTE_TIMEOUT + agvpn.CURL_TIMEOUT}
     SAMPLES = [
         (("snapshot",), "connected"), (("locations",), "connected"), (("connect", "Sydney"), "connected"),
         (("disconnect",), "disconnected"), (("account",), "connected"), (("logout",), "connected"),
@@ -1145,8 +1191,8 @@ class Budgets(unittest.TestCase):
         self.assertGreaterEqual(agvpn.verb_budget("exclusions"), 3 * agvpn.CLI_TIMEOUT)
         self.assertGreaterEqual(agvpn.verb_budget("connect"), agvpn.CONNECT_TIMEOUT + agvpn.CLI_TIMEOUT)
         with mock.patch.dict(os.environ, {"AEGIS_TIMEOUT": "1"}):
-            # lock wait + disconnect + the snapshot's status and ps
-            self.assertEqual(agvpn.verb_budget("disconnect"), 3 + agvpn.PS_TIMEOUT)
+            # lock wait + disconnect + the snapshot's status
+            self.assertEqual(agvpn.verb_budget("disconnect"), 3)
         with mock.patch.dict(os.environ, {"AEGIS_BUDGET": "2.5"}):
             self.assertEqual(agvpn.verb_budget("connect"), 2.5)
             self.assertIsNone(agvpn.verb_budget("kill"))
