@@ -334,14 +334,16 @@ TestCase {
       { city: "NoCoords", lat: null, lon: null }
     ]
     compare(map.candidateX.length, 2)
-    fuzzyCompare(map.candidateX[0], map.projectX(139.69), 1e-9)
-    fuzzyCompare(map.candidateY[0], map.projectY(35.68), 1e-9)
+    // Float32Array: pixel coordinates, so a thousandth of a pixel is exact
+    // enough and the pointer walks a flat buffer.
+    fuzzyCompare(map.candidateX[0], map.projectX(139.69), 1e-3)
+    fuzzyCompare(map.candidateY[0], map.projectY(35.68), 1e-3)
     // Not 0,0: a location without coordinates must stay unpickable.
     verify(isNaN(map.candidateX[1]))
     verify(isNaN(map.candidateY[1]))
     // A resize reprojects, or every pick after it would be off.
     map.width = 240
-    fuzzyCompare(map.candidateX[0], map.projectX(139.69), 1e-9)
+    fuzzyCompare(map.candidateX[0], map.projectX(139.69), 1e-3)
     var p = map.pointFor(35.68, 139.69)
     compare(map.pickCandidate(p.x, p.y).city, "Tokyo")
   }

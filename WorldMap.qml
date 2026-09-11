@@ -25,16 +25,17 @@ Item {
 
   // Pixel positions of `candidates`, rebuilt when they or the geometry
   // change: a pointer event otherwise re-projected all ~80 cities, twice
-  // each, through two QML functions. A location without coordinates is
-  // stored as NaN, which Link.nearestProjected skips.
-  property var candidateX: []
-  property var candidateY: []
+  // each, through two QML functions. Float32Array, so the pointer walks a
+  // flat buffer; a location without coordinates is stored as NaN, which
+  // Link.nearestProjected skips.
+  property var candidateX: new Float32Array(0)
+  property var candidateY: new Float32Array(0)
 
   function rebuildProjected() {
     var list = candidates || []
     var count = list.length
-    var xs = new Array(count)
-    var ys = new Array(count)
+    var xs = new Float32Array(count)
+    var ys = new Float32Array(count)
     for (var i = 0; i < count; i++) {
       var p = list[i]
       var ok = Link.finiteCoord(p)
@@ -75,8 +76,8 @@ Item {
   implicitHeight: Math.round(width * (latMax - latMin) / 360)
 
   // Land cells for the current size, rebuilt only when geometry changes.
-  property var cellX: []
-  property var cellY: []
+  property var cellX: new Float32Array(0)
+  property var cellY: new Float32Array(0)
   // What cellX/cellY were built for. Compared field by field: rebuildCells
   // runs on every paint of the static layer, and a cache key string would be
   // built (and thrown away) each time.
@@ -162,26 +163,34 @@ Item {
     cacheLatMin = latMin
     cacheLatMax = latMax
     cacheGrid = grid
-    var xs = [], ys = []
-    if (grid && width > 0 && height > 0 && dotPitch > 0) {
-      var pitch = dotPitch
-      var cols = Math.floor(width / pitch)
-      var rows = Math.floor(height / pitch)
-      var offsetX = (width - cols * pitch) / 2
-      var offsetY = (height - rows * pitch) / 2
-      for (var r = 0; r < rows; r++) {
-        var cy = offsetY + (r + 0.5) * pitch
-        var lat = latAt(cy)
-        for (var c = 0; c < cols; c++) {
-          var cx = offsetX + (c + 0.5) * pitch
-          if (!Grid.isLand(grid, lonAt(cx), lat)) continue
-          xs.push(cx)
-          ys.push(cy)
-        }
+    if (!grid || width <= 0 || height <= 0 || dotPitch <= 0) {
+      cellX = new Float32Array(0)
+      cellY = new Float32Array(0)
+      return
+    }
+    var pitch = dotPitch
+    var cols = Math.floor(width / pitch)
+    var rows = Math.floor(height / pitch)
+    var offsetX = (width - cols * pitch) / 2
+    var offsetY = (height - rows * pitch) / 2
+    // Pixel coordinates, so float32 is more precision than the canvas can
+    // use; filled into a buffer for every cell and trimmed to the land ones.
+    var xs = new Float32Array(rows * cols)
+    var ys = new Float32Array(rows * cols)
+    var found = 0
+    for (var r = 0; r < rows; r++) {
+      var cy = offsetY + (r + 0.5) * pitch
+      var lat = latAt(cy)
+      for (var c = 0; c < cols; c++) {
+        var cx = offsetX + (c + 0.5) * pitch
+        if (!Grid.isLand(grid, lonAt(cx), lat)) continue
+        xs[found] = cx
+        ys[found] = cy
+        found++
       }
     }
-    cellX = xs
-    cellY = ys
+    cellX = xs.slice(0, found)
+    cellY = ys.slice(0, found)
   }
 
   function paintGrid(ctx) {
