@@ -3,11 +3,13 @@
 end to end through tests/fake-cli.sh. Run from the plugin root:
     python3 -m unittest tests/agvpn_test.py
 """
+import errno
 import fcntl
 import importlib.util
 import json
 import os
 import signal
+import stat
 import subprocess
 import sys
 import tempfile
@@ -25,6 +27,28 @@ HELPER = ROOT / "agvpn.py"
 spec = importlib.util.spec_from_file_location("agvpn", HELPER)
 agvpn = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(agvpn)
+
+_isolation = []
+
+
+def setUpModule():
+    # Without this, every test that doesn't set AEGIS_LOCK would take the lock
+    # in the real session's $XDG_RUNTIME_DIR, and a home test that forgot
+    # XDG_CACHE_HOME would read or write the user's real home.json.
+    tmp = tempfile.TemporaryDirectory()
+    runtime, cache = Path(tmp.name, "runtime"), Path(tmp.name, "cache")
+    runtime.mkdir()
+    runtime.chmod(0o700)
+    env = mock.patch.dict(os.environ, {"XDG_RUNTIME_DIR": str(runtime), "XDG_CACHE_HOME": str(cache)})
+    env.start()
+    os.environ.pop("AEGIS_LOCK", None)
+    _isolation.extend([env, tmp])
+
+
+def tearDownModule():
+    for item in _isolation:
+        item.stop() if hasattr(item, "stop") else item.cleanup()
+    _isolation.clear()
 
 
 def fixture(name):
@@ -911,6 +935,246 @@ class CliLifecycle(unittest.TestCase):
         self.assertEqual(len(targets), 2)
         for target in targets:
             self.assertNotIn("pipe:", target)
+
+
+class PrivateState(unittest.TestCase):
+    """The CLI lock and home.json only live where no other local user can
+    reach them. A symlink, a directory or file that isn't ours, or a
+    group/world-writable runtime dir is refused or skipped — never followed,
+    and never a reason to run the CLI unlocked."""
+
+    CURL = '#!/bin/sh\necho \'{"city":"Haifa","country":"IL","loc":"32.79,34.99"}\'\n'
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.root = Path(tmp.name)
+        self.runtime = self.root / "runtime"
+        self.runtime.mkdir()
+        self.runtime.chmod(0o700)
+        self.cache = self.root / "cache"
+        self.app_dir = self.cache / agvpn.PLUGIN_ID
+        self.victim = self.root / "victim"  # where another user would like us to write
+        self.victim.mkdir()
+        self.env = {"XDG_RUNTIME_DIR": str(self.runtime), "XDG_CACHE_HOME": str(self.cache)}
+        self.runtime_lock = self.runtime / ("aegis-cli-%d.lock" % os.getuid())
+        self.fallback_lock = self.app_dir / "cli.lock"
+
+    def mode(self, path):
+        return stat.S_IMODE(os.lstat(path).st_mode)
+
+    def lock_path(self, **env):
+        with mock.patch.dict(os.environ, dict(self.env, **env)):
+            return agvpn.lock_path()
+
+    def run_snapshot(self, **env):
+        log = self.root / "argv.log"
+        rc, out, _ = run_verb("snapshot", mode="disconnected", env_extra=dict(self.env, FAKE_LOG=str(log), **env))
+        ran = log.exists()
+        if ran:
+            log.unlink()
+        return json.loads(out), ran
+
+    def assert_refused(self, j, ran, what="refusing to use untrusted lock path"):
+        self.assertFalse(j["ok"], j)
+        self.assertEqual(j["code"], "unknown")
+        self.assertIn(what, j["error"])
+        self.assertFalse(ran, "the CLI must never run without its lock")
+
+    # ------------------------------------------------------ lock location --
+
+    def test_a_valid_runtime_dir_holds_the_lock(self):
+        self.assertEqual(self.lock_path(), str(self.runtime_lock))
+        self.assertFalse(self.cache.exists(), "the fallback isn't needed, so it isn't created")
+
+    def test_a_symlinked_runtime_dir_is_ignored_for_the_private_cache_dir(self):
+        link = self.root / "runtime-link"
+        link.symlink_to(self.runtime)
+        for value in (str(link), str(link) + "/"):  # a trailing slash must not make lstat follow it
+            self.assertEqual(self.lock_path(XDG_RUNTIME_DIR=value), str(self.fallback_lock), value)
+        self.assertEqual(self.mode(self.app_dir), 0o700)
+
+    def test_a_group_or_world_writable_runtime_dir_is_ignored(self):
+        for m in (0o777, 0o770, 0o702):
+            self.runtime.chmod(m)
+            self.assertEqual(self.lock_path(), str(self.fallback_lock), oct(m))
+        self.assertEqual(self.mode(self.runtime), 0o702, "not ours to chmod")
+
+    def test_an_unset_relative_missing_or_non_directory_runtime_dir_is_ignored(self):
+        not_a_dir = self.root / "file"
+        not_a_dir.write_text("")
+        for value in ("", "run/user/1000", str(self.root / "missing"), str(not_a_dir)):
+            self.assertEqual(self.lock_path(XDG_RUNTIME_DIR=value), str(self.fallback_lock), value)
+
+    def test_a_runtime_dir_owned_by_someone_else_is_ignored(self):
+        real_lstat = os.lstat
+
+        def foreign(path, *args, **kwargs):
+            st = real_lstat(path, *args, **kwargs)
+            if os.fspath(path) != str(self.runtime):
+                return st
+            fields = list(st[:10])
+            fields[4] = st.st_uid + 1  # st_uid
+            return os.stat_result(fields)
+        with mock.patch.object(agvpn.os, "lstat", side_effect=foreign):
+            self.assertEqual(self.lock_path(), str(self.fallback_lock))
+
+    def test_the_fallback_dir_is_created_0700_and_an_existing_wider_one_tightened(self):
+        self.assertEqual(self.lock_path(XDG_RUNTIME_DIR=""), str(self.fallback_lock))
+        self.assertEqual(self.mode(self.app_dir), 0o700)
+        self.app_dir.chmod(0o755)
+        self.assertEqual(self.lock_path(XDG_RUNTIME_DIR=""), str(self.fallback_lock))
+        self.assertEqual(self.mode(self.app_dir), 0o700)
+
+    def test_private_dir_refuses_a_directory_owned_by_someone_else_without_touching_it(self):
+        self.app_dir.mkdir(parents=True)
+        self.app_dir.chmod(0o755)
+        with mock.patch.object(agvpn.os, "getuid", return_value=os.getuid() + 1):
+            with self.assertRaises(agvpn.UntrustedPath):
+                agvpn.private_dir(self.app_dir)
+        self.assertEqual(self.mode(self.app_dir), 0o755)
+
+    # ------------------------------------------------------ lock refusals --
+
+    def test_a_symlink_at_the_fallback_dir_is_refused_and_nothing_is_created_behind_it(self):
+        self.cache.mkdir()
+        for target in (self.victim, self.victim / "not-yet"):  # an existing and a dangling target
+            self.app_dir.symlink_to(target)
+            self.assert_refused(*self.run_snapshot(XDG_RUNTIME_DIR=""))
+            self.assertEqual(list(self.victim.iterdir()), [])
+            self.assertTrue(self.app_dir.is_symlink())
+            self.app_dir.unlink()
+
+    def test_a_file_at_the_fallback_dir_is_refused(self):
+        self.cache.mkdir()
+        self.app_dir.write_text("")
+        self.assert_refused(*self.run_snapshot(XDG_RUNTIME_DIR=""))
+
+    def test_a_symlink_at_the_lock_file_is_refused_and_its_target_never_created_or_changed(self):
+        dangling, existing = self.victim / "planted.lock", self.victim / "existing"
+        existing.write_text("")
+        existing.chmod(0o644)
+        self.runtime_lock.symlink_to(dangling)  # plain O_CREAT would create this for them
+        self.assert_refused(*self.run_snapshot())
+        self.runtime_lock.unlink()
+        self.runtime_lock.symlink_to(existing)
+        self.assert_refused(*self.run_snapshot())
+        override = self.root / "override.lock"  # AEGIS_LOCK gets the same file checks
+        override.symlink_to(dangling)
+        self.assert_refused(*self.run_snapshot(AEGIS_LOCK=str(override)))
+        self.assertFalse(dangling.exists())
+        self.assertEqual(self.mode(existing), 0o644)
+
+    def test_a_lock_path_that_is_not_a_regular_file_is_refused(self):
+        os.mkfifo(self.runtime_lock)
+        self.assert_refused(*self.run_snapshot())
+        os.unlink(self.runtime_lock)
+        self.runtime_lock.mkdir()
+        self.assert_refused(*self.run_snapshot(), what="cannot open lock file")
+
+    def test_a_lock_file_owned_by_someone_else_is_refused(self):
+        lock, log = self.root / "cli.lock", self.root / "argv.log"
+        lock.write_text("")
+        env = {"AEGIS_CLI": str(FAKE), "AEGIS_LOCK": str(lock), "FAKE_MODE": "disconnected", "FAKE_LOG": str(log)}
+        with mock.patch.dict(os.environ, env), \
+                mock.patch.object(agvpn.os, "getuid", return_value=os.getuid() + 1):
+            with self.assertRaises(agvpn.CliError) as ctx:
+                agvpn.run_cli(["status"])
+        self.assertEqual(ctx.exception.code, "unknown")
+        self.assertIn("untrusted lock path", ctx.exception.message)
+        self.assertFalse(log.exists())
+
+    def test_a_new_lock_file_is_0600_and_an_existing_0644_one_is_narrowed(self):
+        j, ran = self.run_snapshot()
+        self.assertTrue(j["ok"] and ran, j)
+        self.assertEqual(self.mode(self.runtime_lock), 0o600)
+        self.runtime_lock.chmod(0o644)  # what older versions left behind
+        j, ran = self.run_snapshot()
+        self.assertTrue(j["ok"] and ran, j)
+        self.assertEqual(self.mode(self.runtime_lock), 0o600)
+        j, ran = self.run_snapshot(XDG_RUNTIME_DIR="")
+        self.assertTrue(j["ok"] and ran, j)
+        self.assertEqual(self.mode(self.fallback_lock), 0o600)
+
+    def test_a_filesystem_without_record_locks_still_runs_unlocked(self):
+        env = {"AEGIS_CLI": str(FAKE), "AEGIS_LOCK": str(self.root / "cli.lock"), "FAKE_MODE": "disconnected"}
+        with mock.patch.dict(os.environ, env), \
+                mock.patch.object(agvpn.fcntl, "lockf", side_effect=OSError(errno.ENOLCK, "No locks available")):
+            rc, out, _ = agvpn.run_cli(["status"])
+        self.assertEqual(rc, 0)
+        self.assertEqual(agvpn.parse_status(out)["state"], "disconnected")
+
+    # ---------------------------------------------------------- home.json --
+
+    def run_home(self, mode="disconnected"):
+        curl = self.root / "curl"
+        if not curl.exists():
+            curl.write_text(self.CURL)
+            curl.chmod(0o755)
+        rc, out, _ = run_verb("home", mode=mode, env_extra=dict(self.env, AEGIS_CURL=str(curl)))
+        return json.loads(out)
+
+    def planted(self, city):
+        return json.dumps({"lat": 1.5, "lon": 2.5, "city": city, "iso": "XX", "gateway": "gw", "fetchedAt": 0})
+
+    def test_home_json_is_written_0600_in_a_0700_dir_with_no_temp_file_left(self):
+        j = self.run_home()
+        self.assertTrue(j["ok"], j)
+        self.assertEqual(j["home"]["city"], "Haifa")
+        home = self.app_dir / "home.json"
+        self.assertEqual(self.mode(self.app_dir), 0o700)
+        self.assertEqual(self.mode(home), 0o600)
+        self.assertEqual(json.loads(home.read_text())["city"], "Haifa")
+        self.assertEqual([p.name for p in self.app_dir.iterdir()], ["home.json"])
+
+    def test_an_existing_readable_cache_ends_up_private_after_a_fetch(self):
+        self.app_dir.mkdir(parents=True)
+        self.app_dir.chmod(0o755)
+        home = self.app_dir / "home.json"
+        home.write_text(self.planted("Old"))  # fetchedAt 0: due for a refresh
+        home.chmod(0o644)
+        j = self.run_home()
+        self.assertEqual(j["home"]["city"], "Haifa")
+        self.assertEqual(self.mode(self.app_dir), 0o700)
+        self.assertEqual(self.mode(home), 0o600)
+        self.assertEqual(json.loads(home.read_text())["city"], "Haifa")
+
+    def test_a_symlinked_home_json_is_neither_read_nor_written_through(self):
+        self.app_dir.mkdir(parents=True)
+        elsewhere = self.victim / "elsewhere.json"
+        elsewhere.write_text(self.planted("Planted"))
+        before = elsewhere.read_text()
+        home = self.app_dir / "home.json"
+        home.symlink_to(elsewhere)
+        j = self.run_home(mode="connected")  # no lookup while connected: the cache is the only source
+        self.assertTrue(j["ok"], j)
+        self.assertIsNone(j["home"])
+        j = self.run_home()
+        self.assertEqual(j["home"]["city"], "Haifa")
+        self.assertFalse(home.is_symlink(), "the fetch replaces the link itself")
+        self.assertEqual(self.mode(home), 0o600)
+        self.assertEqual(elsewhere.read_text(), before)
+
+    def test_a_symlinked_cache_dir_is_no_cache_and_never_written_to(self):
+        self.cache.mkdir()
+        planted = self.victim / "home.json"
+        planted.write_text(self.planted("Planted"))
+        before = planted.read_text()
+        self.app_dir.symlink_to(self.victim)
+        j = self.run_home(mode="connected")
+        self.assertIsNone(j["home"])
+        j = self.run_home()
+        self.assertTrue(j["ok"], j)
+        self.assertEqual(j["home"]["city"], "Haifa", "the lookup's answer stands without a cache")
+        self.assertEqual([p.name for p in self.victim.iterdir()], ["home.json"])
+        self.assertEqual(planted.read_text(), before)
+
+    def test_a_failed_cache_write_removes_its_temp_file(self):
+        d = self.root / "d"
+        d.mkdir()
+        (d / "home.json").mkdir()  # renaming a file over a directory fails
+        self.assertFalse(agvpn.write_private_json(d / "home.json", {"city": "Haifa"}))
+        self.assertEqual([p.name for p in d.iterdir()], ["home.json"])
 
 
 if __name__ == "__main__":

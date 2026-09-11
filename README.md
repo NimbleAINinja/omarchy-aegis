@@ -118,7 +118,8 @@ Changes to mode, protocol, post-quantum or DNS apply on the next connect.
 Everything runs locally against `adguardvpn-cli`. The only outbound request the
 plugin itself makes is one lookup to `https://ipinfo.io/json`, made while the
 VPN is disconnected, to place your home marker. The result is cached in
-`~/.cache/io.github.nimbleaininja.aegis/home.json` and refreshed only when your
+`~/.cache/io.github.nimbleaininja.aegis/home.json` (a 0600 file in a 0700
+directory, readable only by you) and refreshed only when your
 default gateway changes or after 24 hours. Until a lookup succeeds, the marker
 falls back to a rough position derived from your time zone.
 

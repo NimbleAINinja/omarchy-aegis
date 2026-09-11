@@ -23,14 +23,24 @@ Every queued verb answers within its own overall budget (verb_budget), and
 SIGTERM/SIGHUP/SIGINT stop and reap a running adguardvpn-cli before the
 helper answers {"ok": false, "code": "timeout"}.
 
+State the helper writes (the CLI lock, home.json) only ever lives in a
+directory this user owns and nobody else can write to: $XDG_RUNTIME_DIR when
+it checks out (trusted_runtime_dir), otherwise a private 0700 directory under
+the user's own cache dir (private_dir) — never a shared temp dir. Files in it
+are opened without following symlinks and checked to be this user's regular
+files; a path that fails the checks is refused, not worked around.
+
 Environment overrides (used by tests): AEGIS_CLI (binary), AEGIS_DATA_DIR
 (where tunnel.log / vpn.pid live), AEGIS_TIMEOUT (seconds, both per-call
 timeouts; budgets scale with it), AEGIS_BUDGET (seconds, a verb's overall
 budget), AEGIS_STOP_GRACE (seconds between SIGTERM and SIGKILL for the CLI
-child when stopped), AEGIS_LOCK (lock file), AEGIS_CURL (curl binary),
-AEGIS_PKILL (pkill binary), AEGIS_PS (ps binary), XDG_CACHE_HOME (home.json
-cache).
+child when stopped), AEGIS_LOCK (lock file, used as given — its directory is
+not checked, the file itself still is), AEGIS_CURL (curl binary), AEGIS_PKILL
+(pkill binary), AEGIS_PS (ps binary). Also honoured: XDG_RUNTIME_DIR (CLI
+lock) and XDG_CACHE_HOME (home.json, and the CLI lock when XDG_RUNTIME_DIR
+can't be trusted).
 """
+import errno
 import fcntl
 import json
 import tempfile
@@ -38,6 +48,7 @@ import os
 import re
 import shutil
 import signal
+import stat
 import subprocess
 import sys
 import time
@@ -356,6 +367,81 @@ def read_since(directory, connected_at=None):
     return daemon_start
 
 
+class UntrustedPath(Exception):
+    """A state path that is a symlink, not ours, or not what it should be.
+    Deliberately not an OSError, so no `except OSError` that tolerates an
+    ordinary filesystem failure can quietly swallow a refusal."""
+
+    def __init__(self, path):
+        super().__init__("untrusted path: %s" % path)
+        self.path = str(path)
+
+
+def _owned_by_me(st):
+    return st.st_uid == os.getuid()
+
+
+def cache_dir():
+    # A relative XDG_CACHE_HOME would resolve against whatever directory the
+    # shell was started in; the XDG spec says to ignore it.
+    base = os.environ.get("XDG_CACHE_HOME")
+    if not (base and os.path.isabs(base)):
+        base = str(Path.home() / ".cache")
+    return Path(base) / PLUGIN_ID
+
+
+def private_dir(path):
+    """Create `path` as a directory only this user can enter (0700), or
+    verify and tighten an existing one, and return it as a string.
+
+    Only the last component is vetted: it must be a real directory, not a
+    symlink, owned by this uid, else UntrustedPath. Its parents belong to the
+    user (a symlinked ~/.cache is their business) and are just created as
+    needed. The checks and the chmod go through one O_NOFOLLOW descriptor,
+    so a symlink swapped in after mkdir is refused rather than followed.
+    Anything else that goes wrong (read-only home, EACCES) is an OSError."""
+    path = os.fspath(Path(path))  # Path drops a trailing "/", which would make open() follow a symlink
+    parent = os.path.dirname(path)
+    if parent:
+        os.makedirs(parent, 0o700, exist_ok=True)
+    try:
+        os.mkdir(path, 0o700)
+    except FileExistsError:
+        pass  # checked below like any other directory
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    except OSError as e:
+        if e.errno in (errno.ELOOP, errno.ENOTDIR):  # a symlink, or not a directory at all
+            raise UntrustedPath(path)
+        raise
+    try:
+        st = os.fstat(fd)
+        if not _owned_by_me(st):
+            raise UntrustedPath(path)
+        if stat.S_IMODE(st.st_mode) != 0o700:
+            os.fchmod(fd, 0o700)
+    finally:
+        os.close(fd)
+    return path
+
+
+def trusted_runtime_dir():
+    """$XDG_RUNTIME_DIR, but only if it is an absolute path to a real
+    directory (lstat: not a symlink) owned by this uid that neither group nor
+    others can write to; None otherwise. It is not ours to create or chmod,
+    so anything less is simply not used."""
+    base = (os.environ.get("XDG_RUNTIME_DIR") or "").rstrip("/")  # "dir/" would make lstat follow a symlink
+    if not os.path.isabs(base):
+        return None
+    try:
+        st = os.lstat(base)
+    except OSError:
+        return None
+    if not stat.S_ISDIR(st.st_mode) or not _owned_by_me(st) or st.st_mode & 0o022:
+        return None
+    return base
+
+
 # -------------------------------------------------------------------- cli --
 
 def cli_path():
@@ -381,11 +467,47 @@ def timeout_for(default):
 
 
 def lock_path():
+    """Where the user-wide CLI lock lives: AEGIS_LOCK (tests), else
+    $XDG_RUNTIME_DIR when trusted_runtime_dir() accepts it, else a private
+    directory under the user's cache dir. Never a shared temp dir: anyone
+    can pre-create a file there and hold a lock on it (every CLI call then
+    times out waiting) or plant a symlink for us to create a file through.
+    Raises UntrustedPath/OSError when the fallback directory can't be used."""
     override = os.environ.get("AEGIS_LOCK")
     if override:
         return override
-    base = os.environ.get("XDG_RUNTIME_DIR") or tempfile.gettempdir()
-    return os.path.join(base, "aegis-cli-%d.lock" % os.getuid())
+    runtime = trusted_runtime_dir()
+    if runtime:
+        return os.path.join(runtime, "aegis-cli-%d.lock" % os.getuid())
+    return os.path.join(private_dir(cache_dir()), "cli.lock")
+
+
+def open_lock(path):
+    """Open (creating 0600 if needed) the lock file and return its fd.
+
+    O_NOFOLLOW so a symlink at `path` is refused instead of creating or
+    locking a file wherever it points; the fd must then be a regular file
+    owned by this uid (a FIFO, directory or someone else's file is refused),
+    and is narrowed to 0600 if it is wider (older versions left it 0644).
+    Any failure is a CliError: the CLI never runs unlocked because the lock
+    path was untrusted or unusable."""
+    try:
+        fd = os.open(path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
+    except OSError as e:
+        if e.errno == errno.ELOOP:
+            raise CliError("unknown", "refusing to use untrusted lock path %s" % path)
+        raise CliError("unknown", "cannot open lock file %s: %s" % (path, e.strerror or e))
+    try:
+        st = os.fstat(fd)
+        trusted = stat.S_ISREG(st.st_mode) and _owned_by_me(st)
+        if trusted and stat.S_IMODE(st.st_mode) & ~0o600:
+            os.fchmod(fd, 0o600)
+    except OSError:
+        trusted = False
+    if not trusted:
+        os.close(fd)
+        raise CliError("unknown", "refusing to use untrusted lock path %s" % path)
+    return fd
 
 
 # ---------------------------------------------------------------- budgets --
@@ -545,14 +667,21 @@ def run_cli(args, timeout=CLI_TIMEOUT):
     # which a daemon keeping the fd would hold forever). A flock held here
     # died with the helper, so a watchdog kill or the SIGKILL Quickshell
     # sends on reload let the next job's CLI overlap the orphaned one.
-    lock = None
     try:
-        lock = os.open(lock_path(), os.O_RDWR | os.O_CREAT | os.O_CLOEXEC, 0o600)
-        _lock_free(lock)  # a filesystem without record locks raises here: run unlocked
+        path = lock_path()
+    except UntrustedPath as e:
+        raise CliError("unknown", "refusing to use untrusted lock path %s" % e.path)
+    except OSError as e:
+        raise CliError("unknown", "cannot create lock directory: %s" % e)
+    lock = open_lock(path)  # a CliError when the path can't be trusted: never run unlocked for that
+    try:
+        _lock_free(lock)
     except OSError:
-        if lock is not None:
-            os.close(lock)
-            lock = None
+        # The one case that runs unlocked: a filesystem without POSIX record
+        # locks (lockf fails with something other than "held by another
+        # process", which _lock_free already answers as False).
+        os.close(lock)
+        lock = None
     # Output goes to unlinked temp files, never pipes: an orphaned CLI
     # writing to a dead pipe aborts ("cannot write to file: Broken pipe",
     # adguardvpn-cli 1.7.12), which is how a reload mid-connect crashed it.
@@ -705,8 +834,55 @@ def verb_exclusions(args):
 
 
 def cache_path():
-    base = os.environ.get("XDG_CACHE_HOME") or str(Path.home() / ".cache")
-    return Path(base) / PLUGIN_ID / "home.json"
+    return cache_dir() / "home.json"
+
+
+def read_private_json(path):
+    """The JSON object in `path`, or None unless it is this user's regular
+    file. O_NOFOLLOW: a symlink planted as home.json is not read through;
+    O_NONBLOCK: a FIFO planted there can't hang the helper (regular files
+    ignore the flag)."""
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC)
+    except OSError:
+        return None
+    with os.fdopen(fd, "rb") as f:
+        try:
+            st = os.fstat(f.fileno())
+            if not (stat.S_ISREG(st.st_mode) and _owned_by_me(st)):
+                return None
+            value = json.loads(f.read().decode("utf-8"))
+        except (OSError, ValueError):
+            return None
+    return value if isinstance(value, dict) else None
+
+
+def write_private_json(path, value):
+    """Atomically replace `path` with `value` as a 0600 file; True on success.
+
+    The new content goes to a fresh temp file beside it, created O_EXCL |
+    O_NOFOLLOW with mode 0600 (so it is never readable by anyone else, even
+    for a moment, and never opened through a symlink), then renamed over
+    `path` — rename replaces a symlink at `path` rather than following it,
+    and readers never see a half-written file. The temp file is removed on
+    any failure. Failures are the caller's to ignore; nothing is raised."""
+    path = Path(path)
+    tmp = path.with_name(".%s.%s.tmp" % (path.name, os.urandom(6).hex()))
+    try:
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
+    except OSError:
+        return False
+    try:
+        with os.fdopen(fd, "wb") as f:
+            f.write(json.dumps(value).encode("utf-8"))
+        os.replace(tmp, path)
+        return True
+    except OSError:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        return False
 
 
 def default_gateway():
@@ -741,11 +917,20 @@ def _home_public(cached):
 
 def home_lookup(state, cache_file, curl):
     """Return (home_or_None, stale, fetched). Only geolocates while the VPN is
-    down, and only when there is no cache, the gateway changed, or it is old."""
+    down, and only when there is no cache, the gateway changed, or it is old.
+
+    home.json holds the user's real, non-VPN position and LAN gateway, so its
+    directory goes through private_dir (created or tightened to 0700) before
+    it is read, and it is written 0600 (write_private_json). A directory that
+    fails those checks counts as no cache and is never written to; the
+    lookup's answer stands either way, as it did when a write just failed."""
+    cache_file = Path(cache_file)
     try:
-        cached = json.loads(Path(cache_file).read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        cached = None
+        private_dir(cache_file.parent)
+        usable = True
+    except (UntrustedPath, OSError):
+        usable = False
+    cached = read_private_json(cache_file) if usable else None
     if state != "disconnected":
         return (_home_public(cached) if cached else None), True, False
     gateway = default_gateway()
@@ -757,11 +942,8 @@ def home_lookup(state, cache_file, curl):
     if not fetched:
         return (_home_public(cached) if cached else None), True, False
     record = dict(fetched, gateway=gateway, fetchedAt=int(time.time()))
-    try:
-        Path(cache_file).parent.mkdir(parents=True, exist_ok=True)
-        Path(cache_file).write_text(json.dumps(record), encoding="utf-8")
-    except OSError:
-        pass
+    if usable:
+        write_private_json(cache_file, record)  # a failed write only costs the next lookup
     return _home_public(record), False, True
 
 
