@@ -144,13 +144,27 @@ class ParseLicense(unittest.TestCase):
 
 
 class ParseExclusions(unittest.TestCase):
+    """`show`'s header line already names the mode, so parsing it costs no
+    `site-exclusions mode` call; that output is only a fallback."""
+
     def test_empty_general(self):
-        e = agvpn.parse_exclusions(fixture("exclusions_mode.txt"), fixture("exclusions_show_empty.txt"))
+        e = agvpn.parse_exclusions(fixture("exclusions_show_empty.txt"))
         self.assertEqual(e, {"mode": "general", "domains": []})
 
     def test_two_domains_selective(self):
-        e = agvpn.parse_exclusions(fixture("exclusions_mode_selective.txt"), fixture("exclusions_show_two.txt"))
+        e = agvpn.parse_exclusions(fixture("exclusions_show_two.txt"))
         self.assertEqual(e, {"mode": "selective", "domains": ["example.com", "*.bank.example"]})
+
+    def test_header_wins_over_a_stale_mode_output(self):
+        e = agvpn.parse_exclusions(fixture("exclusions_show_two.txt"), fixture("exclusions_mode.txt"))
+        self.assertEqual(e["mode"], "selective")
+
+    def test_without_a_header_the_mode_output_is_used(self):
+        legacy = fixture("exclusions_show_legacy.txt")
+        self.assertIsNone(agvpn.mode_from_show(legacy))
+        e = agvpn.parse_exclusions(legacy, fixture("exclusions_mode_selective.txt"))
+        self.assertEqual(e, {"mode": "selective", "domains": ["example.com", "*.bank.example"]})
+        self.assertEqual(agvpn.parse_exclusions(legacy)["mode"], "general")
 
 
 class ParseTunnelTail(unittest.TestCase):
@@ -393,30 +407,37 @@ class Verbs(unittest.TestCase):
         self.assertTrue(j["ok"])
         self.assertFalse(j["loggedIn"])
 
-    def test_exclusions_show(self):
-        rc, out, _ = run_verb("exclusions", "show", mode="selective")
-        j = self.check_json(out)
-        self.assertEqual(j["mode"], "selective")
-        self.assertEqual(j["domains"], ["example.com", "*.bank.example"])
-
-    def test_exclusions_add_reshows(self):
+    def exclusions_calls(self, *args, mode="connected"):
+        """`exclusions <args>`: (answer, the CLI argv lines it ran)."""
         with tempfile.TemporaryDirectory() as d:
             log = Path(d, "argv.log")
-            rc, out, _ = run_verb("exclusions", "add", "example.com", mode="excl2", env_extra={"FAKE_LOG": str(log)})
-            argv = log.read_text()
-        j = self.check_json(out)
+            rc, out, _ = run_verb("exclusions", *args, mode=mode, env_extra={"FAKE_LOG": str(log)})
+            calls = log.read_text().splitlines() if log.exists() else []
+        return self.check_json(out), calls
+
+    def test_exclusions_show_is_one_cli_call(self):
+        # The mode comes out of show's own header line, so nothing else runs.
+        j, calls = self.exclusions_calls("show", mode="selective")
+        self.assertEqual(j["mode"], "selective")
+        self.assertEqual(j["domains"], ["example.com", "*.bank.example"])
+        self.assertEqual(calls, ["site-exclusions show"])
+
+    def test_exclusions_show_asks_for_the_mode_only_without_a_header(self):
+        j, calls = self.exclusions_calls("show", mode="noheader")
+        self.assertEqual(j["mode"], "selective")
+        self.assertEqual(j["domains"], ["example.com", "*.bank.example"])
+        self.assertEqual(calls, ["site-exclusions show", "site-exclusions mode"])
+
+    def test_exclusions_add_reshows(self):
+        j, calls = self.exclusions_calls("add", "example.com", mode="excl2")
         self.assertTrue(j["ok"])
-        self.assertIn("site-exclusions add example.com", argv)
-        self.assertIn("site-exclusions show", argv)
+        self.assertEqual(calls, ["site-exclusions add example.com", "site-exclusions show"])
         self.assertEqual(j["domains"], ["example.com", "*.bank.example"])
 
     def test_exclusions_mode_set(self):
-        with tempfile.TemporaryDirectory() as d:
-            log = Path(d, "argv.log")
-            rc, out, _ = run_verb("exclusions", "mode", "selective", mode="selective", env_extra={"FAKE_LOG": str(log)})
-            argv = log.read_text()
-        self.assertIn("site-exclusions mode selective", argv)
-        self.assertEqual(self.check_json(out)["mode"], "selective")
+        j, calls = self.exclusions_calls("mode", "selective", mode="selective")
+        self.assertEqual(calls, ["site-exclusions mode selective", "site-exclusions show"])
+        self.assertEqual(j["mode"], "selective")
 
     def test_exclusions_add_remove_reject_option_like_domain_without_running(self):
         for action in ("add", "remove"):
@@ -1044,7 +1065,8 @@ class Serialization(unittest.TestCase):
             for t in threads: t.join()
             lines = log.read_text().splitlines()
         self.assertEqual([json.loads(o)["ok"] for o in outs], [True, True, True], outs)
-        assert_serialized(self, lines, 6)
+        # add + show, disconnect + status, status: five CLI calls in all.
+        assert_serialized(self, lines, 5)
 
 
 def assert_serialized(test, lines, starts=None):

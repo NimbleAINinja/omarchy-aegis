@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Stand-in for adguardvpn-cli driven by $FAKE_MODE; prints fixtures verbatim.
-#   FAKE_MODE=connected|disconnected|connecting|login|sudo|hang|slow|linger|excl2|selective|socks|newversion|updatefail|notty
+#   FAKE_MODE=connected|disconnected|connecting|login|sudo|hang|slow|linger|excl2|selective|noheader|socks|newversion|updatefail|notty
 # Every invocation is appended to $FAKE_LOG when set, so tests can assert argv.
 # $FAKE_FDS, when set, receives where this process's stdout and stderr point.
 fixtures="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/fixtures"
@@ -52,8 +52,12 @@ case "$1" in
   logout) echo "Logged out" ;;
   site-exclusions)
     case "$2" in
-      show) if [[ $mode == excl2 || $mode == selective ]]; then cat "$fixtures/exclusions_show_two.txt"; else cat "$fixtures/exclusions_show_empty.txt"; fi ;;
-      mode) if [[ $mode == selective ]]; then cat "$fixtures/exclusions_mode_selective.txt"; else cat "$fixtures/exclusions_mode.txt"; fi ;;
+      # noheader: a CLI whose `show` output carries no "Exclusions for … mode:"
+      # header, so the helper has to ask for the mode separately.
+      show) if [[ $mode == noheader ]]; then cat "$fixtures/exclusions_show_legacy.txt";
+            elif [[ $mode == excl2 || $mode == selective ]]; then cat "$fixtures/exclusions_show_two.txt";
+            else cat "$fixtures/exclusions_show_empty.txt"; fi ;;
+      mode) if [[ $mode == selective || $mode == noheader ]]; then cat "$fixtures/exclusions_mode_selective.txt"; else cat "$fixtures/exclusions_mode.txt"; fi ;;
       add|remove|clear) echo "ok" ;;
       *) echo "unknown" >&2; exit 106 ;;
     esac ;;

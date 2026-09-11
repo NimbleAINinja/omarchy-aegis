@@ -82,6 +82,8 @@ STATUS_CONNECTED = re.compile(r"^Connected to (.+?) in (\S+) mode, (running on|l
 STATUS_CONNECTING = re.compile(r"^(?:Re)?[Cc]onnecting to (.+?) in (\S+) mode")
 ENDPOINT = re.compile(r"Using endpoint: .*?address=([0-9a-fA-F.:\[\]]+?):(\d+)\b.*?ping=(\d+)ms")
 VPN_STATE = re.compile(r"VPN_SS_(CONNECTING|CONNECTED|DISCONNECTED)")
+# "Exclusions for GENERAL mode:" — site-exclusions show's first line.
+EXCL_HEADER = re.compile(r"^Exclusions for (\w+) mode", re.I)
 LOG_STAMP = "%d.%m.%Y %H:%M:%S.%f"
 
 
@@ -172,11 +174,22 @@ def parse_license(text):
     return out
 
 
-def parse_exclusions(mode_text, show_text):
-    mode = "general"
-    m = re.search(r"exclusion mode is (\w+)", strip_ansi(mode_text))
-    if m:
-        mode = m.group(1).lower()
+def mode_from_show(show_text):
+    """The exclusion mode named by `site-exclusions show`'s own header line
+    ("Exclusions for SELECTIVE mode:"), or None when it isn't there — only
+    then does the mode need its own CLI call (see _exclusions_show)."""
+    lines = strip_ansi(show_text).splitlines()
+    m = EXCL_HEADER.match(lines[0].strip()) if lines else None
+    return m.group(1).lower() if m else None
+
+
+def parse_exclusions(show_text, mode_text=None):
+    """`show`'s header carries the mode, so `mode_text` (the output of
+    `site-exclusions mode`) is only consulted when the header is missing."""
+    mode = mode_from_show(show_text)
+    if mode is None:
+        m = re.search(r"exclusion mode is (\w+)", strip_ansi(mode_text or ""))
+        mode = m.group(1).lower() if m else "general"
     domains = []
     for line in strip_ansi(show_text).splitlines()[1:]:
         line = line.strip()
@@ -538,7 +551,7 @@ def verb_budgets():
         "disconnect": 2 * cli,                            # disconnect, then status
         "account": cli,
         "logout": cli,
-        "exclusions": 3 * cli,                            # mode/add/remove, then mode + show
+        "exclusions": 3 * cli,                            # mode/add/remove, then show (+ mode if it has no header)
         "home": cli + ROUTE_TIMEOUT + CURL_TIMEOUT,       # status, ip route, curl
         "config": STDIN_TIMEOUT + 2 * cli,                # stdin (socksPassword), set, then show
         "update-check": 2 * cli,                          # check-update, --version
@@ -842,12 +855,20 @@ def verb_logout():
 
 
 def _exclusions_show():
-    rc1, mode_out, err1 = run_cli(["site-exclusions", "mode"])
-    rc2, show_out, err2 = run_cli(["site-exclusions", "show"])
-    if rc1 != 0 or rc2 != 0:
-        code, message = classify_failure(mode_out + show_out, err1 + err2)
+    # One call: `show` names the mode in its header line, so the separate
+    # `site-exclusions mode` call is only made when that header is missing
+    # (a CLI that doesn't print it).
+    rc, show_out, err = run_cli(["site-exclusions", "show"])
+    if rc != 0:
+        code, message = classify_failure(show_out, err)
         raise CliError(code, message)
-    result = parse_exclusions(mode_out, show_out)
+    mode_out = ""
+    if mode_from_show(show_out) is None:
+        rc2, mode_out, err2 = run_cli(["site-exclusions", "mode"])
+        if rc2 != 0:
+            code, message = classify_failure(mode_out, err2)
+            raise CliError(code, message)
+    result = parse_exclusions(show_out, mode_out)
     result["ok"] = True
     return result
 
