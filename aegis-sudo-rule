@@ -1,0 +1,93 @@
+#!/bin/sh
+# Aegis: write the sudoers rule that lets adguardvpn-cli start its VPN
+# service without a password prompt. It is the rule README.md documents,
+# filled in for one user, and nothing broader: the one command the CLI runs
+# through sudo to connect, for any location.
+#
+#   aegis-sudo-rule               as root (the panel runs it through pkexec):
+#                                 install the rule for the user who invoked
+#                                 pkexec ($PKEXEC_UID)
+#   aegis-sudo-rule UID           as root: the same, for that user
+#   aegis-sudo-rule --print [UID] print the rule and install nothing
+#
+# The file goes to /etc/sudoers.d/adguardvpn-cli, mode 0440, and only after
+# visudo -cf has accepted it. Test hooks: AEGIS_SUDOERS_DIR (write there
+# instead, and don't insist on root), AEGIS_PASSWD (a passwd(5) line to use
+# instead of looking the uid up).
+set -eu
+
+fail() {
+  echo "aegis-sudo-rule: $*" >&2
+  exit 1
+}
+
+# Quote every character an extended regular expression would read as an
+# operator, so a home directory is matched literally.
+regex_escape() {
+  printf '%s' "$1" | sed 's/[][\\.^$*+?(){}|]/\\&/g'
+}
+
+print_only=0
+if [ "${1:-}" = "--print" ]; then
+  print_only=1
+  shift
+fi
+[ $# -le 1 ] || fail "usage: aegis-sudo-rule [--print] [UID]"
+
+uid=${1:-${PKEXEC_UID:-}}
+if [ -z "$uid" ]; then
+  [ $print_only -eq 1 ] || fail "no user: run through pkexec, or pass a uid"
+  uid=$(id -u)
+fi
+case $uid in
+  *[!0-9]*|'') fail "not a uid: $uid" ;;
+esac
+
+entry=${AEGIS_PASSWD:-$(getent passwd "$uid" || true)}
+[ -n "$entry" ] || fail "no such user: uid $uid"
+user=$(printf '%s\n' "$entry" | cut -d: -f1)
+home=$(printf '%s\n' "$entry" | cut -d: -f6)
+case $user in
+  ''|*[!A-Za-z0-9._-]*|[!A-Za-z_]*) fail "cannot write a rule for user '$user'" ;;
+esac
+case $home in
+  /*) ;;
+  *) fail "home directory of $user is not absolute: '$home'" ;;
+esac
+case $home in
+  *[[:space:]]*|*:*) fail "home directory of $user cannot be matched safely: '$home'" ;;
+esac
+
+home_re=$(regex_escape "$home")
+rule="$user ALL=(root) NOPASSWD: /usr/bin/env ^HOME=$home_re XDG_DATA_HOME=$home_re/\\.local/share DISPLAY=:[0-9]+(\\.[0-9]+)? DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$uid/bus /opt/adguardvpn_cli/adguardvpn-cli connect --no-fork -l [^-[:space:]][^[:space:]]*( [^-[:space:]][^[:space:]]*)* (-v )?--log-to-file --wait-for-parent --ppid-file $home_re/\\.local/share/adguardvpn-cli/vpn\\.pid\$"
+
+if [ $print_only -eq 1 ]; then
+  printf '%s\n' "$rule"
+  exit 0
+fi
+
+dir=${AEGIS_SUDOERS_DIR:-/etc/sudoers.d}
+if [ -z "${AEGIS_SUDOERS_DIR:-}" ] && [ "$(id -u)" -ne 0 ]; then
+  fail "must run as root (the panel uses pkexec)"
+fi
+[ -d "$dir" ] || fail "no such directory: $dir"
+command -v visudo >/dev/null 2>&1 || fail "visudo not found"
+
+# Written next to its final name and moved into place, so sudo never reads a
+# half-written file. sudoers.d skips names containing '.' or '~', so the
+# temporary name is invisible to sudo even if something interrupts us here.
+tmp=$(mktemp "$dir/.adguardvpn-cli.XXXXXX") || fail "cannot write to $dir"
+trap 'rm -f "$tmp"' EXIT
+{
+  echo "# AdGuard VPN CLI: let $user start the VPN service without a password."
+  echo "# Written by Aegis (io.github.nimbleaininja.aegis). Check with: visudo -cf"
+  printf '%s\n' "$rule"
+} > "$tmp"
+chmod 0440 "$tmp"
+if ! visudo -cf "$tmp" >/dev/null 2>&1; then
+  visudo -cf "$tmp" >&2 || true
+  fail "visudo rejected the rule"
+fi
+mv -f "$tmp" "$dir/adguardvpn-cli"
+trap - EXIT
+echo "installed $dir/adguardvpn-cli for $user"

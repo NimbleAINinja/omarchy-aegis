@@ -45,10 +45,14 @@ then `omarchy plugin enable io.github.nimbleaininja.aegis --section right`.
 - `adguardvpn-cli`, the official AdGuard VPN CLI, logged in.
 - `python3` (standard library only) and `curl`.
 - A sudoers rule, so the CLI can start its VPN service without a password
-  prompt (needs sudo 1.9.10 or newer). The rule allows exactly the one
-  command the CLI runs as root to connect, for any location, and nothing
-  else. Its arguments are a regular expression, so keep it on one line, and
-  replace every `youruser` and the `1000` with your user name and `id -u`:
+  prompt (needs sudo 1.9.10 or newer). Aegis writes it for you: press
+  **Set up** when the panel says sudo needs a password, or **Install** next
+  to "Sudo rule" in settings, and authenticate in the polkit prompt. What it
+  writes is the rule below (`aegis-sudo-rule` in this folder, checked with
+  `visudo -cf` before it is installed), which allows exactly the one command
+  the CLI runs as root to connect, for any location, and nothing else. To
+  install it by hand instead, keep it on one line and replace every
+  `youruser` and the `1000` with your user name and `id -u`:
 
   ```
   # /etc/sudoers.d/adguardvpn-cli  (mode 0440, check with: visudo -cf <file>)
