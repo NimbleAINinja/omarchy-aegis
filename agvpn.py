@@ -10,6 +10,7 @@
     python3 agvpn.py exclusions show | mode <general|selective> | add <domain> | remove <domain>
     python3 agvpn.py home
     python3 agvpn.py config show | set <key> <value>
+    python3 agvpn.py config set socksPassword -   # the password is one line on stdin
     python3 agvpn.py update-check
     python3 agvpn.py kill <name> [name...]
 
@@ -46,6 +47,7 @@ import json
 import tempfile
 import os
 import re
+import select
 import shutil
 import signal
 import stat
@@ -65,6 +67,8 @@ PS_TIMEOUT = 3.0       # read_since's ps
 PROCS_TIMEOUT = 5.0    # verb_procs's ps
 ROUTE_TIMEOUT = 3.0    # default_gateway's ip route
 CURL_TIMEOUT = 8.0     # fetch_home's curl
+STDIN_TIMEOUT = 3.0    # read_stdin_secret's wait for the line
+SECRET_MAX = 256       # bytes, a secret read from stdin
 LOCK_POLL = 0.1
 STOP_GRACE = 3.0
 HOME_MAX_AGE = 24 * 3600
@@ -534,7 +538,7 @@ def verb_budgets():
         "logout": cli,
         "exclusions": 3 * cli,                            # mode/add/remove, then mode + show
         "home": cli + ROUTE_TIMEOUT + CURL_TIMEOUT,       # status, ip route, curl
-        "config": 2 * cli,                                # set, then show
+        "config": STDIN_TIMEOUT + 2 * cli,                # stdin (socksPassword), set, then show
         "update-check": 2 * cli,                          # check-update, --version
         "procs": PROCS_TIMEOUT,
     }
@@ -602,11 +606,30 @@ def _take_lock_in_child(fd):
     return take
 
 
-def _spawn_cli(argv, name, out, err, lock, started):
+def _stdin_pipe(data):
+    """The read end of a pipe that already holds `data`, its write end
+    closed: whoever gets it as stdin reads `data`, then EOF. Filled before
+    the spawn, so the CLI can never block us or be sent EPIPE, and one short
+    line is far below PIPE_BUF, so the write is never partial."""
+    r, w = os.pipe()
+    try:
+        view = memoryview(data)
+        while view:
+            view = view[os.write(w, view):]
+    except BaseException:
+        os.close(r)
+        raise
+    finally:
+        os.close(w)
+    return r
+
+
+def _spawn_cli(argv, name, out, err, lock, started, stdin_data=None):
     """Start the CLI once the lock is free, appending its Popen to `started`
     before stop signals are let through again, so a SIGTERM that lands
     mid-spawn still finds (and stops) the child. Waits no longer than what
-    is left of the budget (LOCK_WAIT when there is none)."""
+    is left of the budget (LOCK_WAIT when there is none). `stdin_data`
+    (bytes) is what the CLI reads on stdin; None gives it /dev/null."""
     give_up = time.monotonic() + (time_left() if _deadline is not None else timeout_for(CLI_TIMEOUT))
     while True:
         # Checked before spawning too: never start a CLI call (a connect,
@@ -615,9 +638,14 @@ def _spawn_cli(argv, name, out, err, lock, started):
             raise CliError("timeout", "adguardvpn-cli %s timed out waiting for its turn" % name)
         if lock is None or _lock_free(lock):
             blocked = signal.pthread_sigmask(signal.SIG_BLOCK, STOP_SIGNALS)
+            stdin = None
             try:
+                # A fresh pipe for every attempt: a spawn that lost the lock
+                # race had its copy closed below along with ours.
+                if stdin_data is not None:
+                    stdin = _stdin_pipe(stdin_data)
                 started.append(subprocess.Popen(
-                    argv, stdin=subprocess.DEVNULL, stdout=out, stderr=err,
+                    argv, stdin=subprocess.DEVNULL if stdin is None else stdin, stdout=out, stderr=err,
                     env=dict(os.environ, TERM="dumb"),
                     pass_fds=(lock,) if lock is not None else (),
                     preexec_fn=_take_lock_in_child(lock) if lock is not None else None))
@@ -625,6 +653,10 @@ def _spawn_cli(argv, name, out, err, lock, started):
             except subprocess.SubprocessError:
                 pass  # another helper's CLI took the lock between probe and exec
             finally:
+                # The child has the pipe as its fd 0 by now (close_fds drops
+                # the original number there); our end is no longer needed.
+                if stdin is not None:
+                    os.close(stdin)
                 signal.pthread_sigmask(signal.SIG_SETMASK, blocked)
         time.sleep(LOCK_POLL)
 
@@ -653,7 +685,9 @@ def _captured(f):
     return strip_ansi(text.replace("\r\n", "\n").replace("\r", "\n"))
 
 
-def run_cli(args, timeout=CLI_TIMEOUT):
+def run_cli(args, timeout=CLI_TIMEOUT, stdin_data=None):
+    # stdin_data: bytes for the CLI's stdin — a secret that must stay out of
+    # its argv (see _config_set_secret). Every other call gets /dev/null.
     binary = cli_path()
     if not (os.path.isfile(binary) and os.access(binary, os.X_OK)):
         raise CliError("cli_missing", "adguardvpn-cli not found")
@@ -688,7 +722,7 @@ def run_cli(args, timeout=CLI_TIMEOUT):
     with tempfile.TemporaryFile() as out, tempfile.TemporaryFile() as err:
         started = []
         try:
-            _spawn_cli([binary] + list(args), name, out, err, lock, started)
+            _spawn_cli([binary] + list(args), name, out, err, lock, started, stdin_data)
             rc = started[0].wait(timeout=time_left(timeout_for(timeout)))
         except subprocess.TimeoutExpired:
             _stop_child(started[0], 0)
@@ -968,9 +1002,12 @@ CONFIG_SETTERS = {
     "socksHost": ("set-socks-host", "text"),
     "socksPort": ("set-socks-port", "port"),
     "socksUsername": ("set-socks-username", "text"),
-    "socksPassword": ("set-socks-password", "text"),
+    # "stdin": a secret, read from our stdin and handed to the CLI on its
+    # stdin (see _config_set_secret). Model.js CONFIG_STDIN_KEYS mirrors these.
+    "socksPassword": ("set-socks-password", "stdin"),
     "socksAuth": ("clear-socks-auth", ("clear",)),
 }
+NO_TTY = "No TTY for user input"
 BOOL_WORDS = {"on": "on", "true": "on", "1": "on", "yes": "on", "off": "off", "false": "off", "0": "off", "no": "off"}
 
 
@@ -981,6 +1018,14 @@ def config_command(key, value):
         raise CliError("unknown", "unknown config key: %s" % key)
     sub, kind = entry
     value = str(value if value is not None else "").strip()
+    if kind == "stdin":
+        # Never taken from argv, where every local user can read it: a
+        # caller still passing the value itself is refused rather than
+        # leaking it on to the CLI's own command line. The message must not
+        # echo what was given.
+        if value != "-":
+            raise CliError("unknown", "%s is read from stdin: pass - as the value" % key)
+        return ["config", sub]
     if kind == "bool":
         word = BOOL_WORDS.get(value.lower())
         if not word:
@@ -1011,6 +1056,66 @@ def _config_show():
     return result
 
 
+def read_stdin_secret(name, fd=0):
+    """One line from stdin — a secret that must not travel in argv — with
+    only its trailing newline stripped.
+
+    Stops at the first newline rather than waiting for EOF, and waits no
+    longer than STDIN_TIMEOUT (clipped to the budget), so a caller that
+    never closes its end can't hang the helper. Refused (CliError, never
+    echoing the input): nothing at all, more than SECRET_MAX bytes, anything
+    after the newline, invalid UTF-8, and whitespace or other unprintable
+    characters (the same no-whitespace rule as the "text" config values)."""
+    give_up = time.monotonic() + time_left(STDIN_TIMEOUT)
+    data = b""
+    try:
+        while b"\n" not in data and len(data) <= SECRET_MAX:
+            wait = give_up - time.monotonic()
+            if wait <= 0:
+                raise CliError("timeout", "%s did not arrive on stdin" % name)
+            if not select.select([fd], [], [], wait)[0]:
+                continue
+            chunk = os.read(fd, SECRET_MAX + 2 - len(data))
+            if not chunk:
+                break  # EOF: a last line without its newline still counts
+            data += chunk
+    except OSError as e:
+        raise CliError("unknown", "cannot read %s from stdin: %s" % (name, e.strerror or type(e).__name__))
+    line, _, rest = data.partition(b"\n")
+    if len(line) > SECRET_MAX:
+        raise CliError("unknown", "%s is longer than %d bytes" % (name, SECRET_MAX))
+    if rest:
+        raise CliError("unknown", "%s must be a single line" % name)
+    try:
+        value = line.decode("utf-8")
+    except UnicodeDecodeError:
+        raise CliError("unknown", "%s is not valid UTF-8" % name)
+    if not value:
+        raise CliError("unknown", "%s needs a value" % name)
+    if any(ch.isspace() or not ch.isprintable() for ch in value):
+        raise CliError("unknown", "%s must not contain spaces or control characters" % name)
+    return value
+
+
+def _config_set_secret(key, argv):
+    """Set a "stdin" config key: the value comes from our stdin and goes to
+    the CLI on its stdin, with no positional — adguardvpn-cli then reads it
+    from there instead of prompting. Errors are fixed strings, never the
+    CLI's own output, which could repeat what it was given."""
+    secret = read_stdin_secret(key)
+    rc, out, err = run_cli(argv, stdin_data=(secret + "\n").encode("utf-8"))
+    if NO_TTY in out or NO_TTY in err:
+        # It found nothing on stdin, tried to prompt, kept the old value and
+        # exited 16 — a failure even if a future version exits 0.
+        raise CliError("unknown", "adguardvpn-cli did not read %s from stdin" % key)
+    if rc != 0:
+        code, message = classify_failure(out, err)
+        if code == "unknown":
+            message = "adguardvpn-cli could not set %s (exit %d)" % (key, rc)
+        raise CliError(code, message)
+    return _config_show()
+
+
 def verb_config(args):
     action = args[0] if args else "show"
     if action == "show":
@@ -1019,6 +1124,8 @@ def verb_config(args):
         key = args[1] if len(args) > 1 else ""
         value = " ".join(args[2:]) if len(args) > 2 else ""
         argv = config_command(key, value)
+        if CONFIG_SETTERS[key][1] == "stdin":
+            return _config_set_secret(key, argv)
         rc, out, err = run_cli(argv)
         if rc != 0:
             code, message = classify_failure(out, err)

@@ -312,6 +312,39 @@ test("normalizeConfig maps helper fields with safe defaults", () => {
   assert.equal(g.dns, "default")
 })
 
+test("configJob keeps a secret config value off the helper's command line", () => {
+  const secret = Model.configJob("socksPassword", "hunter2")
+  assert.deepEqual(secret, { args: ["config", "set", "socksPassword", "-"], stdin: "hunter2" })
+  assert.ok(!secret.args.join(" ").includes("hunter2"))
+  // Even a value the helper will refuse never lands in args.
+  assert.deepEqual(Model.configJob("socksPassword", "-"), { args: ["config", "set", "socksPassword", "-"], stdin: "-" })
+  assert.deepEqual(Model.configJob("socksPassword", null).stdin, "")
+  // Every other key keeps its value on argv exactly as before.
+  assert.deepEqual(Model.configJob("mode", "socks"), { args: ["config", "set", "mode", "socks"], stdin: null })
+  assert.deepEqual(Model.configJob("socksPort", 1085), { args: ["config", "set", "socksPort", "1085"], stdin: null })
+  assert.deepEqual(Model.configJob("postQuantum", false), { args: ["config", "set", "postQuantum", "false"], stdin: null })
+  assert.deepEqual(Model.configJob("socksUsername", "proxyuser"), { args: ["config", "set", "socksUsername", "proxyuser"], stdin: null })
+})
+
+test("CONFIG_STDIN_KEYS matches agvpn.py's stdin-only setters and Service.setConfig goes through configJob", () => {
+  const { execFileSync } = require("node:child_process")
+  const fs = require("node:fs")
+  const path = require("node:path")
+  const env = Object.assign({}, process.env, { PYTHONDONTWRITEBYTECODE: "1" })
+  for (const k of Object.keys(env)) if (k.startsWith("AEGIS_")) delete env[k]
+  const script = [
+    "import importlib.util, json",
+    "spec = importlib.util.spec_from_file_location('agvpn', 'agvpn.py')",
+    "m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)",
+    "print(json.dumps(sorted(k for k, (sub, kind) in m.CONFIG_SETTERS.items() if kind == 'stdin')))",
+  ].join("\n")
+  const keys = JSON.parse(execFileSync("python3", ["-c", script], { cwd: path.join(__dirname, ".."), env, encoding: "utf8" }))
+  assert.deepEqual(Model.CONFIG_STDIN_KEYS.slice().sort(), keys)
+  const src = fs.readFileSync(path.join(__dirname, "..", "Service.qml"), "utf8")
+  assert.match(src, /Model\.configJob\(/)
+  assert.doesNotMatch(src, /enqueue\(\["config",\s*"set"/, "a config set must be built by Model.configJob")
+})
+
 test("normalizeUpdate maps fields and defaults to up to date", () => {
   assert.deepEqual(Model.normalizeUpdate({ upToDate: false, current: "1.7.12", latest: "1.7.13", checkedAt: 1700000000 }),
     { upToDate: false, current: "1.7.12", latest: "1.7.13", checkedAt: 1700000000 })

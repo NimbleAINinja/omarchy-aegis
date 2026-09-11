@@ -171,7 +171,11 @@ Item {
     var k = String(key)
     clearError()
     _configHintPending = connected && ["mode", "protocol", "postQuantum", "dns", "changeSystemDns"].indexOf(k) !== -1
-    enqueue(["config", "set", k, String(value)], "config", false, true)
+    // Model.configJob keeps a secret (the SOCKS password) out of args, where
+    // any local user could read it in ps, and hands it over as the job's
+    // stdin instead.
+    var job = Model.configJob(k, value)
+    enqueue(job.args, "config", false, true, job.stdin)
   }
 
   function notify(title, body, urgency) {
@@ -276,11 +280,14 @@ Item {
   // running or waiting; actions always queue so each one runs. `mutate`
   // marks a user-initiated write riding a read-only verb ("exclusions",
   // "config"): its failure must reach noteError even though the verb itself
-  // is a _refreshVerbs entry — see jobProcess.onExited.
-  function enqueue(args, verb, dedupe, mutate) {
+  // is a _refreshVerbs entry — see jobProcess.onExited. `stdin`: a string
+  // the helper reads as one line on stdin (a secret, see Model.configJob),
+  // or undefined/null for none. It only ever lives in memory: pump moves it
+  // off the job onto jobProcess, which drops it once written.
+  function enqueue(args, verb, dedupe, mutate, stdin) {
     if (dedupe && ((jobProcess.running && jobProcess.verb === verb) || queued(verb))) return
     var q = _queue.slice()
-    q.push({ args: args, verb: verb, mutate: mutate === true })
+    q.push({ args: args, verb: verb, mutate: mutate === true, stdin: typeof stdin === "string" ? stdin : null })
     _queue = q
     pump()
   }
@@ -292,6 +299,13 @@ Item {
     jobProcess.verb = next.verb
     jobProcess.mutate = next.mutate === true
     jobProcess.output = ""
+    jobProcess.stdinPayload = next.stdin !== null ? next.stdin : ""
+    // Before `running`: Quickshell shuts a Process's write channel at start
+    // when stdinEnabled is false, and write() can't reopen it for that run.
+    // (The child still sees no EOF then; the helper only reads stdin for a
+    // job that has a payload.)
+    jobProcess.stdinEnabled = next.stdin !== null
+    next.stdin = null
     jobProcess.command = helper(next.args)
     jobProcess.running = true
     jobWatchdog.stopping = false
@@ -603,9 +617,26 @@ Item {
     property string verb: ""
     property bool mutate: false
     property string output: ""
+    // The running job's stdin line (see enqueue); "" once written or gone.
+    property string stdinPayload: ""
     stdout: StdioCollector { waitForEnd: true; onStreamFinished: jobProcess.output = text }
+    onStarted: {
+      if (!stdinEnabled) return
+      write(stdinPayload + "\n")
+      stdinPayload = ""
+      // Closes the write channel once the line is flushed, so the helper
+      // also sees EOF. It doesn't rely on that: it stops at the newline and
+      // has its own read timeout.
+      stdinEnabled = false
+    }
+    // A job that never started (a failed start emits no `exited`) must not
+    // keep its secret around either. `running` is already true again here
+    // when onExited's pump started the next job, so that job's is kept.
+    onRunningChanged: if (!running) { stdinPayload = ""; stdinEnabled = false }
     onExited: function(exitCode) {
       jobWatchdog.stop()
+      jobProcess.stdinPayload = ""
+      jobProcess.stdinEnabled = false
       var verb = jobProcess.verb
       var mutate = jobProcess.mutate === true
       var obj = root.parseJson(jobProcess.output)

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Stand-in for adguardvpn-cli driven by $FAKE_MODE; prints fixtures verbatim.
-#   FAKE_MODE=connected|disconnected|connecting|login|sudo|hang|slow|linger|excl2|selective|socks|newversion|updatefail
+#   FAKE_MODE=connected|disconnected|connecting|login|sudo|hang|slow|linger|excl2|selective|socks|newversion|updatefail|notty
 # Every invocation is appended to $FAKE_LOG when set, so tests can assert argv.
 # $FAKE_FDS, when set, receives where this process's stdout and stderr point.
 fixtures="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/fixtures"
@@ -60,7 +60,20 @@ case "$1" in
   config)
     case "$2" in
       show) if [[ $mode == socks ]]; then cat "$fixtures/config_show_socks.txt"; else cat "$fixtures/config_show.txt"; fi ;;
-      set-mode|set-dns|set-socks-port|set-socks-host|set-socks-username|set-socks-password|clear-socks-auth|set-change-system-dns|set-protocol|set-post-quantum) echo "ok" ;;
+      set-mode|set-dns|set-socks-port|set-socks-host|set-socks-username|clear-socks-auth|set-change-system-dns|set-protocol|set-post-quantum) echo "ok" ;;
+      set-socks-password)
+        # Like adguardvpn-cli 1.7.12: with no positional it reads the password
+        # from stdin; with nothing there (or FAKE_MODE=notty) it can't prompt,
+        # keeps the old value and exits 16. $FAKE_STDIN receives the line read.
+        if [[ $# -ge 3 ]]; then echo "ok"; exit 0; fi
+        IFS= read -r line; got=$?
+        [[ -n ${FAKE_STDIN:-} ]] && printf '%s' "$line" > "$FAKE_STDIN"
+        if [[ $mode == notty ]] || [[ $got -ne 0 && -z $line ]]; then
+          printf '%s\n' 'Enter password for accessing SOCKS5 server: ' \
+            'Warning: No TTY for user input. Using default value (no). Use `adguardvpn-cli config set-socks-password <password>` to change.'
+          exit 16
+        fi
+        echo "Config has been updated" ;;
       *) echo "unknown config subcommand" >&2; exit 106 ;;
     esac ;;
   check-update)

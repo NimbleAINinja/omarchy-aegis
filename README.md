@@ -112,6 +112,8 @@ Settings live inline on the widget's entry in `~/.config/omarchy/shell.json`:
 Connection settings (mode, protocol, post-quantum, DNS, SOCKS) are not stored
 by Aegis: they are read from and written to the CLI with `adguardvpn-cli config`.
 Changes to mode, protocol, post-quantum or DNS apply on the next connect.
+The SOCKS password is handed to the CLI on stdin, never on a command line,
+so it never shows up in `ps` for other local users.
 
 ## Privacy
 
@@ -133,7 +135,9 @@ omarchy plugin validate .
 `agvpn.py` wraps the CLI and prints one JSON document per call (`snapshot`,
 `locations`, `connect <name>`, `disconnect`, `account`, `logout`,
 `exclusions …`, `config show|set <key> <value>`, `update-check`, `kill <name…>`,
-`home`). `Model.js` and `Link.js` are pure ES5 shared by QML
+`home`). The SOCKS password is the one exception to `set <key> <value>`:
+`config set socksPassword -` reads it as a single line on stdin, and a value
+passed on the command line is refused. `Model.js` and `Link.js` are pure ES5 shared by QML
 and the node tests. Set `AEGIS_CLI` to point the helper at a fake CLI.
 
 Map data: see `assets/NOTICE.md`.

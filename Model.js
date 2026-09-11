@@ -468,6 +468,22 @@ function normalizeConfig(obj) {
   }
 }
 
+// Config keys whose value is a secret. It must never ride a command line:
+// /proc/<pid>/cmdline is readable by every local user for as long as the
+// helper and its adguardvpn-cli run (up to a CLI lock wait). agvpn.py takes
+// these on stdin behind a "-" and refuses a value on argv; keep this list in
+// sync with its "stdin" CONFIG_SETTERS (tests/model.test.js checks it).
+var CONFIG_STDIN_KEYS = ["socksPassword"]
+
+// The helper job for Service.setConfig: { args, stdin }. For a secret key
+// args carry "-" where the value would go and stdin holds the value (see
+// Service.qml's jobProcess); for everything else stdin is null.
+function configJob(key, value) {
+  var k = String(key)
+  if (CONFIG_STDIN_KEYS.indexOf(k) !== -1) return { args: ["config", "set", k, "-"], stdin: str(value) }
+  return { args: ["config", "set", k, String(value)], stdin: null }
+}
+
 function normalizeUpdate(obj) {
   var o = obj && typeof obj === "object" ? obj : {}
   return {
@@ -758,7 +774,7 @@ function findExclusionDomain(domains, needle) {
 // against agvpn.py, so change both together.
 var HELPER_BUDGET_SEC = {
   "snapshot": 27, "locations": 24, "connect": 84, "disconnect": 36, "account": 24, "logout": 24,
-  "exclusions": 48, "home": 35, "config": 36, "update-check": 36, "procs": 17
+  "exclusions": 48, "home": 35, "config": 39, "update-check": 36, "procs": 17
 }
 // On top of a budget: python start-up, reaping a timed-out CLI, the answer.
 var WATCHDOG_SLACK_MS = 5000
@@ -809,6 +825,8 @@ if (typeof module !== "undefined") {
     normalizeExclusions: normalizeExclusions,
     isFavorite: isFavorite,
     normalizeConfig: normalizeConfig,
+    CONFIG_STDIN_KEYS: CONFIG_STDIN_KEYS,
+    configJob: configJob,
     normalizeUpdate: normalizeUpdate,
     parseAppList: parseAppList,
     formatAppList: formatAppList,

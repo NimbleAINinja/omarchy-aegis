@@ -271,17 +271,25 @@ class ReadSince(unittest.TestCase):
             self.assertIsNone(agvpn.read_since(d, "garbage"))
 
 
-def run_verb(*args, mode="connected", env_extra=None, cli=None, timeout=None):
+def helper_env(mode="connected", env_extra=None, cli=None):
     env = dict(os.environ)
     env["AEGIS_CLI"] = cli or str(FAKE)
     env["FAKE_MODE"] = mode
     env["AEGIS_DATA_DIR"] = env_extra.get("data", "") if env_extra else ""
     if env_extra:
         env.update({k: v for k, v in env_extra.items() if k != "data"})
+    return env
+
+
+def run_verb(*args, mode="connected", env_extra=None, cli=None, timeout=None, stdin=None):
+    """`stdin`: text for the helper's stdin; without it stdin is /dev/null,
+    never the test runner's own terminal."""
+    env = helper_env(mode, env_extra, cli)
     cmd = [sys.executable, str(HELPER)] + list(args)
     if timeout is not None:
         env["AEGIS_TIMEOUT"] = str(timeout)
-    p = subprocess.run(cmd, capture_output=True, text=True, env=env, timeout=90)
+    feed = {"stdin": subprocess.DEVNULL} if stdin is None else {"input": stdin}
+    p = subprocess.run(cmd, capture_output=True, text=True, env=env, timeout=90, **feed)
     return p.returncode, p.stdout, p.stderr
 
 
@@ -500,6 +508,41 @@ class ParseConfig(unittest.TestCase):
         self.assertEqual(c["protocol"], "auto")
 
 
+class StdinSecret(unittest.TestCase):
+    def read(self, data):
+        r, w = os.pipe()
+        try:
+            os.write(w, data)
+            os.close(w)
+            w = None
+            return agvpn.read_stdin_secret("socksPassword", fd=r)
+        finally:
+            os.close(r)
+            if w is not None:
+                os.close(w)
+
+    def test_accepts_one_printable_line(self):
+        self.assertEqual(self.read(b"x" * 256 + b"\n"), "x" * 256)
+        self.assertEqual(self.read(b"no-newline-then-eof"), "no-newline-then-eof")
+        self.assertEqual(self.read("päss☃\n".encode("utf-8")), "päss☃")
+
+    def test_refuses_without_echoing(self):
+        for bad in (b"", b"\n", b"x" * 257 + b"\n", b"x" * 300, b"\xff\xfe\n", b"a\r\n", b"\x00\n",
+                    b"a\nb", b"a b\n", "a b\n".encode("utf-8"), "zero​width\n".encode("utf-8")):
+            with self.assertRaises(agvpn.CliError, msg=repr(bad)) as cm:
+                self.read(bad)
+            self.assertEqual(cm.exception.code, "unknown", repr(bad))
+            self.assertNotIn("xxx", cm.exception.message)
+
+    def test_stdin_pipe_holds_the_data_then_eof(self):
+        r = agvpn._stdin_pipe(b"s3cret\n")
+        try:
+            self.assertEqual(os.read(r, 100), b"s3cret\n")
+            self.assertEqual(os.read(r, 100), b"")
+        finally:
+            os.close(r)
+
+
 class ParseUpdate(unittest.TestCase):
     def test_up_to_date(self):
         u = agvpn.parse_update(fixture("check_update_latest.txt"), "AdGuard VPN CLI v1.7.12")
@@ -558,7 +601,6 @@ class ConfigVerbs(unittest.TestCase):
         self.assert_set("socksHost", "0.0.0.0", "config set-socks-host 0.0.0.0")
         self.assert_set("socksPort", "1085", "config set-socks-port 1085")
         self.assert_set("socksUsername", "proxyuser", "config set-socks-username proxyuser")
-        self.assert_set("socksPassword", "s3cret", "config set-socks-password s3cret")
         self.assert_set("socksAuth", "clear", "config clear-socks-auth")
 
     def test_config_set_rejects_bad_input_without_running(self):
@@ -572,6 +614,94 @@ class ConfigVerbs(unittest.TestCase):
             self.assertFalse(j["ok"], (key, value))
             self.assertEqual(j["code"], "unknown")
             self.assertFalse(ran, "must not touch the CLI for %s=%s" % (key, value))
+
+    def set_password(self, stdin, args=("-",), mode="connected"):
+        """`config set socksPassword <args>` fed `stdin`: (answer, the fake
+        CLI's argv log or None if it never ran, the line it read on stdin)."""
+        with tempfile.TemporaryDirectory() as d:
+            log, got = Path(d, "argv.log"), Path(d, "stdin.txt")
+            rc, out, err = run_verb("config", "set", "socksPassword", *args, mode=mode, stdin=stdin,
+                                    env_extra={"FAKE_LOG": str(log), "FAKE_STDIN": str(got)})
+            self.assertEqual(rc, 0, err)
+            argv = log.read_text() if log.exists() else None
+            read = got.read_text() if got.exists() else None
+        return self.check_json(out), argv, read
+
+    def helper_with_open_stdin(self, data, env_extra):
+        """Run `config set socksPassword -`, write `data` and never close
+        stdin (a caller that forgets to); returns the helper's output."""
+        env = helper_env(env_extra=env_extra)
+        p = subprocess.Popen([sys.executable, str(HELPER), "config", "set", "socksPassword", "-"],
+                             stdin=subprocess.PIPE, stdout=subprocess.PIPE, env=env)
+        try:
+            if data:
+                p.stdin.write(data)
+                p.stdin.flush()
+            p.wait(timeout=20)
+            return p.stdout.read().decode("utf-8")
+        finally:
+            if p.poll() is None:
+                p.kill()
+                p.wait()
+            p.stdin.close()
+            p.stdout.close()
+
+    def test_socks_password_reaches_the_cli_on_stdin_only(self):
+        j, argv, read = self.set_password("pa55-w0rd!#%\n")
+        self.assertTrue(j["ok"], j)
+        self.assertEqual(read, "pa55-w0rd!#%")
+        # The fake logs its argv verbatim: no positional after the subcommand.
+        self.assertEqual(argv.splitlines(), ["config set-socks-password", "config show"])
+        self.assertNotIn("pa55", argv)
+
+    def test_socks_password_line_is_enough_without_eof(self):
+        with tempfile.TemporaryDirectory() as d:
+            got = Path(d, "stdin.txt")
+            out = self.helper_with_open_stdin(b"s3cret\n", {"FAKE_STDIN": str(got)})
+            read = got.read_text()
+        self.assertTrue(self.check_json(out)["ok"], out)
+        self.assertEqual(read, "s3cret")
+
+    def test_socks_password_never_waits_forever_on_stdin(self):
+        with tempfile.TemporaryDirectory() as d:
+            log = Path(d, "argv.log")
+            started = time.monotonic()
+            out = self.helper_with_open_stdin(b"", {"FAKE_LOG": str(log), "AEGIS_BUDGET": "1"})
+            took = time.monotonic() - started
+            ran = log.exists()
+        j = self.check_json(out)
+        self.assertFalse(j["ok"])
+        self.assertEqual(j["code"], "timeout")
+        self.assertFalse(ran)
+        self.assertLess(took, 10)
+
+    def test_socks_password_on_argv_is_refused(self):
+        for args in (("hunter2",), ("hunter2", "-"), ()):
+            j, argv, read = self.set_password("hunter2\n", args=args)
+            self.assertFalse(j["ok"], args)
+            self.assertEqual(j["code"], "unknown")
+            self.assertIn("stdin", j["error"])
+            self.assertNotIn("hunter2", j["error"])
+            self.assertIsNone(argv, "must not touch the CLI for %r" % (args,))
+
+    def test_socks_password_bad_stdin_is_refused_without_running(self):
+        for stdin in ("", "\n", "two words\n", "tab\tbed\n", "bell\x07x\n", " nbsp\n",
+                      "x" * 257 + "\n", "x" * 400, "one\ntwo\n"):
+            j, argv, read = self.set_password(stdin)
+            self.assertFalse(j["ok"], repr(stdin))
+            self.assertEqual(j["code"], "unknown", repr(stdin))
+            self.assertIsNone(argv, "must not touch the CLI for %r" % stdin)
+            for word in stdin.split():
+                if len(word) >= 3:
+                    self.assertNotIn(word, j["error"])
+
+    def test_socks_password_cli_that_did_not_read_stdin_fails(self):
+        j, argv, read = self.set_password("s3cret-pw\n", mode="notty")
+        self.assertFalse(j["ok"], j)
+        self.assertEqual(j["code"], "unknown")
+        self.assertIn("stdin", j["error"])
+        self.assertNotIn("s3cret", json.dumps(j))
+        self.assertEqual(argv.splitlines(), ["config set-socks-password"])
 
     def test_update_check_latest(self):
         rc, out, _ = run_verb("update-check")
