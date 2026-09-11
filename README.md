@@ -77,6 +77,7 @@ then `omarchy plugin enable io.github.nimbleaininja.aegis --section right`.
 | `a` | account |
 | `s` | settings |
 | `K` (Shift+k) | kill switch tab (plain `k` is cursor-up) |
+| `L` (Shift+l) | back to the locations (plain `l` is cursor-right) |
 | `h` / `l` | switch chips (mode, protocol) in settings |
 | `p` | pause or resume the exclusion under the cursor |
 | `x` | remove the exclusion under the cursor |

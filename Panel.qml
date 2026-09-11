@@ -64,6 +64,11 @@ Panel {
   property string focusSection: "header"  // header | list | footer
   property int cursorIndex: 0
   property int footerIndex: 0
+  // Last index of the footer Repeater's model below — the cursor clamp. The
+  // model is a literal there (a Repeater given a new model rebuilds every
+  // button, so it must not be an expression); tests/model.test.js reads the
+  // literal and checks this number against its length.
+  readonly property int footerLastIndex: 6
   property bool cursorActive: false
   property string query: ""
   property double nowMs: Date.now()
@@ -133,6 +138,9 @@ Panel {
   function countryFor(iso) { return Model.countryFrom(countryByIso, iso) }
 
   function switchView(next) {
+    // Asking for the view you are already in returns to the list, so every
+    // footer button is a toggle. "list" is its own fallback, so the footer's
+    // map pin pressed on the list simply leaves you there.
     view = view === next ? "list" : next
     // A new view starts with the keyboard cursor parked on the header, so the
     // first Down always lands on the view's first row.
@@ -153,7 +161,7 @@ Panel {
     if (cursorIndex >= listCount) cursorIndex = Math.max(0, listCount - 1)
     if (cursorIndex < 0) cursorIndex = 0
     if (footerIndex < 0) footerIndex = 0
-    if (footerIndex > 5) footerIndex = 5
+    if (footerIndex > footerLastIndex) footerIndex = footerLastIndex
   }
 
   function moveCursor(dx, dy) {
@@ -169,7 +177,7 @@ Panel {
         if (dy < 0) focusSection = listCount > 0 ? "list" : "header"
       }
     } else if (dx !== 0) {
-      if (focusSection === "footer") footerIndex = Math.max(0, Math.min(5, footerIndex + dx))
+      if (focusSection === "footer") footerIndex = Math.max(0, Math.min(footerLastIndex, footerIndex + dx))
       else if (root.viewItem && typeof root.viewItem.moveHorizontal === "function") root.viewItem.moveHorizontal(dx)
     }
     ensureCursor()
@@ -185,11 +193,12 @@ Panel {
   }
 
   function footerAction(index) {
-    if (index === 0) switchView("exclusions")
-    else if (index === 1) switchView("account")
-    else if (index === 2) switchView("settings")
-    else if (index === 3) switchView("killswitch")
-    else if (index === 4) cycleBarMode()
+    if (index === 0) switchView("list")
+    else if (index === 1) switchView("exclusions")
+    else if (index === 2) switchView("account")
+    else if (index === 3) switchView("settings")
+    else if (index === 4) switchView("killswitch")
+    else if (index === 5) cycleBarMode()
     // The footer's refresh button is an explicit ask: refetch the location
     // list even if the one on screen is still within its TTL.
     else vpn.refreshAll(true)
@@ -215,6 +224,7 @@ Panel {
     if (k === "a") { switchView("account"); return }
     if (k === "s") { switchView("settings"); return }
     if (t === "K") { switchView("killswitch"); return }  // plain k is cursor-up in the key catcher
+    if (t === "L") { switchView("list"); return }        // plain l is cursor-right
     if (k === "p" && view === "exclusions" && focusSection === "list") {
       if (root.viewItem && typeof root.viewItem.pauseAt === "function") root.viewItem.pauseAt(cursorIndex)
       return
@@ -553,22 +563,26 @@ Panel {
         spacing: Style.space(6)
 
         Repeater {
-          // A constant list of ids, in footerAction's index order. The
+          // A constant list of ids, in footerAction's index order, with
+          // root.footerLastIndex clamping the cursor to the last of them. The
           // model used to be an inline array literal whose entries read
           // vpn.killSwitch and root.barMode, so arming the kill switch or
           // cycling the bar mode rebuilt the array, and a Repeater given a
-          // new model destroys and recreates every delegate: all six
+          // new model destroys and recreates every delegate: all of the
           // buttons, to change one glyph on one of them. The per-button
           // expressions now live in the delegate, where they change a
           // property on a button that stays put.
-          model: ["exclusions", "account", "settings", "killswitch", "barmode", "refresh"]
+          model: ["list", "exclusions", "account", "settings", "killswitch", "barmode", "refresh"]
           PanelActionButton {
             required property string modelData
             required property int index
+            // Every id but "barmode" and "refresh" is also a view name, and
+            // neither of those two can ever equal root.view.
             readonly property bool lit: modelData === "killswitch"
               ? (root.view === "killswitch" || vpn.killSwitch)
-              : (modelData === "exclusions" || modelData === "account" || modelData === "settings") && root.view === modelData
+              : root.view === modelData
             iconText: {
+              if (modelData === "list") return "󰍎"
               if (modelData === "exclusions") return "󰈲"
               if (modelData === "account") return "󰀄"
               if (modelData === "settings") return "󰒓"
@@ -577,6 +591,7 @@ Panel {
               return "󰑐"
             }
             tooltipText: {
+              if (modelData === "list") return "Locations (L)"
               if (modelData === "exclusions") return "Exclusions (e)"
               if (modelData === "account") return "Account (a)"
               if (modelData === "settings") return "Settings (s)"

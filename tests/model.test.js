@@ -372,24 +372,43 @@ test("Panel.qml leaves the view alone when a connect finishes", () => {
 test("Panel.qml's footer model is constant and in footerAction's order", () => {
   const fs = require("node:fs"), path = require("node:path")
   const panel = fs.readFileSync(path.join(__dirname, "..", "Panel.qml"), "utf8")
-  const ids = ["exclusions", "account", "settings", "killswitch", "barmode", "refresh"]
+  // The map pin comes first: the way back to the locations is where the eye
+  // lands, and it is the view every other one toggles back to.
+  const ids = ["list", "exclusions", "account", "settings", "killswitch", "barmode", "refresh"]
   const model = /Repeater \{[\s\S]*?\n *model: (\[[^\]]*\])/.exec(panel)
   assert.ok(model, "footer Repeater model present")
   assert.deepEqual(JSON.parse(model[1].replace(/"/g, '"')), ids)
   // Nothing that changes while the panel is open may appear in the model, or
-  // the Repeater rebuilds all six buttons whenever it does.
+  // the Repeater rebuilds every button whenever it does.
   assert.doesNotMatch(model[1], /vpn\.|root\./)
   // footerAction must keep mapping those indexes to those actions.
   const action = /function footerAction\(index\) \{[\s\S]*?\n  \}/.exec(panel)
   assert.ok(action, "footerAction present")
-  assert.match(action[0], /index === 0\) switchView\("exclusions"\)/)
-  assert.match(action[0], /index === 1\) switchView\("account"\)/)
-  assert.match(action[0], /index === 2\) switchView\("settings"\)/)
-  assert.match(action[0], /index === 3\) switchView\("killswitch"\)/)
-  assert.match(action[0], /index === 4\) cycleBarMode\(\)/)
+  assert.match(action[0], /index === 0\) switchView\("list"\)/)
+  assert.match(action[0], /index === 1\) switchView\("exclusions"\)/)
+  assert.match(action[0], /index === 2\) switchView\("account"\)/)
+  assert.match(action[0], /index === 3\) switchView\("settings"\)/)
+  assert.match(action[0], /index === 4\) switchView\("killswitch"\)/)
+  assert.match(action[0], /index === 5\) cycleBarMode\(\)/)
   assert.match(action[0], /else vpn\.refreshAll\(true\)/)
-  // ensureCursor clamps the footer cursor to the last of those six.
-  assert.match(panel, /if \(footerIndex > 5\) footerIndex = 5/)
+  // Every button has a glyph and a tooltip of its own.
+  const delegate = /Repeater \{[\s\S]*?\n {8}\}/.exec(panel)
+  for (const id of ids.slice(0, -1)) assert.match(delegate[0], new RegExp(`modelData === "${id}"`))
+  assert.match(delegate[0], /if \(modelData === "list"\) return "󰍎"/)
+  assert.match(delegate[0], /if \(modelData === "list"\) return "Locations \(L\)"/)
+  // The cursor clamp is one number, and it has to be the last index of that
+  // model — add a button and both move together.
+  assert.match(panel, new RegExp(`readonly property int footerLastIndex: ${ids.length - 1}\\b`))
+  assert.match(panel, /if \(footerIndex > footerLastIndex\) footerIndex = footerLastIndex/)
+  assert.match(panel, /Math\.max\(0, Math\.min\(footerLastIndex, footerIndex \+ dx\)\)/)
+  // Shift+L is the keyboard twin of the map pin; plain l is cursor-right in
+  // PanelKeyCatcher, so it is tested before the text is lowercased.
+  const keys = /function handleTextKey\(t\) \{[\s\S]*?\n  \}/.exec(panel)
+  assert.ok(keys, "handleTextKey present")
+  assert.match(keys[0], /if \(t === "L"\) \{ switchView\("list"\); return \}/)
+  // switchView("list") must land on the list from the list, not toggle away:
+  // "list" is the fallback of its own toggle.
+  assert.match(panel, /view = view === next \? "list" : next/)
 })
 
 test("Panel.qml freezes both ordering inputs for as long as the panel is open", () => {
