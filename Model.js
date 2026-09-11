@@ -468,6 +468,25 @@ function errorProtected(source) {
   return source === "action" || source === "sudo"
 }
 
+// Whether a fresh, recognised status snapshot proves that a failed connect/
+// disconnect action's outcome happened anyway (the CLI finished after a
+// watchdog timeout, auto-connect's network blip cleared up, ...), so its
+// "action" error can be cleared without the user starting another action.
+//   intent: { verb: "connect", target } | { verb: "disconnect" } | null
+//   snap: { state, location }
+// A connect only resolves against a snapshot connected to that same
+// location — being connected to somewhere else must not clear a
+// "location not found" (or similar) error about the original target.
+function errorResolved(intent, snap) {
+  if (!intent || typeof intent !== "object" || !snap || typeof snap !== "object") return false
+  if (intent.verb === "connect") {
+    var target = str(intent.target)
+    return target !== "" && snap.state === "connected" && str(snap.location) === target
+  }
+  if (intent.verb === "disconnect") return snap.state === "disconnected"
+  return false
+}
+
 function shouldAutoConnect(ctx) {
   if (!ctx || typeof ctx !== "object") return false
   return ctx.autoConnect === true && ctx.wasConnected === true && !ctx.attempted
@@ -658,6 +677,7 @@ if (typeof module !== "undefined") {
     tunnelLoss: tunnelLoss,
     settleStatus: settleStatus,
     errorProtected: errorProtected,
+    errorResolved: errorResolved,
     shouldAutoConnect: shouldAutoConnect,
     updateCheckDue: updateCheckDue,
     protocolLabel: protocolLabel,

@@ -40,6 +40,14 @@ Item {
   // disconnect/exclusion/config call), "sudo", or "" (a routine background
   // outcome, freely replaced). See Model.errorProtected.
   property string errorSource: ""
+  // What a connect/disconnect action wanted, so a later snapshot proving it
+  // happened anyway (the CLI finished after a watchdog timeout, a network
+  // blip cleared up after auto-connect failed, ...) can resolve the error
+  // without waiting for the user to start another action. Only ever set
+  // alongside errorSource === "action"; null for exclusion/config/sudo
+  // errors, which keep the new-action-only rule. See Model.errorResolved.
+  //   { verb: "connect", target } | { verb: "disconnect" } | null
+  property var errorIntent: null
   property string pendingLocation: ""    // city currently being connected
 
   // Optimistic switch state: -1 follows reality, 0/1 while an action is in flight.
@@ -112,9 +120,7 @@ Item {
   function setExclusionPaused(domain, paused) {
     var d = String(domain || "").trim().toLowerCase()
     if (d === "") return
-    lastError = ""
-    errorCode = ""
-    errorSource = ""
+    clearError()
     persist({ pausedExclusions: Model.setPaused(pausedExclusions, exclusions.mode, d, paused) })
     if (paused) enqueue(["exclusions", "remove", d], "exclusions", false, true)
     else enqueue(["exclusions", "add", d], "exclusions", false, true)
@@ -123,9 +129,7 @@ Item {
   function forgetExclusion(domain) {
     var d = String(domain || "").trim().toLowerCase()
     if (d === "") return
-    lastError = ""
-    errorCode = ""
-    errorSource = ""
+    clearError()
     if (Model.setPaused(pausedExclusions, exclusions.mode, d, false)[exclusions.mode].length !== (pausedExclusions[exclusions.mode] || []).length)
       persist({ pausedExclusions: Model.setPaused(pausedExclusions, exclusions.mode, d, false) })
     if (exclusions.domains.indexOf(d) !== -1) enqueue(["exclusions", "remove", d], "exclusions", false, true)
@@ -151,9 +155,7 @@ Item {
 
   function setConfig(key, value) {
     var k = String(key)
-    lastError = ""
-    errorCode = ""
-    errorSource = ""
+    clearError()
     _configHintPending = connected && ["mode", "protocol", "postQuantum", "dns", "changeSystemDns"].indexOf(k) !== -1
     enqueue(["config", "set", k, String(value)], "config", false, true)
   }
@@ -169,9 +171,7 @@ Item {
     if (target === "" || !installed) return
     _desired = 1
     pendingLocation = String(city || target)
-    lastError = ""
-    errorCode = ""
-    errorSource = ""
+    clearError()
     enqueue(["connect", target], "connect")
   }
 
@@ -179,9 +179,7 @@ Item {
     if (!installed) return
     _desired = 0
     pendingLocation = ""
-    lastError = ""
-    errorCode = ""
-    errorSource = ""
+    clearError()
     if (wasConnected) persist({ wasConnected: false })
     enqueue(["disconnect"], "disconnect")
   }
@@ -191,27 +189,23 @@ Item {
     var last = Model.findLocation(locations, lastLocation)
     if (last) connectTo(last.cliName, last.city)
     else if (locations.length > 0) connectTo(locations[0].cliName, locations[0].city)
-    else { lastError = "No locations loaded yet"; errorCode = "unknown"; errorSource = "action" }
+    // Not tied to any CLI job, so nothing will ever resolve it by itself;
+    // errorIntent stays null.
+    else { lastError = "No locations loaded yet"; errorCode = "unknown"; errorSource = "action"; errorIntent = null }
   }
 
   function setExclusionMode(mode) {
-    lastError = ""
-    errorCode = ""
-    errorSource = ""
+    clearError()
     enqueue(["exclusions", "mode", String(mode)], "exclusions", false, true)
   }
   function addExclusion(domain) {
     var d = String(domain || "").trim()
     if (d === "") return
-    lastError = ""
-    errorCode = ""
-    errorSource = ""
+    clearError()
     enqueue(["exclusions", "add", d], "exclusions", false, true)
   }
   function removeExclusion(domain) {
-    lastError = ""
-    errorCode = ""
-    errorSource = ""
+    clearError()
     enqueue(["exclusions", "remove", String(domain)], "exclusions", false, true)
   }
 
@@ -318,12 +312,26 @@ Item {
     }
   }
 
+  // Resets the standing error and what it was about. Called wherever the
+  // user starts a new action (each action owns its own outcome from there)
+  // and wherever a snapshot proves an action's error is resolved.
+  function clearError() {
+    lastError = ""
+    errorCode = ""
+    errorSource = ""
+    errorIntent = null
+  }
+
   // `source`: "action" for a user-initiated connect/disconnect/exclusion/
   // config call, left "" for a routine background outcome (see errorSource).
-  function noteError(obj, source) {
+  // `intent`: what a connect/disconnect action wanted (see errorIntent);
+  // only kept when the error actually ends up "action"-sourced, so a sudo
+  // warning raised mid-connect never carries one (sudo keeps the old rule).
+  function noteError(obj, source, intent) {
     lastError = Model.elideStatus(obj.error || "AdGuard VPN helper failed")
     errorCode = String(obj.code || "unknown")
     errorSource = errorCode === "sudo_password" ? "sudo" : (source || "")
+    errorIntent = errorSource === "action" ? (intent || null) : null
     if (errorCode === "cli_missing") installed = false
     if (errorCode === "logged_out") {
       vpnState = "logged_out"
@@ -343,7 +351,7 @@ Item {
     // or startup auto-connect on it. A standing action/sudo error is not
     // papered over by this generic message either (Model.errorProtected).
     if (snap.state === "unknown") {
-      if (!Model.errorProtected(errorSource)) { lastError = "Unrecognised adguardvpn-cli status output"; errorCode = "parse"; errorSource = "" }
+      if (!Model.errorProtected(errorSource)) { lastError = "Unrecognised adguardvpn-cli status output"; errorCode = "parse"; errorSource = ""; errorIntent = null }
       return
     }
     var prevLocation = location
@@ -368,10 +376,12 @@ Item {
     if (snap.state !== "connected") rates = { down: 0, up: 0 }
     if (snap.state === "disconnected" && homeStale) refreshHome()
     // A background/routine status refresh clears only errors it is entitled
-    // to supersede; an action's own error stands until the user starts a
-    // new action (see connectTo/down/setConfig/exclusion mutators) or the
-    // sudo warning is dismissed some other way.
-    if (!Model.errorProtected(errorSource)) { lastError = ""; errorCode = ""; errorSource = "" }
+    // to supersede; an action's own error otherwise stands until the user
+    // starts a new action (see connectTo/down/setConfig/exclusion mutators)
+    // — unless this very snapshot proves what that action wanted actually
+    // happened (the CLI finished after a watchdog timeout, auto-connect's
+    // network blip cleared up, ...), which resolves it too.
+    if (!Model.errorProtected(errorSource) || Model.errorResolved(errorIntent, snap)) clearError()
     if (step.wasConnected !== null) persist({ wasConnected: step.wasConnected })
     if (step.loss !== "") onTunnelLoss(step.loss, prevLocation)
     if (!startupSettled && snap.state !== "connecting") {
@@ -475,11 +485,16 @@ Item {
       var verb = jobProcess.verb
       jobProcess.running = false
       if (verb === "connect" || verb === "disconnect") {
+        // The CLI often finishes the job after the watchdog gives up on it;
+        // record what was wanted so a later snapshot proving it happened
+        // anyway (Model.errorResolved) clears this without a new action.
+        var intent = verb === "connect" ? { verb: "connect", target: root.pendingLocation } : { verb: "disconnect" }
         root._desired = -1
         root.pendingLocation = ""
         root.lastError = "Timed out waiting for adguardvpn-cli"
         root.errorCode = "timeout"
         root.errorSource = "action"
+        root.errorIntent = intent
       }
       root.pump()
     }
@@ -564,11 +579,15 @@ Item {
       var ok = obj.ok !== false && exitCode === 0
       var isAction = root._refreshVerbs.indexOf(verb) === -1
       if (!ok) {
+        // Captured before the pendingLocation reset below, so a later
+        // snapshot can tell whether connect/disconnect got there anyway.
+        var intent = verb === "connect" ? { verb: "connect", target: root.pendingLocation }
+          : (verb === "disconnect" ? { verb: "disconnect" } : null)
         // `mutate`: an exclusions/config write riding the read-only verb —
         // its failure must surface too, unlike a plain background refresh.
         if (isAction || mutate || verb === "snapshot" || verb === "locations" || verb === "account")
           root.noteError(obj.ok === false ? obj : { error: "AdGuard VPN helper exited " + exitCode, code: "unknown" },
-            (isAction || mutate) ? "action" : "")
+            (isAction || mutate) ? "action" : "", intent)
         if (isAction) { root._desired = -1; root.pendingLocation = "" }
         if (verb === "config" && mutate) root._configHintPending = false
       } else {

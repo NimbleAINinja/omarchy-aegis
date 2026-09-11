@@ -355,6 +355,29 @@ test("errorProtected shields action and sudo errors from routine background outc
   assert.equal(Model.errorProtected(undefined), false)
 })
 
+test("errorResolved clears a connect error only once the snapshot is connected to that same target", () => {
+  const intent = { verb: "connect", target: "Paris" }
+  assert.equal(Model.errorResolved(intent, { state: "connected", location: "Paris" }), true)
+  // Connected, but to somewhere else: the original "location not found" stands.
+  assert.equal(Model.errorResolved(intent, { state: "connected", location: "Tokyo" }), false)
+  assert.equal(Model.errorResolved(intent, { state: "connecting", location: "Paris" }), false)
+  assert.equal(Model.errorResolved(intent, { state: "disconnected", location: "" }), false)
+  assert.equal(Model.errorResolved({ verb: "connect", target: "" }, { state: "connected", location: "" }), false)
+})
+
+test("errorResolved clears a disconnect error once the snapshot is disconnected, regardless of location", () => {
+  const intent = { verb: "disconnect" }
+  assert.equal(Model.errorResolved(intent, { state: "disconnected", location: "" }), true)
+  assert.equal(Model.errorResolved(intent, { state: "connected", location: "Paris" }), false)
+  assert.equal(Model.errorResolved(intent, { state: "connecting", location: "" }), false)
+})
+
+test("errorResolved is false without a recognised intent or snapshot", () => {
+  assert.equal(Model.errorResolved(null, { state: "connected", location: "Paris" }), false)
+  assert.equal(Model.errorResolved({ verb: "exclusions" }, { state: "connected", location: "Paris" }), false)
+  assert.equal(Model.errorResolved({ verb: "connect", target: "Paris" }, null), false)
+})
+
 test("lossResponse: drops always alert, disconnects close apps only with killOnDisconnect", () => {
   const apps = ["firefox", "foot"]
   assert.deepEqual(Model.lossResponse("drop", { location: "Tokyo", killSwitch: true, apps }),
