@@ -282,7 +282,8 @@ Item {
     jobProcess.output = ""
     jobProcess.command = helper(next.args)
     jobProcess.running = true
-    jobWatchdog.interval = next.verb === "connect" ? 75000 : 20000
+    jobWatchdog.stopping = false
+    jobWatchdog.interval = Model.watchdogMs(next.args[0])
     jobWatchdog.restart()
   }
 
@@ -498,24 +499,26 @@ Item {
 
   Timer {
     id: jobWatchdog
-    interval: 20000
+    // Last resort. agvpn.py answers within its own per-verb budget (lock
+    // wait and every sub-call timeout included) and Model.watchdogMs is that
+    // budget plus slack, so this only fires when the helper itself hangs.
+    // First `running = false` (SIGTERM): the helper stops and reaps its CLI
+    // child, then answers a timeout that onExited handles like any other
+    // failure, errorIntent included. If it still hasn't exited
+    // WATCHDOG_KILL_MS later, SIGKILL — a CLI child it leaves behind holds
+    // the CLI lock itself, so the next job still can't overlap it.
+    property bool stopping: false
+    interval: Model.watchdogMs("")
     onTriggered: {
       if (!jobProcess.running) return
-      var verb = jobProcess.verb
-      jobProcess.running = false
-      if (verb === "connect" || verb === "disconnect") {
-        // The CLI often finishes the job after the watchdog gives up on it;
-        // record what was wanted so a later snapshot proving it happened
-        // anyway (Model.errorResolved) clears this without a new action.
-        var intent = verb === "connect" ? { verb: "connect", target: root.pendingLocation } : { verb: "disconnect" }
-        root._desired = -1
-        root.pendingLocation = ""
-        root.lastError = "Timed out waiting for adguardvpn-cli"
-        root.errorCode = "timeout"
-        root.errorSource = "action"
-        root.errorIntent = intent
+      if (!stopping) {
+        stopping = true
+        jobProcess.running = false
+        interval = Model.WATCHDOG_KILL_MS
+        restart()
+        return
       }
-      root.pump()
+      jobProcess.signal(9)
     }
   }
 
@@ -594,6 +597,11 @@ Item {
       var verb = jobProcess.verb
       var mutate = jobProcess.mutate === true
       var obj = root.parseJson(jobProcess.output)
+      // Stopped by jobWatchdog: a helper that answered its SIGTERM already
+      // says "timeout", one that had to be SIGKILLed printed nothing.
+      if (jobWatchdog.stopping && obj.ok === false && obj.code === "parse")
+        obj = { ok: false, error: "Timed out waiting for adguardvpn-cli", code: "timeout" }
+      jobWatchdog.stopping = false
       jobProcess.output = ""
       var ok = obj.ok !== false && exitCode === 0
       var isAction = root._refreshVerbs.indexOf(verb) === -1

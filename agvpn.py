@@ -19,10 +19,17 @@ The CLI has no machine-readable output and always emits ANSI colour, so every
 read goes through strip_ansi() and a fixed-width or regex parser tested
 against recorded fixtures in tests/fixtures/.
 
+Every queued verb answers within its own overall budget (verb_budget), and
+SIGTERM/SIGHUP/SIGINT stop and reap a running adguardvpn-cli before the
+helper answers {"ok": false, "code": "timeout"}.
+
 Environment overrides (used by tests): AEGIS_CLI (binary), AEGIS_DATA_DIR
-(where tunnel.log / vpn.pid live), AEGIS_TIMEOUT (seconds, both budgets),
-AEGIS_CURL (curl binary), AEGIS_PKILL (pkill binary), AEGIS_PS (ps binary),
-XDG_CACHE_HOME (home.json cache).
+(where tunnel.log / vpn.pid live), AEGIS_TIMEOUT (seconds, both per-call
+timeouts; budgets scale with it), AEGIS_BUDGET (seconds, a verb's overall
+budget), AEGIS_STOP_GRACE (seconds between SIGTERM and SIGKILL for the CLI
+child when stopped), AEGIS_LOCK (lock file), AEGIS_CURL (curl binary),
+AEGIS_PKILL (pkill binary), AEGIS_PS (ps binary), XDG_CACHE_HOME (home.json
+cache).
 """
 import fcntl
 import json
@@ -30,6 +37,7 @@ import tempfile
 import os
 import re
 import shutil
+import signal
 import subprocess
 import sys
 import time
@@ -42,6 +50,12 @@ HERE = Path(__file__).resolve().parent
 ANSI = re.compile(r"\x1b\[[0-9;]*m")
 CLI_TIMEOUT = 12.0
 CONNECT_TIMEOUT = 60.0
+PS_TIMEOUT = 3.0       # read_since's ps
+PROCS_TIMEOUT = 5.0    # verb_procs's ps
+ROUTE_TIMEOUT = 3.0    # default_gateway's ip route
+CURL_TIMEOUT = 8.0     # fetch_home's curl
+LOCK_POLL = 0.1
+STOP_GRACE = 3.0
 HOME_MAX_AGE = 24 * 3600
 ERROR_CAP = 160
 
@@ -323,7 +337,8 @@ def read_since(directory, connected_at=None):
     try:
         pid = int((Path(directory) / "vpn.pid").read_text().strip())
         ps = os.environ.get("AEGIS_PS") or shutil.which("ps") or "ps"
-        out = subprocess.run([ps, "-o", "etimes=", "-p", str(pid)], capture_output=True, text=True, timeout=3)
+        out = subprocess.run([ps, "-o", "etimes=", "-p", str(pid)], capture_output=True, text=True,
+                             timeout=time_left(PS_TIMEOUT))
         if out.returncode == 0 and out.stdout.strip().isdigit():
             daemon_start = int(time.time()) - int(out.stdout.strip())
     except (OSError, ValueError, subprocess.SubprocessError):
@@ -351,14 +366,18 @@ def cli_path():
     return found or "/opt/adguardvpn_cli/adguardvpn-cli"
 
 
-def timeout_for(default):
-    override = os.environ.get("AEGIS_TIMEOUT")
+def env_seconds(name, default):
+    override = os.environ.get(name)
     if override:
         try:
             return float(override)
         except ValueError:
             pass
     return default
+
+
+def timeout_for(default):
+    return env_seconds("AEGIS_TIMEOUT", default)
 
 
 def lock_path():
@@ -369,34 +388,192 @@ def lock_path():
     return os.path.join(base, "aegis-cli-%d.lock" % os.getuid())
 
 
+# ---------------------------------------------------------------- budgets --
+
+def verb_budgets():
+    """Overall wall-clock budget, in seconds, for one helper run of each
+    queued verb: the timeout of every sub-call on its longest path plus one
+    ordinary CLI call's worth (LOCK_WAIT = CLI_TIMEOUT) for queueing behind
+    another adguardvpn-cli — a helper left over from a shell reload, or its
+    orphaned CLI. main() turns it into a deadline that every lock wait and
+    sub-call timeout is clipped to (time_left), so the helper answers within
+    it. Model.js HELPER_BUDGET_SEC copies these numbers for Service.qml's
+    jobWatchdog, which adds slack on top; tests/model.test.js checks the
+    copy against this function, so change both together. kill is not
+    listed: it is not a queued job, and each pkill must get its chance."""
+    cli = timeout_for(CLI_TIMEOUT)
+    lock_wait = cli
+    calls = {
+        "snapshot": cli + PS_TIMEOUT,                     # status, ps for the daemon's age
+        "locations": cli,
+        "connect": timeout_for(CONNECT_TIMEOUT) + cli,    # connect, then status
+        "disconnect": 2 * cli,                            # disconnect, then status
+        "account": cli,
+        "logout": cli,
+        "exclusions": 3 * cli,                            # mode/add/remove, then mode + show
+        "home": cli + ROUTE_TIMEOUT + CURL_TIMEOUT,       # status, ip route, curl
+        "config": 2 * cli,                                # set, then show
+        "update-check": 2 * cli,                          # check-update, --version
+        "procs": PROCS_TIMEOUT,
+    }
+    return {verb: lock_wait + seconds for verb, seconds in calls.items()}
+
+
+def verb_budget(verb):
+    """The verb's budget in seconds (AEGIS_BUDGET overrides it), or None."""
+    budget = verb_budgets().get(verb)
+    return None if budget is None else env_seconds("AEGIS_BUDGET", budget)
+
+
+_deadline = None  # time.monotonic() by which the running verb must answer; None = no budget
+
+
+def time_left(cap=float("inf")):
+    """`cap` seconds, clipped to what is left of the running verb's budget."""
+    if _deadline is None:
+        return cap
+    return max(0.0, min(cap, _deadline - time.monotonic()))
+
+
+# ----------------------------------------------------------- cli lifetime --
+
+class Stopped(BaseException):
+    """Raised by the stop-signal handler. A BaseException so no `except
+    Exception`/`except OSError` on the way up swallows it; run_cli stops
+    and reaps its CLI child on the way through, main() answers timeout."""
+
+
+STOP_SIGNALS = (signal.SIGTERM, signal.SIGHUP, signal.SIGINT)
+
+
+def _on_stop(signum, frame):
+    # One stop is enough: ignore repeats so they can't interrupt the cleanup.
+    for sig in STOP_SIGNALS:
+        signal.signal(sig, signal.SIG_IGN)
+    raise Stopped()
+
+
+def _lock_free(fd):
+    """Whether no adguardvpn-cli holds the lock right now (probe only)."""
+    try:
+        fcntl.lockf(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except (BlockingIOError, PermissionError):
+        return False
+    fcntl.lockf(fd, fcntl.LOCK_UN)
+    return True
+
+
+def _take_lock_in_child(fd):
+    def take():
+        # Runs in the forked child just before exec: undo the parent's
+        # signal block (the mask would survive exec and leave the CLI deaf
+        # to SIGTERM), then take the lock as the CLI process itself. Losing
+        # the race to another helper fails the spawn (SubprocessError); a
+        # filesystem without record locks just runs unlocked.
+        signal.pthread_sigmask(signal.SIG_UNBLOCK, STOP_SIGNALS)
+        try:
+            fcntl.lockf(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except (BlockingIOError, PermissionError):
+            raise
+        except OSError:
+            pass
+    return take
+
+
+def _spawn_cli(argv, name, out, err, lock, started):
+    """Start the CLI once the lock is free, appending its Popen to `started`
+    before stop signals are let through again, so a SIGTERM that lands
+    mid-spawn still finds (and stops) the child. Waits no longer than what
+    is left of the budget (LOCK_WAIT when there is none)."""
+    give_up = time.monotonic() + (time_left() if _deadline is not None else timeout_for(CLI_TIMEOUT))
+    while True:
+        # Checked before spawning too: never start a CLI call (a connect,
+        # say) there is no time left to wait for.
+        if time.monotonic() >= give_up:
+            raise CliError("timeout", "adguardvpn-cli %s timed out waiting for its turn" % name)
+        if lock is None or _lock_free(lock):
+            blocked = signal.pthread_sigmask(signal.SIG_BLOCK, STOP_SIGNALS)
+            try:
+                started.append(subprocess.Popen(
+                    argv, stdin=subprocess.DEVNULL, stdout=out, stderr=err,
+                    env=dict(os.environ, TERM="dumb"),
+                    pass_fds=(lock,) if lock is not None else (),
+                    preexec_fn=_take_lock_in_child(lock) if lock is not None else None))
+                return
+            except subprocess.SubprocessError:
+                pass  # another helper's CLI took the lock between probe and exec
+            finally:
+                signal.pthread_sigmask(signal.SIG_SETMASK, blocked)
+        time.sleep(LOCK_POLL)
+
+
+def _stop_child(p, grace):
+    """SIGTERM p, SIGKILL it after `grace` seconds, and reap it — only then
+    is its lock gone. Only p itself: a process-group kill could take the
+    VPN daemon the CLI starts with it."""
+    if p.poll() is not None:
+        return
+    if grace > 0:
+        p.terminate()
+        try:
+            p.wait(timeout=grace)
+            return
+        except subprocess.TimeoutExpired:
+            pass
+    p.kill()
+    p.wait()
+
+
+def _captured(f):
+    # What text=True used to give: decoded, universal newlines.
+    f.seek(0)
+    text = f.read().decode("utf-8", "replace")
+    return strip_ansi(text.replace("\r\n", "\n").replace("\r", "\n"))
+
+
 def run_cli(args, timeout=CLI_TIMEOUT):
     binary = cli_path()
     if not (os.path.isfile(binary) and os.access(binary, os.X_OK)):
         raise CliError("cli_missing", "adguardvpn-cli not found")
+    name = args[0] if args else ""
     # adguardvpn-cli aborts (SIGABRT) when two instances run at once, and more
     # than one helper can be alive during a shell reload, so every CLI call
-    # takes a user-wide file lock.
+    # takes a user-wide lock. It is a POSIX record lock owned by the
+    # adguardvpn-cli process itself (taken between fork and exec): it
+    # survives exec, goes away exactly when that process exits, and is not
+    # inherited by anything the CLI forks (unlike a flock on a passed fd,
+    # which a daemon keeping the fd would hold forever). A flock held here
+    # died with the helper, so a watchdog kill or the SIGKILL Quickshell
+    # sends on reload let the next job's CLI overlap the orphaned one.
+    lock = None
     try:
-        lock = open(lock_path(), "a+")
+        lock = os.open(lock_path(), os.O_RDWR | os.O_CREAT | os.O_CLOEXEC, 0o600)
+        _lock_free(lock)  # a filesystem without record locks raises here: run unlocked
     except OSError:
-        lock = None
-    try:
         if lock is not None:
-            fcntl.flock(lock, fcntl.LOCK_EX)
-        p = subprocess.run([binary] + list(args), capture_output=True, text=True,
-                           timeout=timeout_for(timeout), env=dict(os.environ, TERM="dumb"))
-    except subprocess.TimeoutExpired:
-        raise CliError("timeout", "adguardvpn-cli %s timed out" % (args[0] if args else ""))
-    except OSError as e:
-        raise CliError("cli_missing", "adguardvpn-cli could not start: %s" % e)
-    finally:
-        if lock is not None:
-            try:
-                fcntl.flock(lock, fcntl.LOCK_UN)
-            except OSError:
-                pass
-            lock.close()
-    return p.returncode, strip_ansi(p.stdout), strip_ansi(p.stderr)
+            os.close(lock)
+            lock = None
+    # Output goes to unlinked temp files, never pipes: an orphaned CLI
+    # writing to a dead pipe aborts ("cannot write to file: Broken pipe",
+    # adguardvpn-cli 1.7.12), which is how a reload mid-connect crashed it.
+    with tempfile.TemporaryFile() as out, tempfile.TemporaryFile() as err:
+        started = []
+        try:
+            _spawn_cli([binary] + list(args), name, out, err, lock, started)
+            rc = started[0].wait(timeout=time_left(timeout_for(timeout)))
+        except subprocess.TimeoutExpired:
+            _stop_child(started[0], 0)
+            raise CliError("timeout", "adguardvpn-cli %s timed out" % name)
+        except OSError as e:
+            raise CliError("cli_missing", "adguardvpn-cli could not start: %s" % e)
+        except Stopped:
+            if started:
+                _stop_child(started[0], env_seconds("AEGIS_STOP_GRACE", STOP_GRACE))
+            raise
+        finally:
+            if lock is not None:
+                os.close(lock)
+        return rc, _captured(out), _captured(err)
 
 
 def elide(text):
@@ -534,7 +711,8 @@ def cache_path():
 
 def default_gateway():
     try:
-        p = subprocess.run(["ip", "-o", "route", "show", "to", "default"], capture_output=True, text=True, timeout=3)
+        p = subprocess.run(["ip", "-o", "route", "show", "to", "default"], capture_output=True, text=True,
+                           timeout=time_left(ROUTE_TIMEOUT))
         m = re.search(r"via (\S+) dev (\S+)", p.stdout)
         return (m.group(1) + "@" + m.group(2)) if m else p.stdout.strip()
     except (OSError, subprocess.SubprocessError):
@@ -544,7 +722,7 @@ def default_gateway():
 def fetch_home(curl):
     try:
         p = subprocess.run([curl, "-fsS", "--max-time", "4", "https://ipinfo.io/json"],
-                           capture_output=True, text=True, timeout=8)
+                           capture_output=True, text=True, timeout=time_left(CURL_TIMEOUT))
     except (OSError, subprocess.SubprocessError):
         return None
     if p.returncode != 0:
@@ -752,7 +930,8 @@ def verb_procs():
     ps = os.environ.get("AEGIS_PS") or shutil.which("ps") or "ps"
     proc_root = os.environ.get("AEGIS_PROC") or "/proc"
     try:
-        p = subprocess.run([ps, "-u", str(os.getuid()), "-o", "pid=,comm="], capture_output=True, text=True, timeout=5)
+        p = subprocess.run([ps, "-u", str(os.getuid()), "-o", "pid=,comm="], capture_output=True, text=True,
+                           timeout=time_left(PROCS_TIMEOUT))
     except (OSError, subprocess.SubprocessError) as exc:
         raise CliError("unknown", "ps failed: %s" % exc)
     if p.returncode != 0:
@@ -814,13 +993,32 @@ def dispatch(argv):
 
 
 def main(argv=None):
+    global _deadline
     argv = sys.argv[1:] if argv is None else argv
+    budget = verb_budget(argv[0] if argv else "")
+    if budget is not None:
+        _deadline = time.monotonic() + budget
+    # Quickshell's Process sends SIGTERM for `running = false` (Service.qml's
+    # jobWatchdog); a Process torn down by a shell reload is SIGKILLed, which
+    # nothing here can catch — that case relies on run_cli's CLI-held lock
+    # and temp-file output instead.
+    for sig in STOP_SIGNALS:
+        signal.signal(sig, _on_stop)
+    result = None
     try:
-        result = dispatch(argv)
-    except CliError as e:
-        result = {"ok": False, "error": elide(e.message), "code": e.code}
-    except Exception as e:  # never let a traceback reach the shell
-        result = {"ok": False, "error": elide("%s: %s" % (type(e).__name__, e)), "code": "unknown"}
+        try:
+            result = dispatch(argv)
+        except CliError as e:
+            result = {"ok": False, "error": elide(e.message), "code": e.code}
+        except Exception as e:  # never let a traceback reach the shell
+            result = {"ok": False, "error": elide("%s: %s" % (type(e).__name__, e)), "code": "unknown"}
+        for sig in STOP_SIGNALS:
+            signal.signal(sig, signal.SIG_IGN)  # nothing left to stop; just answer
+    except Stopped:
+        # run_cli has already stopped and reaped its CLI child by now. A stop
+        # that lands after the verb finished keeps the real answer.
+        if result is None:
+            result = {"ok": False, "error": "stopped waiting for adguardvpn-cli", "code": "timeout"}
     sys.stdout.write(json.dumps(result, ensure_ascii=False) + "\n")
     sys.stdout.flush()
     return 0

@@ -3,9 +3,11 @@
 end to end through tests/fake-cli.sh. Run from the plugin root:
     python3 -m unittest tests/agvpn_test.py
 """
+import fcntl
 import importlib.util
 import json
 import os
+import signal
 import subprocess
 import sys
 import tempfile
@@ -677,6 +679,209 @@ class Serialization(unittest.TestCase):
         for kind, _ in sorted(events, key=lambda e: e[1]):
             depth += 1 if kind == "start" else -1
             self.assertLessEqual(depth, 1, "two adguardvpn-cli processes were running at once")
+
+    def test_slow_multi_call_verbs_never_overlap_and_all_finish(self):
+        import threading
+        with tempfile.TemporaryDirectory() as d:
+            log = Path(d, "cli.log")
+            env = {"FAKE_LOG": str(log), "AEGIS_LOCK": str(Path(d, "cli.lock")), "data": d}
+            outs = []
+            jobs = [("exclusions", "add", "example.com"), ("disconnect",), ("snapshot",)]
+            threads = [threading.Thread(target=lambda a=a: outs.append(run_verb(*a, mode="slow", env_extra=env)[1]))
+                       for a in jobs]
+            for t in threads: t.start()
+            for t in threads: t.join()
+            lines = log.read_text().splitlines()
+        self.assertEqual([json.loads(o)["ok"] for o in outs], [True, True, True], outs)
+        assert_serialized(self, lines, 6)
+
+
+def assert_serialized(test, lines, starts=None):
+    events = sorted(((l.split()[0], float(l.split()[1])) for l in lines if l.startswith(("start ", "end "))),
+                    key=lambda e: e[1])
+    if starts is not None:
+        test.assertEqual(len([e for e in events if e[0] == "start"]), starts)
+    depth = 0
+    for kind, _ in events:
+        depth += 1 if kind == "start" else -1
+        test.assertLessEqual(depth, 1, "two adguardvpn-cli processes were running at once")
+
+
+class Budgets(unittest.TestCase):
+    """agvpn.py is the authority on how long a verb may take; Model.js only
+    copies verb_budgets() for the watchdog (checked in tests/model.test.js)."""
+
+    # Non-CLI sub-calls on each verb's longest path.
+    EXTRA = {"snapshot": agvpn.PS_TIMEOUT, "home": agvpn.ROUTE_TIMEOUT + agvpn.CURL_TIMEOUT}
+    SAMPLES = [
+        (("snapshot",), "connected"), (("locations",), "connected"), (("connect", "Sydney"), "connected"),
+        (("disconnect",), "disconnected"), (("account",), "connected"), (("logout",), "connected"),
+        (("exclusions", "show"), "connected"), (("exclusions", "add", "example.com"), "excl2"),
+        (("exclusions", "remove", "example.com"), "connected"), (("exclusions", "mode", "general"), "connected"),
+        (("home",), "connected"), (("config", "show"), "connected"), (("config", "set", "mode", "socks"), "connected"),
+        (("update-check",), "connected"),
+    ]
+
+    def test_every_budget_covers_the_calls_the_verb_actually_makes(self):
+        for args, mode in self.SAMPLES:
+            with tempfile.TemporaryDirectory() as d:
+                log = Path(d, "argv.log")
+                run_verb(*args, mode=mode, env_extra={"FAKE_LOG": str(log), "AEGIS_LOCK": str(Path(d, "cli.lock")),
+                                                      "XDG_CACHE_HOME": d, "AEGIS_CURL": "/bin/false"})
+                calls = log.read_text().splitlines()
+            self.assertTrue(calls, args)
+            worst = sum(agvpn.CONNECT_TIMEOUT if c.startswith("connect ") else agvpn.CLI_TIMEOUT for c in calls)
+            worst += agvpn.CLI_TIMEOUT + self.EXTRA.get(args[0], 0)  # + one call's worth of lock wait
+            self.assertLessEqual(worst, agvpn.verb_budget(args[0]), "%s makes %d CLI calls" % (" ".join(args), len(calls)))
+
+    def test_queued_verbs_have_budgets_kill_and_unknown_do_not(self):
+        for verb in ("snapshot", "locations", "connect", "disconnect", "account", "logout",
+                     "exclusions", "home", "config", "update-check", "procs"):
+            self.assertIsNotNone(agvpn.verb_budget(verb), verb)
+        self.assertIsNone(agvpn.verb_budget("kill"))
+        self.assertIsNone(agvpn.verb_budget("frobnicate"))
+        self.assertGreaterEqual(agvpn.verb_budget("exclusions"), 3 * agvpn.CLI_TIMEOUT)
+        self.assertGreaterEqual(agvpn.verb_budget("connect"), agvpn.CONNECT_TIMEOUT + agvpn.CLI_TIMEOUT)
+        with mock.patch.dict(os.environ, {"AEGIS_TIMEOUT": "1"}):
+            self.assertEqual(agvpn.verb_budget("disconnect"), 3)  # lock wait + disconnect + status
+        with mock.patch.dict(os.environ, {"AEGIS_BUDGET": "2.5"}):
+            self.assertEqual(agvpn.verb_budget("connect"), 2.5)
+            self.assertIsNone(agvpn.verb_budget("kill"))
+
+    def test_lock_wait_counts_toward_the_budget(self):
+        with tempfile.TemporaryDirectory() as d:
+            lock_file, log = Path(d, "cli.lock"), Path(d, "argv.log")
+            fd = os.open(lock_file, os.O_RDWR | os.O_CREAT)
+            try:
+                fcntl.lockf(fd, fcntl.LOCK_EX)  # stands in for another helper's running CLI
+                started = time.monotonic()
+                rc, out, _ = run_verb("snapshot", env_extra={"AEGIS_LOCK": str(lock_file), "AEGIS_BUDGET": "0.8",
+                                                             "FAKE_LOG": str(log)})
+                elapsed = time.monotonic() - started
+            finally:
+                os.close(fd)
+            ran = log.exists()
+        j = json.loads(out)
+        self.assertFalse(j["ok"])
+        self.assertEqual(j["code"], "timeout")
+        self.assertLess(elapsed, 4)
+        self.assertFalse(ran, "the CLI must not start once the budget is spent waiting")
+
+    def test_sub_calls_are_clipped_to_what_is_left_of_the_budget(self):
+        # hang outlasts CLI_TIMEOUT (12 s) on each of the three calls; the
+        # 1 s budget has to cut the very first one short.
+        with tempfile.TemporaryDirectory() as d:
+            started = time.monotonic()
+            rc, out, _ = run_verb("exclusions", "add", "example.com", mode="hang",
+                                  env_extra={"AEGIS_LOCK": str(Path(d, "cli.lock")), "AEGIS_BUDGET": "1"})
+            elapsed = time.monotonic() - started
+        self.assertEqual(json.loads(out)["code"], "timeout")
+        self.assertLess(elapsed, 5)
+
+
+class CliLifecycle(unittest.TestCase):
+    """A stopped or killed helper must never leave an adguardvpn-cli that
+    overlaps the next job's, nor one that dies writing to a dead pipe."""
+
+    def start_helper(self, d, *args, **extra):
+        pidfile = Path(d, "cli.pid")
+        env = dict(os.environ, AEGIS_CLI=str(FAKE), FAKE_MODE="linger", AEGIS_DATA_DIR=d,
+                   AEGIS_LOCK=str(Path(d, "cli.lock")), FAKE_LOG=str(Path(d, "cli.log")), FAKE_PIDFILE=str(pidfile))
+        env.update(extra)
+        p = subprocess.Popen([sys.executable, str(HELPER)] + list(args), stdout=subprocess.PIPE,
+                             stderr=subprocess.DEVNULL, text=True, env=env)
+
+        def cleanup():
+            if p.poll() is None:
+                p.kill()
+            if not p.stdout.closed:
+                p.stdout.close()
+            p.wait()
+        self.addCleanup(cleanup)
+        until = time.monotonic() + 10
+        while not (pidfile.exists() and pidfile.read_text().strip()):
+            self.assertLess(time.monotonic(), until, "fake CLI never started")
+            time.sleep(0.02)
+        return p, int(pidfile.read_text())
+
+    def alive(self, pid):
+        try:
+            state = Path("/proc/%d/stat" % pid).read_text().rsplit(")", 1)[1].split()[0]
+        except OSError:
+            return False
+        return state != "Z"
+
+    def lock_free(self, d):
+        fd = os.open(Path(d, "cli.lock"), os.O_RDWR | os.O_CREAT)
+        try:
+            return agvpn._lock_free(fd)
+        finally:
+            os.close(fd)
+
+    def test_sigterm_stops_and_reaps_the_cli_before_answering(self):
+        with tempfile.TemporaryDirectory() as d:
+            helper, cli = self.start_helper(d, "disconnect")
+            started = time.monotonic()
+            helper.send_signal(signal.SIGTERM)  # what Process `running = false` sends
+            out, _ = helper.communicate(timeout=10)
+            elapsed = time.monotonic() - started
+            self.assertFalse(self.alive(cli), "the fake CLI outlived its helper")
+            self.assertTrue(self.lock_free(d))
+            rc, nxt, _ = run_verb("snapshot", mode="disconnected",
+                                  env_extra={"data": d, "AEGIS_LOCK": str(Path(d, "cli.lock"))})
+        j = json.loads(out)
+        self.assertFalse(j["ok"])
+        self.assertEqual(j["code"], "timeout")
+        self.assertLess(elapsed, 2.5)
+        self.assertEqual(json.loads(nxt)["state"], "disconnected")
+
+    def test_sigterm_escalates_to_sigkill_for_a_cli_that_ignores_it(self):
+        with tempfile.TemporaryDirectory() as d:
+            helper, cli = self.start_helper(d, "disconnect", FAKE_IGNORE_TERM="1", FAKE_SLEEP="3",
+                                            AEGIS_STOP_GRACE="0.3")
+            started = time.monotonic()
+            helper.send_signal(signal.SIGTERM)
+            out, _ = helper.communicate(timeout=10)
+            elapsed = time.monotonic() - started
+            self.assertFalse(self.alive(cli))
+            self.assertTrue(self.lock_free(d))
+        self.assertEqual(json.loads(out)["code"], "timeout")
+        self.assertLess(elapsed, 2.5)
+
+    def test_killed_helper_leaves_a_cli_that_keeps_the_lock_and_can_still_write(self):
+        with tempfile.TemporaryDirectory() as d:
+            helper, cli = self.start_helper(d, "locations", FAKE_SLEEP="1.5")
+            helper.kill()          # what Quickshell does to a Process on shell reload
+            helper.communicate()   # and nobody reads its output any more
+            self.assertTrue(self.alive(cli), "the orphaned CLI should run to completion")
+            self.assertFalse(self.lock_free(d), "the orphaned CLI must still hold the lock")
+            rc, out, _ = run_verb("snapshot", mode="slow", env_extra={
+                "data": d, "AEGIS_LOCK": str(Path(d, "cli.lock")), "FAKE_LOG": str(Path(d, "cli.log"))})
+            lines = Path(d, "cli.log").read_text().splitlines()
+        self.assertTrue(json.loads(out)["ok"])
+        assert_serialized(self, lines, 2)
+        orphan_end = [l.split() for l in lines if l.startswith("end ") and len(l.split()) == 3]
+        self.assertEqual(len(orphan_end), 1, lines)
+        self.assertEqual(orphan_end[0][2], "0", "the orphaned CLI's output write failed (dead pipe?)")
+
+    def test_cli_output_goes_to_files_not_pipes_and_still_parses(self):
+        with tempfile.TemporaryDirectory() as d:
+            fds = Path(d, "fds")
+            env = {"AEGIS_CLI": str(FAKE), "FAKE_MODE": "connected", "FAKE_FDS": str(fds),
+                   "AEGIS_LOCK": str(Path(d, "cli.lock"))}
+            with mock.patch.dict(os.environ, env):
+                rc, out, err = agvpn.run_cli(["list-locations"])
+                targets = fds.read_text().splitlines()
+                rc2, out2, err2 = agvpn.run_cli(["bogus"])
+        self.assertEqual(rc, 0)
+        self.assertEqual(len(agvpn.parse_locations(out)), 81)
+        self.assertEqual(err, "")
+        self.assertEqual(rc2, 106)
+        self.assertIn("not expected", err2)
+        self.assertEqual(out2, "")
+        self.assertEqual(len(targets), 2)
+        for target in targets:
+            self.assertNotIn("pipe:", target)
 
 
 if __name__ == "__main__":

@@ -527,3 +527,35 @@ test("heroMeta names the SOCKS proxy when the tunnel is a local proxy", () => {
   const tun = { state: "connected", iso: "KZ", endpoint: { pingMs: 249 }, sinceEpoch: 0, mode: "tun", listen: null }
   assert.equal(Model.heroMeta(tun, Date.now(), lookup), "Kazakhstan · 249 ms")
 })
+
+test("HELPER_BUDGET_SEC is an exact copy of agvpn.py's budgets and the watchdog outlasts each one", () => {
+  const { execFileSync } = require("node:child_process")
+  const path = require("node:path")
+  const env = Object.assign({}, process.env, { PYTHONDONTWRITEBYTECODE: "1" })
+  for (const k of Object.keys(env)) if (k.startsWith("AEGIS_")) delete env[k]
+  const script = [
+    "import importlib.util, json",
+    "spec = importlib.util.spec_from_file_location('agvpn', 'agvpn.py')",
+    "m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)",
+    "print(json.dumps({'budgets': m.verb_budgets(), 'stopGrace': m.STOP_GRACE}))",
+  ].join("\n")
+  const info = JSON.parse(execFileSync("python3", ["-c", script], { cwd: path.join(__dirname, ".."), env, encoding: "utf8" }))
+  assert.deepEqual(Model.HELPER_BUDGET_SEC, info.budgets)
+  for (const verb of Object.keys(info.budgets))
+    assert.ok(Model.watchdogMs(verb) >= info.budgets[verb] * 1000 + 2000, verb)
+  assert.ok(Model.WATCHDOG_KILL_MS >= info.stopGrace * 1000 + 2000)
+})
+
+test("every helper verb Service.qml enqueues has a watchdog budget; unknown verbs get the longest", () => {
+  const fs = require("node:fs")
+  const path = require("node:path")
+  const src = fs.readFileSync(path.join(__dirname, "..", "Service.qml"), "utf8")
+  const verbs = [...src.matchAll(/enqueue\(\["([a-z-]+)"/g)].map(m => m[1])
+  assert.ok(verbs.length >= 10)
+  for (const verb of verbs) assert.ok(Object.prototype.hasOwnProperty.call(Model.HELPER_BUDGET_SEC, verb), verb)
+  const longest = Math.max(...Object.values(Model.HELPER_BUDGET_SEC)) * 1000 + Model.WATCHDOG_SLACK_MS
+  assert.equal(Model.watchdogMs("frobnicate"), longest)
+  assert.equal(Model.watchdogMs(undefined), longest)
+  assert.equal(Model.watchdogMs("connect"), 84000 + Model.WATCHDOG_SLACK_MS)
+  assert.equal(Model.watchdogMs("update-check"), 36000 + Model.WATCHDOG_SLACK_MS)
+})

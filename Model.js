@@ -661,6 +661,30 @@ function exclusionKeys(rows) {
   return toList(rows).map(function(row) { return row && typeof row === "object" ? str(row.domain) : "" })
 }
 
+// agvpn.py verb_budgets(): each helper verb's overall budget in seconds
+// (every sub-call timeout on its longest path, plus one CLI call's worth of
+// lock wait). The helper enforces it and answers a timeout itself; this copy
+// only sizes Service.qml's jobWatchdog, and tests/model.test.js checks it
+// against agvpn.py, so change both together.
+var HELPER_BUDGET_SEC = {
+  "snapshot": 27, "locations": 24, "connect": 84, "disconnect": 36, "account": 24, "logout": 24,
+  "exclusions": 48, "home": 35, "config": 36, "update-check": 36, "procs": 17
+}
+// On top of a budget: python start-up, reaping a timed-out CLI, the answer.
+var WATCHDOG_SLACK_MS = 5000
+// Between the watchdog's SIGTERM and its SIGKILL: agvpn.py's STOP_GRACE for
+// stopping its CLI child, plus the same slack.
+var WATCHDOG_KILL_MS = 8000
+
+// jobWatchdog's interval for a helper verb (the job's args[0], e.g.
+// "update-check"), never shorter than the helper's own worst case. An
+// unknown verb gets the longest budget.
+function watchdogMs(verb) {
+  var sec = Object.prototype.hasOwnProperty.call(HELPER_BUDGET_SEC, verb) ? HELPER_BUDGET_SEC[verb] : 0
+  if (!sec) for (var k in HELPER_BUDGET_SEC) sec = Math.max(sec, HELPER_BUDGET_SEC[k])
+  return sec * 1000 + WATCHDOG_SLACK_MS
+}
+
 function elideStatus(text, max) {
   var limit = num(max, 140)
   var value = str(text).replace(/\s+/g, " ").replace(/^\s+|\s+$/g, "")
@@ -715,6 +739,10 @@ if (typeof module !== "undefined") {
     normalizePaused: normalizePaused,
     mergeExclusions: mergeExclusions,
     setPaused: setPaused,
-    exclusionKeys: exclusionKeys
+    exclusionKeys: exclusionKeys,
+    HELPER_BUDGET_SEC: HELPER_BUDGET_SEC,
+    WATCHDOG_SLACK_MS: WATCHDOG_SLACK_MS,
+    WATCHDOG_KILL_MS: WATCHDOG_KILL_MS,
+    watchdogMs: watchdogMs
   }
 }
