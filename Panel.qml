@@ -118,6 +118,16 @@ Panel {
     }
     return "Off"
   }
+  // The first prerequisite still missing (Model.setupStep) and the one-line
+  // way to fix it, shown under the status line until nothing is in the way.
+  readonly property string setupStep: Model.setupStep(vpn.installed, vpn.vpnState, vpn.sudoRule, vpn.mode)
+  readonly property var setupPrompt: Model.setupPrompt(setupStep)
+  readonly property bool setupBusy: setupStep === "sudo" && vpn.sudoRuleBusy
+  function runSetup() {
+    if (setupStep === "install") vpn.installCli()
+    else if (setupStep === "login") vpn.login()
+    else if (setupStep === "sudo") vpn.installSudoRule()
+  }
   readonly property string statusLine: vpn.actionStatus !== "" ? vpn.actionStatus : vpn.lastError
   readonly property color statusColor: vpn.lastError !== "" && vpn.actionStatus === "" ? urgent : dim
   readonly property color heroIconColor: vpn.vpnState === "logged_out" || !vpn.installed ? urgent : (vpn.active ? glow : dim)
@@ -595,6 +605,37 @@ Panel {
         font.family: root.fontFamily
         font.pixelSize: Style.font.bodySmall
         wrapMode: Text.WordWrap
+      }
+
+      Row {
+        id: setupRow
+        visible: root.setupStep !== ""
+        width: parent.width
+        spacing: Style.space(8)
+
+        Text {
+          textFormat: Text.PlainText
+          width: setupRow.width - setupButton.width - setupRow.spacing
+          anchors.verticalCenter: parent.verticalCenter
+          text: root.setupPrompt.text
+          color: root.dim
+          font.family: root.fontFamily
+          font.pixelSize: Style.font.bodySmall
+          wrapMode: Text.WordWrap
+        }
+
+        Button {
+          id: setupButton
+          anchors.verticalCenter: parent.verticalCenter
+          text: root.setupPrompt.button
+          iconText: root.setupPrompt.icon
+          iconSpinning: root.setupBusy
+          bordered: true
+          foreground: root.foreground
+          fontFamily: root.fontFamily
+          fontSize: Style.font.caption
+          onClicked: root.runSetup()
+        }
       }
 
       PanelSeparator { foreground: root.foreground }

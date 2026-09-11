@@ -30,6 +30,8 @@ connected. No terminal, no separate app.
 - **Your bar, your way.** Icon, country code, or live down/up rates.
 - **Entirely keyboard driven.** Every action has a key, and `Esc` always
   closes.
+- **Sets itself up.** No CLI, not signed in, or sudo asking for a password:
+  the panel says which, and one button fixes it.
 
 ## Install
 
@@ -42,24 +44,29 @@ then `omarchy plugin enable io.github.nimbleaininja.aegis --section right`.
 
 ## Requirements
 
-- `adguardvpn-cli`, the official AdGuard VPN CLI, logged in.
-- `python3` (standard library only) and `curl`.
+`python3` (standard library only), `curl`, and three things the panel checks
+for you. Whichever is missing first shows up under the hero with a button,
+and all three have a row under Settings › Setup:
+
+- `adguardvpn-cli`, the official AdGuard VPN CLI. **Install** opens a
+  terminal running AdGuard's own installer.
+- An AdGuard VPN account. **Log in** opens a terminal running
+  `adguardvpn-cli login`.
 - A sudoers rule, so the CLI can start its VPN service without a password
-  prompt (needs sudo 1.9.10 or newer). Aegis writes it for you: press
-  **Set up** when the panel says sudo needs a password, or **Install** next
-  to "Sudo rule" in settings, and authenticate in the polkit prompt. What it
-  writes is the rule below (`aegis-sudo-rule` in this folder, checked with
-  `visudo -cf` before it is installed), which allows exactly the one command
-  the CLI runs as root to connect, for any location, and nothing else. To
-  install it by hand instead, keep it on one line and replace every
-  `youruser` and the `1000` with your user name and `id -u`:
+  prompt (needs sudo 1.9.10 or newer). **Set up** writes it after a polkit
+  prompt. What it writes is the rule below (`aegis-sudo-rule` in this
+  folder, checked with `visudo -cf` before it is installed), which allows
+  exactly the one command the CLI runs as root to connect, for any location,
+  and nothing else. To install it by hand instead, keep it on one line and
+  replace every `youruser` and the `1000` with your user name and `id -u`:
 
   ```
   # /etc/sudoers.d/adguardvpn-cli  (mode 0440, check with: visudo -cf <file>)
   youruser ALL=(root) NOPASSWD: /usr/bin/env ^HOME=/home/youruser XDG_DATA_HOME=/home/youruser/\.local/share DISPLAY=:[0-9]+(\.[0-9]+)? DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus /opt/adguardvpn_cli/adguardvpn-cli connect --no-fork -l [^-[:space:]][^[:space:]]*( [^-[:space:]][^[:space:]]*)* (-v )?--log-to-file --wait-for-parent --ppid-file /home/youruser/\.local/share/adguardvpn-cli/vpn\.pid$
   ```
 
-  When the rule is missing or broken the panel says “sudo needs a password”.
+  The panel probes the rule with `sudo -l` (no password, nothing run) and
+  says so when it is missing; SOCKS mode never needs it.
 
 ## Keyboard
 

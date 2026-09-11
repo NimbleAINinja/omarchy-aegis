@@ -481,6 +481,19 @@ function linkState(vpnState, pendingLocation) {
 // start its service — SOCKS mode never goes through sudo, so it is not
 // held up by a missing rule), or "" when nothing is in the way. sudoRule is
 // Service's verdict: "ok", "missing", or "unknown" while unchecked.
+// AdGuard's own installer, run in a terminal the user can watch: it fetches
+// the release for this machine into /opt/adguardvpn_cli and asks about a
+// /usr/local/bin link. -v so the terminal shows what it does.
+var CLI_INSTALL_COMMAND = "curl -fsSL https://raw.githubusercontent.com/AdguardTeam/AdGuardVPNCLI/master/scripts/release/install.sh | sh -s -- -v"
+
+// The line and button the panel shows for a setupStep; "" for none.
+function setupPrompt(step) {
+  if (step === "install") return { text: "Install adguardvpn-cli to get started", button: "Install", icon: "\uDB80\uDDDA" }
+  if (step === "login") return { text: "Sign in to your AdGuard VPN account", button: "Log in", icon: "\uDB80\uDF42" }
+  if (step === "sudo") return { text: "Let the VPN start without a password prompt", button: "Set up", icon: "\uDB80\uDF06" }
+  return { text: "", button: "", icon: "" }
+}
+
 function setupStep(installed, vpnState, sudoRule, mode) {
   if (!installed) return "install"
   if (str(vpnState) === "logged_out") return "login"
@@ -1532,6 +1545,8 @@ if (typeof module !== "undefined") {
     dotTints: dotTints,
     linkState: linkState,
     setupStep: setupStep,
+    setupPrompt: setupPrompt,
+    CLI_INSTALL_COMMAND: CLI_INSTALL_COMMAND,
     formatRate: formatRate,
     formatUptime: formatUptime,
     rateFrom: rateFrom,

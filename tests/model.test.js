@@ -1878,3 +1878,17 @@ test("setupStep names the first missing prerequisite, and only a TUN connect nee
   assert.equal(Model.setupStep(true, "unknown", "ok", "tun"), "")
   assert.equal(Model.setupStep(true, undefined, undefined, undefined), "")
 })
+
+test("setupPrompt has a line, a button and an icon for every step and nothing for none", () => {
+  for (const step of ["install", "login", "sudo"]) {
+    const p = Model.setupPrompt(step)
+    assert.ok(p.text.length > 10, step)
+    assert.ok(p.button.length >= 5 && p.button.length <= 8, step)
+    assert.equal(p.icon.length, 2, step)  // one supplementary-plane nerd-font glyph
+  }
+  assert.deepEqual(Model.setupPrompt(""), { text: "", button: "", icon: "" })
+  assert.deepEqual(Model.setupPrompt(undefined), { text: "", button: "", icon: "" })
+  // The installer is AdGuard's, over TLS, verbose, and never sudo by itself.
+  assert.match(Model.CLI_INSTALL_COMMAND, /^curl -fsSL https:\/\/raw\.githubusercontent\.com\/AdguardTeam\/AdGuardVPNCLI\/.*install\.sh \| sh -s -- -v$/)
+  assert.doesNotMatch(Model.CLI_INSTALL_COMMAND, /sudo/)
+})

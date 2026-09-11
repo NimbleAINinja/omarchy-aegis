@@ -544,6 +544,18 @@ Item {
   function login() {
     Quickshell.execDetached(["omarchy-launch-floating-terminal-with-presentation", "adguardvpn-cli login"])
     actionStatus = "Log in from the terminal"
+    loginPoll.waitFor = "login"
+    loginPoll.ticks = 0
+    loginPoll.start()
+  }
+
+  // AdGuard's installer in a terminal the user can watch and answer
+  // (Model.CLI_INSTALL_COMMAND). The same poll as login's watches for the
+  // CLI: the snapshot stops answering cli_missing once the binary is there.
+  function installCli() {
+    Quickshell.execDetached(["omarchy-launch-floating-terminal-with-presentation", Model.CLI_INSTALL_COMMAND])
+    actionStatus = "Install from the terminal"
+    loginPoll.waitFor = "install"
     loginPoll.ticks = 0
     loginPoll.start()
   }
@@ -954,6 +966,9 @@ Item {
   Timer {
     id: loginPoll
     property int ticks: 0
+    // "login": waiting for the account (refreshAccount); "install": waiting
+    // for the CLI itself (a plain snapshot, which is what says cli_missing).
+    property string waitFor: "login"
     // Fast while the user is plausibly still typing in the login terminal,
     // then slower (Model.loginPollIntervalMs). The interval change restarts
     // the countdown, which is what we want: the new cadence runs from the
@@ -962,6 +977,11 @@ Item {
     repeat: true
     onTriggered: {
       ticks += 1
+      if (waitFor === "install") {
+        root.refresh()
+        if (root.installed || ticks >= Model.LOGIN_POLL_MAX_TICKS) { loginPoll.stop(); if (root.installed) root.refreshAll(true) }
+        return
+      }
       root.refreshAccount()
       if (root.account.loggedIn || ticks >= Model.LOGIN_POLL_MAX_TICKS) { loginPoll.stop(); root.refresh() }
     }

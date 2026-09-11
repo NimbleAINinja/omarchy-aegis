@@ -4,9 +4,10 @@ import qs.Commons
 import qs.Ui
 import "Model.js" as Model
 
-// Settings: connection mode and protocol, SOCKS, DNS, auto-connect, kill
-// switch, and the CLI update check. Toggles and chips apply immediately;
-// text fields apply on Enter.
+// Settings: the three things a tunnel needs (the CLI, an account, the sudo
+// rule) with a button for each that is missing, then connection mode and
+// protocol, SOCKS, DNS, and Aegis's own switches. Toggles and chips apply
+// immediately; text fields apply on Enter.
 Column {
   id: root
   property var panel: null
@@ -16,12 +17,16 @@ Column {
   readonly property bool socks: config.mode === "socks"
   // Keyboard cursor targets, top to bottom. Text fields are reached by mouse
   // or Tab; the cursor walks the toggles and chip rows.
-  readonly property var targets: ["mode", "protocol", "postQuantum", "changeSystemDns", "autoConnect", "locateHome", "pingDots", "update"]
+  readonly property var targets: ["cli", "account", "sudoRule", "mode", "protocol", "postQuantum", "changeSystemDns", "autoConnect", "locateHome", "pingDots"]
   readonly property int count: targets.length
   readonly property bool editing: dnsField.activeFocus || hostField.activeFocus || userField.activeFocus
     || passField.activeFocus || portField.activeFocus
   readonly property string updateText: !vpn ? "" : (vpn.updateChecking ? "Checking"
     : (vpn.update.checkedAt === 0 ? "" : (vpn.update.upToDate ? "Up to date" : vpn.update.latest + " available")))
+  readonly property bool updateReady: vpn ? !vpn.update.upToDate && !!vpn.update.latest : false
+  readonly property bool loggedIn: vpn ? vpn.account.loggedIn : true
+  readonly property string sudoText: !vpn ? "" : (vpn.sudoRuleBusy ? "Authenticating"
+    : (vpn.sudoRule === "ok" ? "Installed" : (vpn.sudoRule === "missing" ? "Missing" : "Not checked")))
 
   spacing: Style.space(8)
 
@@ -38,7 +43,9 @@ Column {
     else if (name === "autoConnect") panel.persistSettings({ autoConnect: !vpn.autoConnect })
     else if (name === "locateHome") vpn.setLocateHome(!vpn.locateHome)
     else if (name === "pingDots") panel.persistSettings({ pingDots: !vpn.pingDots })
-    else if (name === "update") { if (!vpn.update.upToDate && vpn.update.latest) vpn.runUpdate(); else vpn.checkUpdate(false) }
+    else if (name === "cli") { if (!vpn.installed) vpn.installCli(); else if (updateReady) vpn.runUpdate(); else vpn.checkUpdate(false) }
+    else if (name === "account") { if (!loggedIn) vpn.login() }
+    else if (name === "sudoRule") vpn.installSudoRule()
   }
 
   function moveHorizontal(dx) {
@@ -56,6 +63,41 @@ Column {
   function setCursor(name) {
     var i = targets.indexOf(name)
     if (i !== -1) panel.setListCursor(i)
+  }
+
+  PanelSectionHeader {
+    text: "SETUP"
+    foreground: panel.foreground
+    fontFamily: panel.fontFamily
+  }
+
+  SetupRow {
+    name: "cli"
+    label: "AdGuard VPN CLI" + (vpn && vpn.installed && vpn.update.current ? " " + vpn.update.current : "")
+    status: vpn && !vpn.installed ? "Not installed" : root.updateText
+    statusHot: vpn ? vpn.installed && root.updateReady && vpn.update.checkedAt !== 0 : false
+    buttonText: vpn && !vpn.installed ? "Install" : (root.updateReady ? "Update" : "Check")
+    buttonIcon: vpn && !vpn.installed ? Model.setupPrompt("install").icon : (root.updateReady ? "󰚰" : "󰑐")
+    spinning: vpn ? vpn.updateChecking : false
+  }
+
+  SetupRow {
+    name: "account"
+    label: "Account"
+    status: root.loggedIn ? (vpn && vpn.account.email ? vpn.account.email : "Signed in") : "Signed out"
+    buttonVisible: !root.loggedIn
+    buttonText: "Log in"
+    buttonIcon: Model.setupPrompt("login").icon
+  }
+
+  SetupRow {
+    name: "sudoRule"
+    label: "Sudo rule"
+    status: root.sudoText
+    statusHot: vpn ? vpn.sudoRule === "missing" : false
+    buttonText: vpn && vpn.sudoRule === "ok" ? "Reinstall" : "Install"
+    buttonIcon: Model.setupPrompt("sudo").icon
+    spinning: vpn ? vpn.sudoRuleBusy : false
   }
 
   PanelSectionHeader {
@@ -230,10 +272,22 @@ Column {
     onClicked: panel.persistSettings({ pingDots: !vpn.pingDots })
   }
 
-  CursorSurface {
+  // One prerequisite: what it is, where it stands, and the button that
+  // moves it along — the same row the CLI update check always had.
+  component SetupRow: CursorSurface {
+    id: setupRow
+    property string name: ""
+    property string label: ""
+    property string status: ""
+    property bool statusHot: false
+    property string buttonText: ""
+    property string buttonIcon: ""
+    property bool buttonVisible: true
+    property bool spinning: false
+
     width: parent.width
     implicitHeight: Style.spacing.popupRowHeight + Style.space(6)
-    hasCursor: root.hasCursor("update")
+    hasCursor: root.hasCursor(name)
     foreground: panel.foreground
     fill: panel.hoverFill
 
@@ -245,30 +299,34 @@ Column {
 
       Text {
         textFormat: Text.PlainText
-        text: "AdGuard VPN CLI" + (vpn && vpn.update.current ? " " + vpn.update.current : "")
+        text: setupRow.label
         color: panel.foreground
         font.family: panel.fontFamily
         font.pixelSize: Style.font.body
+        elide: Text.ElideRight
         Layout.fillWidth: true
       }
 
       Text {
         textFormat: Text.PlainText
-        text: root.updateText
-        color: vpn && !vpn.update.upToDate && vpn.update.checkedAt !== 0 ? panel.glow : panel.dim
+        text: setupRow.status
+        color: setupRow.statusHot ? panel.glow : panel.dim
         font.family: panel.fontFamily
         font.pixelSize: Style.font.caption
+        elide: Text.ElideMiddle
+        Layout.maximumWidth: setupRow.width * 0.45
       }
 
       Button {
-        text: vpn && !vpn.update.upToDate && vpn.update.latest ? "Update" : "Check"
-        iconText: vpn && !vpn.update.upToDate && vpn.update.latest ? "󰚰" : "󰑐"
-        iconSpinning: vpn ? vpn.updateChecking : false
+        visible: setupRow.buttonVisible
+        text: setupRow.buttonText
+        iconText: setupRow.buttonIcon
+        iconSpinning: setupRow.spinning
         bordered: true
         foreground: panel.foreground
         fontFamily: panel.fontFamily
         fontSize: Style.font.caption
-        onClicked: root.activate(root.targets.indexOf("update"))
+        onClicked: root.activate(root.targets.indexOf(setupRow.name))
       }
     }
 
@@ -276,7 +334,7 @@ Column {
       anchors.fill: parent
       hoverEnabled: true
       z: -1
-      onEntered: root.setCursor("update")
+      onEntered: root.setCursor(setupRow.name)
     }
   }
 
