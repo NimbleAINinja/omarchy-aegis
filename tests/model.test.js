@@ -98,6 +98,38 @@ test("orderLocations pins favorites in favorites order and flags last-used", () 
   assert.deepEqual(Model.orderLocations(list, null, "").map(l => l.city), ["Montreal", "New York", "Tel Aviv", "Madrid"])
 })
 
+test("orderLocations' lastLocation only sets a flag, never the order", () => {
+  // What makes Panel.qml's frozen `orderLast` safe: whatever the last-connected
+  // city is, the rows and their indexes are identical, so a value one panel-open
+  // old can never move a row out from under the keyboard cursor.
+  const list = [loc("CA", "Canada", "Montreal", 15), loc("US", "United States", "New York", 23),
+    loc("IL", "Israel", "Tel Aviv", 140), loc("ES", "Spain", "Madrid", 60)]
+  const favs = ["ES|Madrid", "IL|Tel Aviv"]
+  const base = Model.orderLocations(list, favs, "")
+  for (const last of ["", "New York", "Madrid", "Montreal", "Nowhere"]) {
+    const out = Model.orderLocations(list, favs, last)
+    assert.deepEqual(out.map(l => l.city), base.map(l => l.city), "order with last=" + last)
+    assert.deepEqual(out.map(l => l.favorite), base.map(l => l.favorite))
+    assert.deepEqual(out.map(l => l.last), out.map(l => l.city === last))
+  }
+  // And the same holds for the filtered rows the ListView actually shows.
+  assert.deepEqual(Model.filterLocations(Model.orderLocations(list, favs, "Madrid"), "a").map(l => l.city),
+    Model.filterLocations(base, "a").map(l => l.city))
+})
+
+test("Panel.qml freezes both ordering inputs for as long as the panel is open", () => {
+  const fs = require("node:fs"), path = require("node:path")
+  const panel = fs.readFileSync(path.join(__dirname, "..", "Panel.qml"), "utf8")
+  // Neither the live `favorites` nor the live `lastLocation` may reach
+  // orderLocations: both change while the panel is open (starring a row,
+  // clicking a row) and would rebuild the list under the cursor.
+  assert.match(panel, /orderedLocations: Model\.orderLocations\(vpn\.locations, orderFavorites, orderLast\)/)
+  const open = /onOpenedChanged:\s*\{[\s\S]*?\n  \}/.exec(panel)
+  assert.ok(open, "onOpenedChanged present")
+  assert.match(open[0], /orderFavorites = favorites/)
+  assert.match(open[0], /orderLast = lastLocation/)
+})
+
 test("filterLocations ignores case and diacritics across city, country and iso", () => {
   const list = [loc("BR", "Brazil", "São Paulo", 200), loc("MD", "Moldova", "Chișinău", 50), loc("GB", "United Kingdom", "London", 30), loc("US", "United States", "New York", 23)]
   assert.deepEqual(Model.filterLocations(list, "sao").map(l => l.city), ["São Paulo"])

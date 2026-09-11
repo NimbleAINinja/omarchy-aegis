@@ -69,7 +69,15 @@ Panel {
   // a row never yanks it out from under the pointer; the live `favorites` still
   // drives the star itself. Re-snapshotted on open.
   property var orderFavorites: []
-  readonly property var orderedLocations: Model.orderLocations(vpn.locations, orderFavorites, lastLocation)
+  // The last-connected city is frozen the same way and for the same reason.
+  // connectTo() persists it before the connect even starts, so with the live
+  // value here every click on a row re-ran orderLocations, handed the ListView
+  // a brand-new array and rebuilt every delegate under the user's cursor —
+  // while the row they just clicked was busy turning into the pending one.
+  // Only the per-row `last` flag depends on it (never the order), so a value
+  // one open old shows exactly the same list in exactly the same indexes.
+  property string orderLast: ""
+  readonly property var orderedLocations: Model.orderLocations(vpn.locations, orderFavorites, orderLast)
   readonly property var visibleLocations: Model.filterLocations(orderedLocations, query)
   readonly property var exitLocation: Model.findLocation(vpn.locations, vpn.pendingLocation !== "" ? vpn.pendingLocation : vpn.location)
   readonly property var exitPoint: exitLocation && exitLocation.lat !== null && exitLocation.lon !== null
@@ -215,6 +223,7 @@ Panel {
       focusSection = "header"
       query = ""
       orderFavorites = favorites
+      orderLast = lastLocation
       nowMs = Date.now()
       if (panelFlick) panelFlick.contentY = 0
       if (vpn.vpnState === "logged_out") view = "account"
