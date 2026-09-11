@@ -183,6 +183,20 @@ class ParseTunnelTail(unittest.TestCase):
     def test_empty(self):
         self.assertEqual(agvpn.parse_tunnel_tail(""), {"state": None, "endpoint": None, "connectedAt": None})
 
+    def test_backwards_scan_keeps_the_last_of_each_and_stops_there(self):
+        # The scan runs from the end, so the newest state, endpoint and
+        # connect stamp win — and lines above them are never looked at.
+        head = "01.01.2026 00:00:00.000000 VPN_SS_CONNECTED\n" \
+               "01.01.2026 00:00:01.000000 Using endpoint: address=1.1.1.1:443 ping=1ms\n"
+        tail = "02.01.2026 10:00:00.000000 VPN_SS_CONNECTED\n" \
+               "02.01.2026 10:00:01.000000 Using endpoint: address=2.2.2.2:443 ping=9ms\n" \
+               "02.01.2026 11:00:00.000000 VPN_SS_DISCONNECTED\n"
+        t = agvpn.parse_tunnel_tail(head + tail)
+        self.assertEqual(t, {"state": "disconnected",
+                             "endpoint": {"ip": "2.2.2.2", "port": 443, "pingMs": 9},
+                             "connectedAt": "02.01.2026 10:00:00.000000"})
+        self.assertEqual(agvpn.parse_tunnel_tail(tail), t, "the lines above the last three don't matter")
+
 
 class MatchLocation(unittest.TestCase):
     def setUp(self):
@@ -381,6 +395,15 @@ class Verbs(unittest.TestCase):
         self.assertIsNone(j["location"])
         self.assertIsNone(j["endpoint"])
         self.assertIsNone(j["sinceEpoch"])
+
+    def test_snapshot_reads_the_tunnel_log_only_while_connected(self):
+        # Nothing in the tail is reported for a down tunnel, so the 64 KB read
+        # and its parse are skipped entirely.
+        for fix, reads in (("status_disconnected.txt", False), ("status_connected.txt", True)):
+            with mock.patch.object(agvpn, "run_cli", return_value=(0, fixture(fix), "")), \
+                    mock.patch.object(agvpn, "read_tunnel_tail", return_value="") as tail:
+                agvpn.verb_snapshot()
+            self.assertEqual(tail.called, reads, fix)
 
     def test_snapshot_logged_out(self):
         rc, out, _ = run_verb("snapshot", mode="login")

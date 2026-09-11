@@ -200,19 +200,27 @@ def parse_exclusions(show_text, mode_text=None):
 
 
 def parse_tunnel_tail(text):
+    """The last state line, the last endpoint line and the last connect stamp
+    in the tail — all three are the *last* of their kind, so the scan runs
+    backwards and stops as soon as it has them instead of reading the whole
+    64 KB. (The last connect stamp can be older than the last state line: a
+    disconnect after it leaves connectedAt where it was.)"""
     state = None
     endpoint = None
     connected_at = None
-    for line in (text or "").splitlines():
+    for line in reversed((text or "").splitlines()):
         m = VPN_STATE.search(line)
         if m:
-            state = m.group(1).lower()
-            if state == "connected":
+            if state is None:
+                state = m.group(1).lower()
+            if connected_at is None and m.group(1).lower() == "connected":
                 connected_at = line[:26]
-            continue
-        m = ENDPOINT.search(line)
-        if m:
-            endpoint = {"ip": m.group(1).strip("[]"), "port": int(m.group(2)), "pingMs": int(m.group(3))}
+        elif endpoint is None:
+            m = ENDPOINT.search(line)
+            if m:
+                endpoint = {"ip": m.group(1).strip("[]"), "port": int(m.group(2)), "pingMs": int(m.group(3))}
+        if state is not None and endpoint is not None and connected_at is not None:
+            break
     return {"state": state, "endpoint": endpoint, "connectedAt": connected_at}
 
 
@@ -825,7 +833,6 @@ def verb_snapshot():
     if status["state"] == "unknown" and rc != 0:
         code, message = classify_failure(out, err)
         raise CliError(code, message)
-    tail = parse_tunnel_tail(read_tunnel_tail(data_dir()))
     result = blank_snapshot(status["state"])
     result["iface"] = status["iface"]
     result["mode"] = status.get("mode")
@@ -835,6 +842,9 @@ def verb_snapshot():
         result["location"] = match["city"] if match else status["location"].title()
         result["iso"] = match["iso"] if match else None
     if status["state"] == "connected":
+        # Only a live tunnel has an endpoint and an uptime to report, so the
+        # log tail is read and parsed only then.
+        tail = parse_tunnel_tail(read_tunnel_tail(data_dir()))
         result["endpoint"] = tail["endpoint"]
         result["sinceEpoch"] = read_since(data_dir(), tail["connectedAt"])
         if status["iface"]:
