@@ -97,6 +97,38 @@ Item {
   // would just defer one snapshot before the next 30s poll looked up anyway.
   property bool dropHold: false
 
+  // --- tunnel.log trigger -------------------------------------------------------
+  // The status poll alone (refreshTimer: refreshIntervalSec, doubled while
+  // the panel is closed, plus any wait behind queued jobs) left a drop — and
+  // the kill switch — unnoticed for a minute or more. The VPN daemon logs
+  // every state change to tunnel.log as it happens, so Service watches that
+  // file and, on a new raise_state line, gets a snapshot within seconds
+  // (scheduleLogScan → scanTunnelLog → applyTunnelLog, Model.tunnelLogAction
+  // and confirmDrop). The poll is untouched: it is the fallback whenever the
+  // watch can't be set up, and the only detector for a daemon that dies
+  // without logging anything.
+  //
+  // The last settled state a tunnel loss is judged from; see Model.lossBase
+  // (kept in step with vpnState by onVpnStateChanged).
+  property string _lossBase: "unknown"
+  readonly property string tunnelLogPath: Model.tunnelLogPath({ AEGIS_DATA_DIR: Quickshell.env("AEGIS_DATA_DIR"),
+    XDG_DATA_HOME: Quickshell.env("XDG_DATA_HOME"), HOME: Quickshell.env("HOME") })
+  // Watched whenever the tunnel is up (or recovering from being up), kill
+  // switch armed or not: a drop always raises a critical notification and
+  // holds the home lookup (dropHold), and both are worth having in seconds.
+  // It costs next to nothing — while connected the daemon logs one route
+  // line every few minutes, so a look at the tail is rare and a CLI call
+  // only follows an actual state line. Nothing to lose while disconnected,
+  // so no watch then.
+  readonly property bool watchingTunnelLog: installed && tunnelLogPath !== "" && _lossBase === "connected"
+  // Model.scanTunnelLog's `seen`: the newest state line the last look found,
+  // null until the first look after the watch starts.
+  property var _logSeen: null
+  // The newest state tunnel.log has shown ("" before any); see confirmDrop.
+  property string _logLatest: ""
+  // Pulsed by rearmTunnelLog to rebuild the file watch.
+  property bool _logRearming: false
+
   signal actionFinished(string verb, bool ok)
   // Ask the panel (which owns the shell.json entry) to persist inline settings.
   signal persist(var values)
@@ -145,6 +177,60 @@ Item {
     refreshLocations()
     if (!accountLoaded) refreshAccount()
     maybeRefreshHome()
+  }
+
+  // A snapshot that runs next: ahead of every queued job (a `locations`
+  // refresh alone can take 24 s) but after the running one, which is never
+  // interrupted. Only this read-only status check jumps the queue, so user
+  // actions keep their order, and one it jumps (a Disconnect, say) is still
+  // judged as requested — settleStatus reads the pending toggle. Not skipped
+  // for a snapshot already running: that one may have asked the CLI before
+  // the drop.
+  function refreshNow() {
+    _queue = Model.queueFront(_queue, { args: ["snapshot"], verb: "snapshot", mutate: false, stdin: null })
+    pump()
+  }
+
+  // One look at tunnel.log's tail, TUNNEL_SCAN_DELAY_MS after the first
+  // change: a burst of lines is one look. Not restarted by later changes, so
+  // a chatty log can't postpone it; a change during a look gets its own.
+  function scheduleLogScan() {
+    if (watchingTunnelLog && !tunnelLogScanDelay.running) tunnelLogScanDelay.start()
+  }
+
+  // `tail -c` rather than FileView's own content: reading the whole log
+  // (~1.4 MB and never rotated) on every change is exactly what the watch
+  // must not do. The path is an argument, never shell text.
+  function scanTunnelLog() {
+    if (!watchingTunnelLog) return
+    if (tunnelLogTail.running) { tunnelLogTail.again = true; return }
+    tunnelLogTail.output = ""
+    tunnelLogTail.command = ["tail", "-c", String(Model.TUNNEL_TAIL_BYTES), tunnelLogPath]
+    tunnelLogTail.running = true
+  }
+
+  function applyTunnelLog(text) {
+    if (!watchingTunnelLog) return
+    var scan = Model.scanTunnelLog(text, _logSeen)
+    _logSeen = scan.seen
+    if (scan.latest !== "") _logLatest = scan.latest
+    var action = Model.tunnelLogAction(scan, _lossBase)
+    if (action === "refresh") refresh()
+    // Started once per episode, not restarted: RECOVERING after
+    // WAITING_RECOVERY must not push the confirm further out.
+    else if (action === "confirm" && !tunnelLogConfirm.running) tunnelLogConfirm.start()
+  }
+
+  // Rebuilds the file watch after each snapshot that says connected (so at
+  // least once per poll while up) and takes a look. FileView already follows
+  // the file through a replace or re-create (it watches the directory too);
+  // this covers what it can't, like the data directory itself being
+  // re-created, and a write that lands while the watch is rebuilt.
+  function rearmTunnelLog() {
+    if (!watchingTunnelLog) return
+    _logRearming = true
+    _logRearming = false
+    scheduleLogScan()
   }
 
   // Flips the locateHome setting. Turning it off deletes the cached real
@@ -381,7 +467,7 @@ Item {
     else if (verb === "logout") {
       // Logging out takes the tunnel down on request: an intentional
       // disconnect (kill switch only with killOnDisconnect), never a drop.
-      var loss = Model.tunnelLoss(vpnState, "logged_out", true)
+      var loss = Model.tunnelLoss(_lossBase, "logged_out", true)
       account = Model.loggedOutAccount()
       vpnState = "logged_out"
       if (loss !== "") onTunnelLoss(loss, location)
@@ -441,8 +527,10 @@ Item {
       return
     }
     var prevLocation = location
-    // Judged before the pending toggle settles; see Model.settleStatus.
-    var step = Model.settleStatus({ prevState: vpnState, nextState: snap.state, desired: _desired,
+    // Judged before the pending toggle settles; see Model.settleStatus. From
+    // the last settled state, not vpnState: a "connecting" status mid-
+    // recovery must not hide a drop that follows it (Model.lossBase).
+    var step = Model.settleStatus({ prevState: _lossBase, nextState: snap.state, desired: _desired,
       requested: requested === true, wasConnected: wasConnected })
     vpnState = snap.state
     location = snap.location
@@ -454,7 +542,7 @@ Item {
     sinceEpoch = snap.sinceEpoch
     // Reality caught up with the pending toggle.
     _desired = step.desired
-    if (snap.state === "connected") pendingLocation = ""
+    if (snap.state === "connected") { pendingLocation = ""; rearmTunnelLog() }
     if (snap.state === "logged_out") {
       account = Model.loggedOutAccount()
       accountLoaded = true
@@ -593,6 +681,20 @@ Item {
   }
 
   Timer {
+    id: tunnelLogScanDelay
+    interval: Model.TUNNEL_SCAN_DELAY_MS
+    onTriggered: root.scanTunnelLog()
+  }
+
+  Timer {
+    // The confirm step (Model.tunnelLogAction's "confirm"): by now a switch
+    // or a recovery has logged CONNECTED; if not, the snapshot settles it.
+    id: tunnelLogConfirm
+    interval: Model.TUNNEL_CONFIRM_MS
+    onTriggered: if (Model.confirmDrop(root._logLatest, root._lossBase)) root.refreshNow()
+  }
+
+  Timer {
     id: jobWatchdog
     // Last resort. agvpn.py answers within its own per-verb budget (lock
     // wait and every sub-call timeout included) and Model.watchdogMs is that
@@ -651,6 +753,18 @@ Item {
   }
 
   onPanelOpenChanged: if (panelOpen) refreshAll()
+  // Every path that sets vpnState (snapshots, logout, noteError, account)
+  // moves the loss base with it.
+  onVpnStateChanged: _lossBase = Model.lossBase(_lossBase, vpnState)
+  // Starting the watch primes a fresh look (what the log already holds is
+  // history); stopping it forgets the log's position and any pending confirm.
+  onWatchingTunnelLogChanged: {
+    _logSeen = null
+    if (watchingTunnelLog) { scheduleLogScan(); return }
+    _logLatest = ""
+    tunnelLogScanDelay.stop()
+    tunnelLogConfirm.stop()
+  }
   onActionStatusChanged: if (actionStatus !== "") actionStatusTimer.restart()
   Component.onCompleted: {
     tzProcess.running = true
@@ -678,6 +792,39 @@ Item {
 
   Process {
     id: killProcess
+  }
+
+  // A change trigger only. With preload: false, FileView reads a file only
+  // when text()/data() is called (Quickshell 0.3 fileview.cpp updatePath/
+  // text), and nothing here calls them: a 64 MB probe file under this exact
+  // setup saw no reads across appends, an atomic replace and a re-create.
+  // The watch covers the file and its directory, so a log that doesn't exist
+  // yet (never connected) fires once it is created. A burst of appends
+  // arrives as one or a few fileChanged signals; scheduleLogScan folds them.
+  FileView {
+    id: tunnelLogWatch
+    path: root.tunnelLogPath
+    preload: false
+    printErrors: false
+    watchChanges: root.watchingTunnelLog && !root._logRearming
+    onFileChanged: root.scheduleLogScan()
+  }
+
+  Process {
+    id: tunnelLogTail
+    property string output: ""
+    // A change noticed while this look was running gets a look of its own.
+    property bool again: false
+    stdout: StdioCollector { waitForEnd: true; onStreamFinished: tunnelLogTail.output = text }
+    onExited: function(exitCode) {
+      var text = tunnelLogTail.output
+      tunnelLogTail.output = ""
+      // A failed read (no log yet, not readable) says nothing about the
+      // tunnel: the directory watch fires once the file appears, and the
+      // poll carries on either way.
+      if (exitCode === 0) root.applyTunnelLog(text)
+      if (tunnelLogTail.again) { tunnelLogTail.again = false; root.scheduleLogScan() }
+    }
   }
 
   Process {

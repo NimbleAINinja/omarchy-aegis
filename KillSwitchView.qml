@@ -49,7 +49,7 @@ Column {
   Toggle {
     width: parent.width
     label: "Kill switch"
-    description: "Close listed apps if the tunnel drops"
+    description: "Close listed apps within seconds of a drop"
     checked: vpn ? vpn.killSwitch : false
     hasCursor: root.hasCursor("killSwitch")
     foreground: panel.foreground
@@ -193,7 +193,7 @@ Column {
   Text {
     visible: !root.armed
     width: parent.width
-    text: "When armed, the apps listed here are closed the moment the tunnel drops unexpectedly, and you get a notification. You can also have them closed when you disconnect yourself."
+    text: "When armed, the apps listed here are closed a few seconds after Aegis sees the tunnel drop, and you get a notification. It closes apps, it doesn't block traffic: until they're closed they can still go out over your normal connection, and a drop while the shell isn't running goes unnoticed. You can also have them closed when you disconnect yourself."
     color: panel.dim
     font.family: panel.fontFamily
     font.pixelSize: Style.font.caption

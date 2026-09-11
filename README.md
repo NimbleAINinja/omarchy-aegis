@@ -16,8 +16,8 @@ location, it connects. That is the whole interface.
 - Settings: TUN or SOCKS mode (with host, port and auth), protocol, post-quantum,
   DNS upstream and system DNS, all through the CLI's own config
 - Reconnects at login if the VPN was on when the session ended, crashes included
-- Kill switch: closes the apps you pick (suggested from what is running) if the tunnel drops, and tells you;
-  optionally also when you disconnect or log out yourself
+- Kill switch: closes the apps you pick (suggested from what is running) within seconds of a drop, and tells you;
+  optionally also when you disconnect or log out yourself. It closes apps, it doesn't block traffic ([details](#kill-switch))
 - Exclusions can be paused and resumed without retyping them
 - Hover the map: the nearest city lights up with its name, click to connect
 - The row under your cursor rings its city on the map
@@ -98,13 +98,13 @@ Settings live inline on the widget's entry in `~/.config/omarchy/shell.json`:
 | Key | Default | Meaning |
 |---|---|---|
 | `barMode` | `icon` | `icon`, `iso` (country code), or `rate` (live down/up). Vertical bars always show the icon |
-| `refreshIntervalSec` | `30` | status poll while the panel is open (doubled while closed) |
+| `refreshIntervalSec` | `30` | status poll while the panel is open (doubled while closed); while connected, a state change in the CLI's `tunnel.log` also triggers a check within seconds |
 | `favorites` | `[]` | `ISO|City` keys, managed with `f` or the star |
 | `lastLocation` | `""` | what the switch reconnects to |
 | `autoConnect` | `true` | reconnect at login when `wasConnected` is still set |
 | `wasConnected` | internal | set while connected, cleared only by a disconnect or logout you make; survives crashes and reboots |
-| `killSwitch` | `false` | close `killApps` when the tunnel drops unexpectedly (critical notification) |
-| `killOnDisconnect` | `false` | with `killSwitch` on, also close `killApps` when you disconnect or log out (normal notification); off, your own disconnects close nothing and send no alert |
+| `killSwitch` | `false` | close `killApps` a few seconds after the tunnel drops unexpectedly (critical notification); closes apps, doesn't block traffic, see [Kill switch](#kill-switch) |
+| `killOnDisconnect` | `false` | with `killSwitch` on, also close `killApps` once a disconnect or logout you make has gone through (normal notification); off, your own disconnects close nothing and send no alert |
 | `killApps` | `""` | comma separated process names, each killed with `pkill -x`; pick them from the suggestions of running processes |
 | `pausedExclusions` | internal | `{general: [], selective: []}` domains you paused; they are removed from the CLI list and re-added on resume |
 | `lastUpdateCheck` | internal | epoch seconds of the last `check-update`; checked again after 24 h |
@@ -115,6 +115,20 @@ by Aegis: they are read from and written to the CLI with `adguardvpn-cli config`
 Changes to mode, protocol, post-quantum or DNS apply on the next connect.
 The SOCKS password is handed to the CLI on stdin, never on a command line,
 so it never shows up in `ps` for other local users.
+
+## Kill switch
+
+The kill switch closes apps; it is not a firewall. While the VPN is up, Aegis
+watches the CLI's `tunnel.log` for state changes. When the tunnel goes down
+and hasn't come back a few seconds later (a location switch or a brief
+network recovery comes back on its own and is not a drop), it confirms with
+`adguardvpn-cli status` and closes the listed apps with `pkill -x`. That
+usually takes five to ten seconds, longer if another CLI call is still
+running. Until then the apps can keep sending over your normal connection,
+and nothing stops an app you start again afterwards. If the VPN daemon dies
+without logging anything, the drop is only caught at the next status poll
+(`refreshIntervalSec`, doubled while the panel is closed). A drop while the
+shell isn't running, or before you log in, isn't caught at all.
 
 ## Privacy
 

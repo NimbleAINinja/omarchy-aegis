@@ -656,6 +656,148 @@ function lossResponse(kind, ctx) {
   return null
 }
 
+// The state a tunnel loss is judged from (settleStatus's prevState). A
+// "connecting" status is the CLI in the middle of something — a connect, or
+// network recovery, where `status` says "Reconnecting to …" while tunnel.log
+// reads VPN_SS_WAITING_RECOVERY — so it never replaces the last settled
+// state, and connected → connecting → disconnected is still a drop. Judged
+// from the raw previous status, that drop went unreported (no alert, no kill
+// switch) whenever a snapshot happened to land mid-recovery, which the
+// tunnel.log trigger below makes likely rather than rare.
+function lossBase(prevBase, state) {
+  var s = str(state)
+  if (s !== "connecting") return s
+  return prevBase === undefined || prevBase === null || String(prevBase) === "" ? "unknown" : String(prevBase)
+}
+
+// tunnel.log is written by the root VPN daemon (the user can read it) the
+// moment the tunnel changes state — long before the next status poll. Same
+// lookup as agvpn.py data_dir(): $AEGIS_DATA_DIR, else
+// $XDG_DATA_HOME/adguardvpn-cli, else ~/.local/share/adguardvpn-cli.
+//   env: { AEGIS_DATA_DIR, XDG_DATA_HOME, HOME } → path, "" when unknowable
+function tunnelLogPath(env) {
+  var e = env && typeof env === "object" ? env : {}
+  function clean(value) { return value === undefined || value === null ? "" : String(value).replace(/\/+$/, "") }
+  if (clean(e.AEGIS_DATA_DIR) !== "") return clean(e.AEGIS_DATA_DIR) + "/tunnel.log"
+  var base = clean(e.XDG_DATA_HOME)
+  if (base === "") base = clean(e.HOME) === "" ? "" : clean(e.HOME) + "/.local/share"
+  return base === "" ? "" : base + "/adguardvpn-cli/tunnel.log"
+}
+
+// Bytes of tunnel.log's tail Service reads per look. A location switch logs
+// ~140 lines (15-24 KB measured) between VPN_SS_DISCONNECTED and the next
+// VPN_SS_CONNECTED, so this window still holds the state line seen before
+// such a burst; when it doesn't, scanTunnelLog reports `lost`.
+var TUNNEL_TAIL_BYTES = 65536
+// A look at the tail waits this long after the first change, so a burst of
+// log lines is one look (a switch writes its ~140 lines within a second).
+var TUNNEL_SCAN_DELAY_MS = 400
+// From a look that saw the tunnel go down to the snapshot that settles it:
+// longer than a location switch (DISCONNECTED → CONNECTED in ~1 s) or a
+// network recovery (WAITING_RECOVERY → CONNECTED in ~2 s) takes, so those
+// log CONNECTED first and cost no CLI call. See confirmDrop.
+var TUNNEL_CONFIRM_MS = 3000
+
+var TUNNEL_STATE_LINE = /^\d{2}\.\d{2}\.\d{4} \d{2}:\d{2}:\d{2}\.\d+ .*\bVPNCORE raise_state: \[\d+\] VPN_SS_([A-Z_]+)$/
+
+// Every complete raise_state line in a chunk of tunnel.log, oldest first:
+// [{ line, state }], state lowercased (connecting, connected, disconnected,
+// waiting_recovery, recovering, or whatever VPN_SS_ the daemon grows next).
+// A `tail -c` chunk can start mid-line (the timestamp anchor rejects that
+// fragment) and end mid-line while the daemon is still writing (only
+// newline-terminated lines count, so "VPN_SS_CONNECT" is never a state).
+function tunnelLogStates(text) {
+  var t = text === undefined || text === null ? "" : String(text)
+  var end = t.lastIndexOf("\n")
+  if (end === -1) return []
+  var lines = t.substring(0, end).split("\n")
+  var out = []
+  for (var i = 0; i < lines.length; i++) {
+    var line = lines[i].replace(/\s+$/, "")
+    var m = TUNNEL_STATE_LINE.exec(line)
+    if (m) out.push({ line: line, state: m[1].toLowerCase() })
+  }
+  return out
+}
+
+// What a fresh tail of tunnel.log says changed since the last look.
+//   seen: the newest state line the last look found; null/undefined for the
+//     first look after the watch starts (priming: what is already there is
+//     history, and the snapshot that started the watch covered it), "" when
+//     the last look found none (so every state line now is new)
+//   → { states: [new states, oldest first], latest: the chunk's newest state
+//       ("" if it has none), seen: pass back next time, lost, primed }
+// lost: the last line is gone from the chunk — the log was replaced or
+// truncated, or more than TUNNEL_TAIL_BYTES arrived at once — so what is new
+// can't be told apart; every state in the chunk is reported as new.
+function scanTunnelLog(text, seen) {
+  var found = tunnelLogStates(text)
+  var last = found.length > 0 ? found[found.length - 1] : null
+  var out = { states: [], latest: last ? last.state : "", seen: last ? last.line : "", lost: false, primed: false }
+  if (seen === undefined || seen === null) { out.primed = true; return out }
+  var from = 0
+  if (String(seen) !== "") {
+    from = -1
+    for (var i = found.length - 1; i >= 0; i--) if (found[i].line === String(seen)) { from = i + 1; break }
+    if (from === -1) { out.lost = true; from = 0 }
+  }
+  for (var j = from; j < found.length; j++) out.states.push(found[j].state)
+  return out
+}
+
+// What Service does with a scanTunnelLog result, given lossBase:
+//   "confirm": the newest state says the tunnel isn't up. Wait
+//     TUNNEL_CONFIRM_MS, then run an urgent snapshot unless the log has said
+//     CONNECTED again by then (confirmDrop). Killing apps straight off the
+//     log would fire on every location switch; snapshotting straight away
+//     could catch the ~0.3 s DISCONNECTED gap of a switch made outside Aegis.
+//   "refresh": the tunnel came (back) up, or the log was replaced without a
+//     down state in view — an ordinary queued snapshot keeps the location and
+//     endpoint current; nothing to protect, so no hurry.
+//   "none": no new state line, or nothing to lose (lossBase isn't
+//     "connected": a drop needs a tunnel Service believes is up).
+// A priming look reports nothing new, but if the log's newest state already
+// says down while Service thinks the tunnel is up, that line may have landed
+// between the snapshot's status call and this look: confirm it.
+function tunnelLogAction(scan, base) {
+  var s = scan && typeof scan === "object" ? scan : {}
+  if (base !== "connected") return "none"
+  var latest = s.latest === undefined || s.latest === null ? "" : String(s.latest)
+  var down = latest !== "" && latest !== "connected"
+  if (s.lost === true) return down ? "confirm" : "refresh"
+  var states = toList(s.states)
+  if (states.length === 0) return s.primed === true && down ? "confirm" : "none"
+  return String(states[states.length - 1]) === "connected" ? "refresh" : "confirm"
+}
+
+// When the confirm wait is over: whether the urgent snapshot is still
+// needed. Not if tunnel.log's newest state is CONNECTED again (a switch or a
+// recovery), nor once lossBase has moved off "connected" (a Disconnect the
+// user made, or a snapshot that already settled the drop). The snapshot is
+// what decides drop vs not (settleStatus); this only spares a CLI call.
+function confirmDrop(latest, base) {
+  return base === "connected" && latest !== "connected"
+}
+
+// The job queue with `job` first: the same read-only verb already waiting is
+// moved there (so it never runs twice), otherwise `job` is inserted.
+// Everything else keeps its order, so user actions still run in the order
+// they were made; the running job isn't in the queue and is never
+// interrupted. A mutating job that rides the same verb (an exclusions/config
+// write) is never the one moved.
+function queueFront(queue, job) {
+  var list = toList(queue)
+  var verb = job && typeof job === "object" ? job.verb : undefined
+  var out = [job]
+  var moved = false
+  for (var i = 0; i < list.length; i++) {
+    var q = list[i]
+    if (!moved && q && q.verb === verb && q.mutate !== true) { out[0] = q; moved = true; continue }
+    out.push(q)
+  }
+  return out
+}
+
 function filterProcs(procs, query, chosen, limit) {
   var q = str(query).trim().toLowerCase()
   if (q === "") return []
@@ -877,6 +1019,16 @@ if (typeof module !== "undefined") {
     describeDrop: describeDrop,
     describeDisconnect: describeDisconnect,
     lossResponse: lossResponse,
+    lossBase: lossBase,
+    tunnelLogPath: tunnelLogPath,
+    TUNNEL_TAIL_BYTES: TUNNEL_TAIL_BYTES,
+    TUNNEL_SCAN_DELAY_MS: TUNNEL_SCAN_DELAY_MS,
+    TUNNEL_CONFIRM_MS: TUNNEL_CONFIRM_MS,
+    tunnelLogStates: tunnelLogStates,
+    scanTunnelLog: scanTunnelLog,
+    tunnelLogAction: tunnelLogAction,
+    confirmDrop: confirmDrop,
+    queueFront: queueFront,
     filterProcs: filterProcs,
     addApp: addApp,
     removeApp: removeApp,

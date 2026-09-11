@@ -719,3 +719,173 @@ test("every helper verb Service.qml enqueues has a watchdog budget; unknown verb
   assert.equal(Model.watchdogMs("connect"), 84000 + Model.WATCHDOG_SLACK_MS)
   assert.equal(Model.watchdogMs("update-check"), 36000 + Model.WATCHDOG_SLACK_MS)
 })
+
+// --- tunnel.log trigger --------------------------------------------------------
+
+const tunnelFixture = name => require("node:fs").readFileSync(require("node:path").join(__dirname, "fixtures", name), "utf8")
+
+test("lossBase keeps connected through a connecting status, so a drop mid-recovery is still a drop", () => {
+  assert.equal(Model.lossBase("connected", "connecting"), "connected")
+  assert.equal(Model.lossBase("disconnected", "connecting"), "disconnected")
+  assert.equal(Model.lossBase("connected", "disconnected"), "disconnected")
+  assert.equal(Model.lossBase("connecting", "connected"), "connected")
+  assert.equal(Model.lossBase("", "connecting"), "unknown")
+  assert.equal(Model.lossBase(undefined, "connecting"), "unknown")
+  // Replays Service: each status judged from the base, then the base moves.
+  function replay(states, desired) {
+    let base = "unknown"
+    const losses = []
+    for (const s of states) {
+      losses.push(Model.settleStatus({ prevState: base, nextState: s, desired: desired === undefined ? -1 : desired, wasConnected: true }).loss)
+      base = Model.lossBase(base, s)
+    }
+    return losses
+  }
+  assert.deepEqual(replay(["connected", "connecting", "disconnected"]), ["", "", "drop"])
+  // Judged from the raw previous status (the old wiring), that drop was lost.
+  assert.equal(Model.settleStatus({ prevState: "connecting", nextState: "disconnected", desired: -1, wasConnected: true }).loss, "")
+  assert.deepEqual(replay(["connected", "connecting", "connecting", "connected"]), ["", "", "", ""])
+  assert.deepEqual(replay(["disconnected", "connecting", "disconnected"]), ["", "", ""])
+  assert.deepEqual(replay(["connected", "connecting", "disconnected"], 0), ["", "", "disconnect"])
+  assert.equal(Model.tunnelLoss(Model.lossBase("connected", "connecting"), "logged_out", true), "disconnect")
+})
+
+test("tunnelLogPath follows agvpn.py data_dir()", () => {
+  assert.equal(Model.tunnelLogPath({ HOME: "/home/u" }), "/home/u/.local/share/adguardvpn-cli/tunnel.log")
+  assert.equal(Model.tunnelLogPath({ HOME: "/home/u", XDG_DATA_HOME: "/data/" }), "/data/adguardvpn-cli/tunnel.log")
+  assert.equal(Model.tunnelLogPath({ HOME: "/home/u", XDG_DATA_HOME: "", AEGIS_DATA_DIR: "/tmp/fake" }), "/tmp/fake/tunnel.log")
+  assert.equal(Model.tunnelLogPath({ HOME: "/home/u", XDG_DATA_HOME: null }), "/home/u/.local/share/adguardvpn-cli/tunnel.log")
+  assert.equal(Model.tunnelLogPath({ HOME: undefined }), "")
+  assert.equal(Model.tunnelLogPath(null), "")
+})
+
+test("tunnelLogStates reads complete raise_state lines only", () => {
+  assert.deepEqual(Model.tunnelLogStates(tunnelFixture("tunnel_tail.txt")).map(s => s.state),
+    ["connecting", "connected", "disconnected", "connecting", "connected", "disconnected", "connecting", "connected", "disconnected"])
+  const recovery = Model.tunnelLogStates(tunnelFixture("tunnel_recovery.txt"))
+  assert.deepEqual(recovery.map(s => s.state), ["waiting_recovery", "recovering", "connected"])
+  assert.equal(recovery[2].line, "11.09.2026 09:04:10.508739 INFO  [3040] VPNCORE raise_state: [1] VPN_SS_CONNECTED")
+  const full = "10.09.2026 23:15:41.098252 INFO  [16951] VPNCORE raise_state: [1] VPN_SS_DISCONNECTED"
+  // `tail -c` cut into the first line; the daemon is mid-way through the last.
+  assert.deepEqual(Model.tunnelLogStates(full.slice(9) + "\n" + full + "\n" + full.slice(0, -6)).map(s => s.state), ["disconnected"])
+  assert.deepEqual(Model.tunnelLogStates(full), [])
+  assert.deepEqual(Model.tunnelLogStates(full + "\r\n").map(s => s.state), ["disconnected"])
+  assert.deepEqual(Model.tunnelLogStates("VPN_SS_CONNECTED\nnoise VPNCORE raise_state: [1] VPN_SS_CONNECTED\n"), [])
+  assert.deepEqual(Model.tunnelLogStates(null), [])
+})
+
+test("scanTunnelLog: priming, new lines since the last look, and a lost position", () => {
+  const lines = tunnelFixture("tunnel_tail.txt").split("\n")
+  const upTo = n => lines.slice(0, n).join("\n") + "\n"
+  const prime = Model.scanTunnelLog(upTo(9), null)
+  assert.deepEqual(prime, { states: [], latest: "connected", seen: lines[8], lost: false, primed: true })
+  const next = Model.scanTunnelLog(upTo(21), prime.seen)
+  assert.deepEqual(next, { states: ["disconnected", "connecting", "connected"], latest: "connected", seen: lines[20], lost: false, primed: false })
+  assert.deepEqual(Model.scanTunnelLog(upTo(23), next.seen).states, [])
+  // The last line scrolled out (replaced, truncated, or a burst bigger than the window).
+  const lost = Model.scanTunnelLog(lines.slice(22, 36).join("\n") + "\n", next.seen)
+  assert.equal(lost.lost, true)
+  assert.deepEqual(lost.states, ["disconnected", "connecting", "connected", "disconnected"])
+  assert.equal(lost.latest, "disconnected")
+  const gone = Model.scanTunnelLog("", next.seen)
+  assert.deepEqual(gone, { states: [], latest: "", seen: "", lost: true, primed: false })
+  // "": the last look had no state line in view, so every one now is new.
+  assert.deepEqual(Model.scanTunnelLog(upTo(12), "").states, ["connecting", "connected", "disconnected"])
+  assert.equal(Model.scanTunnelLog(upTo(12), "").lost, false)
+})
+
+test("tunnelLogAction confirms downs, refreshes on ups, and ignores a tunnel that wasn't up", () => {
+  const up = "connected"
+  assert.equal(Model.tunnelLogAction({ states: [], latest: "connected", primed: true }, up), "none")
+  assert.equal(Model.tunnelLogAction({ states: [], latest: "disconnected", primed: true }, up), "confirm")
+  assert.equal(Model.tunnelLogAction({ states: [], latest: "", primed: true }, up), "none")
+  assert.equal(Model.tunnelLogAction({ states: [], latest: "disconnected" }, up), "none")
+  assert.equal(Model.tunnelLogAction({ states: ["disconnected"], latest: "disconnected" }, up), "confirm")
+  assert.equal(Model.tunnelLogAction({ states: ["waiting_recovery"], latest: "waiting_recovery" }, up), "confirm")
+  assert.equal(Model.tunnelLogAction({ states: ["disconnected", "connecting"], latest: "connecting" }, up), "confirm")
+  assert.equal(Model.tunnelLogAction({ states: ["disconnected", "connecting", "connected"], latest: "connected" }, up), "refresh")
+  assert.equal(Model.tunnelLogAction({ states: [], latest: "", lost: true }, up), "refresh")
+  assert.equal(Model.tunnelLogAction({ states: ["connected"], latest: "connected", lost: true }, up), "refresh")
+  assert.equal(Model.tunnelLogAction({ states: ["disconnected"], latest: "disconnected", lost: true }, up), "confirm")
+  for (const base of ["disconnected", "logged_out", "unknown", "connecting", "", undefined])
+    assert.equal(Model.tunnelLogAction({ states: ["disconnected"], latest: "disconnected" }, base), "none")
+  assert.equal(Model.tunnelLogAction(null, up), "none")
+})
+
+test("confirmDrop only asks for a snapshot while the log says down and the tunnel is still thought up", () => {
+  assert.equal(Model.confirmDrop("disconnected", "connected"), true)
+  assert.equal(Model.confirmDrop("waiting_recovery", "connected"), true)
+  assert.equal(Model.confirmDrop("", "connected"), true)
+  assert.equal(Model.confirmDrop("connected", "connected"), false)
+  assert.equal(Model.confirmDrop("disconnected", "disconnected"), false)
+  assert.equal(Model.confirmDrop("disconnected", "logged_out"), false)
+})
+
+// Replays Service's trigger path over a timeline of log chunks: each look is
+// scanned against the last, a "confirm" starts the (single) confirm timer, and
+// when it fires confirmDrop decides with the newest state seen by then.
+function replayLog(chunks, base) {
+  let seen = null
+  let latest = ""
+  let confirmPending = false
+  const actions = []
+  for (const text of chunks) {
+    const scan = Model.scanTunnelLog(text, seen)
+    seen = scan.seen
+    if (scan.latest !== "") latest = scan.latest
+    const action = Model.tunnelLogAction(scan, base)
+    actions.push(action)
+    if (action === "confirm") confirmPending = true
+  }
+  return { actions, urgentSnapshot: confirmPending && Model.confirmDrop(latest, base) }
+}
+
+test("a location switch and a network recovery never reach the urgent snapshot; a real drop does", () => {
+  const tail = tunnelFixture("tunnel_tail.txt").split("\n")
+  const upTo = n => tail.slice(0, n).join("\n") + "\n"
+  // Switch: looks land after DISCONNECTED (line 12), CONNECTING (19), CONNECTED (21).
+  const sw = replayLog([upTo(9), upTo(12), upTo(19), upTo(21)], "connected")
+  assert.deepEqual(sw.actions, ["none", "confirm", "confirm", "refresh"])
+  assert.equal(sw.urgentSnapshot, false)
+  // The real recovery episode, one look per state line, all within the confirm wait.
+  const rec = tunnelFixture("tunnel_recovery.txt").split("\n")
+  const recUpTo = n => tail.slice(0, 9).concat(rec.slice(0, n)).join("\n") + "\n"
+  const recovery = replayLog([recUpTo(0), recUpTo(2), recUpTo(6), recUpTo(9)], "connected")
+  assert.deepEqual(recovery.actions, ["none", "confirm", "confirm", "refresh"])
+  assert.equal(recovery.urgentSnapshot, false)
+  const stamp = line => { const m = /^(\d\d)\.(\d\d)\.(\d{4}) (\d\d):(\d\d):(\d\d\.\d+)/.exec(line); return Date.UTC(+m[3], +m[2] - 1, +m[1], +m[4], +m[5]) + Number(m[6]) * 1000 }
+  assert.ok(Model.TUNNEL_CONFIRM_MS > stamp(rec[8]) - stamp(rec[1]) + Model.TUNNEL_SCAN_DELAY_MS, "confirm wait outlasts the recovery")
+  assert.ok(Model.TUNNEL_CONFIRM_MS > stamp(tail[20]) - stamp(tail[11]) + Model.TUNNEL_SCAN_DELAY_MS, "confirm wait outlasts the switch")
+  // A drop: DISCONNECTED and nothing after it.
+  const drop = replayLog([upTo(9), upTo(16)], "connected")
+  assert.deepEqual(drop.actions, ["none", "confirm"])
+  assert.equal(drop.urgentSnapshot, true)
+})
+
+test("queueFront puts one snapshot first without reordering anything else", () => {
+  const q = [{ verb: "locations" }, { verb: "connect", args: ["connect", "Tokyo"] }, { verb: "disconnect" }, { verb: "snapshot" }, { verb: "account" }]
+  const job = { verb: "snapshot", args: ["snapshot"] }
+  const moved = Model.queueFront(q, job)
+  assert.deepEqual(moved.map(j => j.verb), ["snapshot", "locations", "connect", "disconnect", "account"])
+  assert.equal(moved[0], q[3])
+  assert.equal(q.length, 5)
+  const inserted = Model.queueFront(q.filter(j => j.verb !== "snapshot"), job)
+  assert.deepEqual(inserted.map(j => j.verb), ["snapshot", "locations", "connect", "disconnect", "account"])
+  assert.equal(inserted[0], job)
+  assert.deepEqual(Model.queueFront([], job), [job])
+  assert.deepEqual(Model.queueFront(null, job), [job])
+  const write = { verb: "config", mutate: true }
+  assert.deepEqual(Model.queueFront([write], { verb: "config" }), [{ verb: "config" }, write])
+})
+
+test("Service.qml uses tunnel.log's FileView as a trigger only, and urgent snapshots jump the queue", () => {
+  const src = require("node:fs").readFileSync(require("node:path").join(__dirname, "..", "Service.qml"), "utf8")
+  const block = /FileView\s*\{[\s\S]*?\n  \}/.exec(src)
+  assert.ok(block, "FileView present")
+  assert.match(block[0], /preload:\s*false/)
+  assert.match(block[0], /watchChanges:\s*root\.watchingTunnelLog/)
+  assert.doesNotMatch(block[0], /blockLoading:\s*true|onLoaded|reload\(/)
+  assert.doesNotMatch(src, /tunnelLogWatch\.(text|data|reload)\s*\(/)
+  assert.match(src, /Model\.queueFront\(_queue, \{ args: \["snapshot"\], verb: "snapshot"/)
+  assert.match(src, /prevState: _lossBase/)
+})
