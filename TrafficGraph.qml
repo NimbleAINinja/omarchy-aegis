@@ -24,7 +24,9 @@ Item {
   // a burst. See Model.TRAFFIC_FLOOR.
   property real floorRate: 1024
 
-  property color centerColor: Qt.rgba(1, 1, 1, 0.22)
+  // The panel's own hairline colour (PanelSeparator: the foreground at α0.12),
+  // because that is what this line is — a rule, not a row of dots.
+  property color centerColor: Qt.rgba(1, 1, 1, 0.12)
   property color upColor: "white"
   property color downColor: "white"
 
@@ -53,14 +55,16 @@ Item {
     ctx.fillRect(Math.round(cx - side / 2), Math.round(cy - side / 2), side, side)
   }
 
-  // The centre line is a row of dim dots rather than a stroke: a hairline
-  // would be the only non-dot mark on the whole graph.
+  // A solid 1 px rule the full width of the graph, in the panel's own hairline
+  // colour: as a row of dots it competed with the data — the eye read three
+  // dotted rows and had to work out which one was the axis — and it sat on the
+  // lattice, so a quiet column and the baseline looked the same. Filled rather
+  // than stroked: a stroke at y + 0.5 is what it takes to keep a 1 px line
+  // crisp, and a fill just puts the rect where it belongs.
   function paintCenter(ctx) {
-    var count = columnCount
-    if (count === 0) return
-    var side = dotSide()
+    if (width <= 0) return
     ctx.fillStyle = centerColor
-    for (var i = 0; i < count; i++) paintDot(ctx, columnX(i), centerY, side)
+    ctx.fillRect(0, Math.round(centerY - 0.5), Math.round(width), 1)
   }
 
   // `direction` is -1 for the half above the centre and 1 for the one below.

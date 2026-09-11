@@ -87,7 +87,9 @@ Column {
     dotsPerHalf: 12
     floorRate: Model.TRAFFIC_FLOOR
     history: vpn ? vpn.trafficHistory : []
-    centerColor: Util.alpha(panel.foreground, 0.22)
+    // The same hairline the separators are drawn with, so the axis belongs to
+    // the panel's chrome rather than to the data.
+    centerColor: Util.alpha(panel.foreground, 0.12)
     upColor: Util.alpha(panel.foreground, 0.7)
     downColor: panel.glow
   }

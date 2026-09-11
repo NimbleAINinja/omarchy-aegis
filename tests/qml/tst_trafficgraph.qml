@@ -71,15 +71,16 @@ TestCase {
     var graph = makeGraph()
     var ctx = fakeContext()
     graph.paintGraph(ctx)
-    compare(ctx.record.rects.length, graph.columnCount, "one dim dot per column")
+    // One mark, not a row of dots: the axis is a hairline rule like the
+    // separators around it, so it never reads as a third row of data.
+    compare(ctx.record.rects.length, 1, "one line, no centre dots")
     compare(ctx.record.fillStyles.length, 1, "one fill style for the whole line")
     compare(String(ctx.record.fillStyles[0]), String(graph.centerColor))
-    for (var i = 0; i < ctx.record.rects.length; i++) {
-      var dot = ctx.record.rects[i]
-      compare(dot.w, dot.h, "square")
-      verify(dot.w >= 2, "a 1 px dot disappears against the background")
-      fuzzyCompare(dot.y + dot.h / 2, graph.centerY, 1)
-    }
+    var line = ctx.record.rects[0]
+    compare(line.h, 1, "1 px tall")
+    compare(line.x, 0)
+    compare(line.w, graph.width, "the full width of the graph")
+    fuzzyCompare(line.y + line.h / 2, graph.centerY, 1)
   }
 
   function test_the_newest_sample_is_the_column_at_the_right_edge() {
