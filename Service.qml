@@ -127,9 +127,17 @@ Item {
   // The only place that decides whether an ipinfo.io lookup may actually
   // run (Model.mayLocateHome) — every call site that used to call
   // refreshHome() directly goes through this instead.
-  function maybeRefreshHome() {
+  //   wasConnectedOverride: applySnapshot's own callers pass the value
+  //   Model.settleStatus just decided for *this* snapshot (step.wasConnected,
+  //   when non-null) — the wasConnected property is only updated by the
+  //   persist() a few lines further down in applySnapshot, so reading it
+  //   here directly would still see the previous snapshot's value. Every
+  //   other caller has no fresher answer than the property itself, so they
+  //   leave this undefined.
+  function maybeRefreshHome(wasConnectedOverride) {
+    var wc = wasConnectedOverride === undefined ? wasConnected : wasConnectedOverride
     if (Model.mayLocateHome({ locateHome: locateHome, state: vpnState, startupSettled: startupSettled,
-      autoConnectPending: autoConnectPending, dropHold: dropHold })) refreshHome()
+      autoConnectPending: autoConnectPending, dropHold: dropHold, wasConnected: wc })) refreshHome()
   }
 
   function refreshAll() {
@@ -456,7 +464,12 @@ Item {
     // again (dropHold, cleared by connectTo/down/logout) — right after a
     // drop is exactly when the user expects to be protected, not queried.
     if (step.loss === "drop") dropHold = true
-    if (homeStale) maybeRefreshHome()
+    // step.wasConnected is what this very snapshot just decided (non-null
+    // only on an actual transition); the wasConnected property itself isn't
+    // updated until the persist() below runs, so using it here directly
+    // would gate on the previous snapshot's value — see maybeRefreshHome.
+    var wasConnectedNow = step.wasConnected !== null ? step.wasConnected : wasConnected
+    if (homeStale) maybeRefreshHome(wasConnectedNow)
     // A background/routine status refresh clears only errors it is entitled
     // to supersede; an action's own error otherwise stands until the user
     // starts a new action (see connectTo/down/setConfig/exclusion mutators)
@@ -473,7 +486,7 @@ Item {
       // not due, failed already, or no last location) or is about to come
       // back up (autoConnectPending) — either way Model.mayLocateHome knows
       // what to do with it.
-      maybeRefreshHome()
+      maybeRefreshHome(wasConnectedNow)
     }
   }
 

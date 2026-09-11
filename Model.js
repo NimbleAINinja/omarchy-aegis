@@ -582,23 +582,32 @@ function shouldAutoConnect(ctx) {
 
 // Whether a home-location lookup (ipinfo.io, run by agvpn.py's `home` verb)
 // may fire right now. The setting alone isn't enough: even with it on, a
-// lookup may only run once the tunnel is down by the user's own choice —
+// lookup may only run while the VPN is off because the user turned it off —
 //   - never before the first status has settled (state is still "unknown",
 //     or the very first snapshot hasn't been judged yet)
 //   - never while startup's auto-connect is about to reconnect a VPN that
 //     was on last session (Model.shouldAutoConnect said yes and that
 //     connect hasn't finished or failed yet) — the first lookup at login
 //     waits until it's clear the VPN will stay off
+//   - never while wasConnected is still true: that persisted flag *is* the
+//     user's standing intent ("the VPN should be on"), set once connected
+//     and cleared only by a disconnect/logout the user makes (see
+//     settleStatus/Service.down()/logout()) — so it stays true across a
+//     failed auto-connect (network not up yet at login) and across a drop,
+//     and a lookup must stay held the whole time, not just while
+//     autoConnectPending or dropHold individually cover their own window
 //   - never after an unexpected drop, until the user takes some explicit
 //     action (connect, disconnect, toggle) — an intentional disconnect or
-//     logout is fine, the user chose the clear net that time
-//   ctx: { locateHome, state, startupSettled, autoConnectPending, dropHold }
+//     logout clears wasConnected itself, so it reads false here and is fine
+//   ctx: { locateHome, state, startupSettled, autoConnectPending, dropHold,
+//     wasConnected }
 function mayLocateHome(ctx) {
   var c = ctx && typeof ctx === "object" ? ctx : {}
   if (c.locateHome !== true) return false
   if (c.startupSettled !== true) return false
   if (c.autoConnectPending === true) return false
   if (c.dropHold === true) return false
+  if (c.wasConnected === true) return false
   return c.state === "disconnected"
 }
 

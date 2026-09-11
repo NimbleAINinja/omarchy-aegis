@@ -123,15 +123,18 @@ plugin itself makes is one lookup to `https://ipinfo.io/json`, which sends
 your public IP address (and gets back an approximate city/coordinates in
 return) to place your home marker.
 
-That lookup only ever runs while the VPN is off by your own choice: never at
-login before startup has settled and auto-connect has had its chance to
-reconnect a VPN that was on last session, and never right after the tunnel
-drops unexpectedly — a hold that lasts until you connect, disconnect, or
-toggle the VPN yourself, not just for one status check. Disconnecting or
-logging out on purpose can still look up, since that's the clear net you
-chose. The result is cached in `~/.cache/io.github.nimbleaininja.aegis/home.json`
-(a 0600 file in a 0700 directory, readable only by you) and refreshed only
-when your default gateway changes or after 24 hours.
+That lookup only ever runs while the VPN is off because you turned it off:
+never at login before startup has settled and auto-connect has had its
+chance to reconnect a VPN that was on last session, and never right after
+the tunnel drops unexpectedly — a hold that lasts until you connect,
+disconnect, or toggle the VPN yourself, not just for one status check. It
+also stays held for as long as you last asked the VPN to be on (even across
+a failed reconnect, or a drop, where the CLI itself already reads
+"disconnected"): only a disconnect or logout you make yourself clears that
+intent, and only then can a lookup run — that's the clear net you chose. The
+result is cached in `~/.cache/io.github.nimbleaininja.aegis/home.json` (a
+0600 file in a 0700 directory, readable only by you) and refreshed only when
+your default gateway changes or after 24 hours.
 
 Turn it off with the "Locate home" setting: no lookup ever runs, the cached
 location is deleted immediately, and the marker falls back to a rough

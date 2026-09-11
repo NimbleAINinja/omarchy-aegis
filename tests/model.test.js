@@ -503,7 +503,8 @@ test("shouldAutoConnect requires every precondition", () => {
 })
 
 test("mayLocateHome only allows a lookup once the tunnel is down by choice", () => {
-  const base = { locateHome: true, state: "disconnected", startupSettled: true, autoConnectPending: false, dropHold: false }
+  const base = { locateHome: true, state: "disconnected", startupSettled: true, autoConnectPending: false,
+    dropHold: false, wasConnected: false }
   assert.equal(Model.mayLocateHome(base), true)
   // The setting itself.
   assert.equal(Model.mayLocateHome(Object.assign({}, base, { locateHome: false })), false)
@@ -519,6 +520,15 @@ test("mayLocateHome only allows a lookup once the tunnel is down by choice", () 
   assert.equal(Model.mayLocateHome(Object.assign({}, base, { autoConnectPending: true })), false)
   // Held after an unexpected drop until the user acts again.
   assert.equal(Model.mayLocateHome(Object.assign({}, base, { dropHold: true })), false)
+  // A failed startup auto-connect (network not up yet at login): nothing is
+  // pending any more (autoConnectPending false, dropHold false — this was
+  // never a drop), the CLI already reads disconnected, but wasConnected is
+  // still true from last session, so the user's standing intent is "VPN on"
+  // — no lookup, even though every other guard would allow one.
+  assert.equal(Model.mayLocateHome(Object.assign({}, base, { wasConnected: true })), false)
+  // An intentional disconnect clears wasConnected itself (Service.down()),
+  // so once it reads false a lookup is allowed — the user chose this.
+  assert.equal(Model.mayLocateHome(Object.assign({}, base, { wasConnected: false })), true)
   assert.equal(Model.mayLocateHome(null), false)
   assert.equal(Model.mayLocateHome(undefined), false)
 })
