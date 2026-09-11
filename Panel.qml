@@ -171,7 +171,9 @@ Panel {
     else if (index === 2) switchView("settings")
     else if (index === 3) switchView("killswitch")
     else if (index === 4) cycleBarMode()
-    else vpn.refreshAll()
+    // The footer's refresh button is an explicit ask: refetch the location
+    // list even if the one on screen is still within its TTL.
+    else vpn.refreshAll(true)
   }
 
   function setListCursor(index) { cursorActive = true; focusSection = "list"; cursorIndex = index }
@@ -189,7 +191,7 @@ Panel {
     var k = t.toLowerCase()
     if (k === "t") { vpn.toggleVpn(); return }
     if (k === "d") { if (vpn.active) vpn.down(); return }
-    if (k === "r") { vpn.refreshAll(); return }
+    if (k === "r") { vpn.refreshAll(true); return }
     if (k === "e") { switchView("exclusions"); return }
     if (k === "a") { switchView("account"); return }
     if (k === "s") { switchView("settings"); return }
@@ -253,7 +255,7 @@ Panel {
     function hide(): void { root.close() }
     function toggle(): void { root.toggle() }
     function isOpen(): string { return root.opened ? "true" : "false" }
-    function refresh(): string { vpn.refreshAll(); return "ok" }
+    function refresh(): string { vpn.refreshAll(true); return "ok" }
     function up(): string { if (!vpn.active) vpn.toggleVpn(); return "ok" }
     function down(): string { vpn.down(); return "ok" }
     function toggleVpn(): string { vpn.toggleVpn(); return "ok" }
@@ -330,7 +332,7 @@ Panel {
 
   function barPressed(buttonCode) {
     if (buttonCode === Qt.RightButton) vpn.toggleVpn()
-    else if (buttonCode === Qt.MiddleButton) vpn.refreshAll()
+    else if (buttonCode === Qt.MiddleButton) vpn.refreshAll(true)
     else root.toggle()
   }
 

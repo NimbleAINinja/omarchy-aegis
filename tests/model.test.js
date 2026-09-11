@@ -901,6 +901,45 @@ test("queueFront puts one snapshot first without reordering anything else", () =
   assert.deepEqual(Model.queueFront([write], { verb: "config" }), [{ verb: "config" }, write])
 })
 
+test("locationsFresh reuses a recent list and refetches an old, empty or never-loaded one", () => {
+  const now = 1_700_000_000_000
+  const ttl = Model.LOCATIONS_TTL_MS
+  assert.equal(ttl, 5 * 60 * 1000)
+  assert.equal(Model.locationsFresh(80, now - 1000, now, ttl), true)
+  assert.equal(Model.locationsFresh(80, now - (ttl - 1), now, ttl), true)
+  // Exactly at the TTL is stale, so the boundary never reuses a list twice.
+  assert.equal(Model.locationsFresh(80, now - ttl, now, ttl), false)
+  assert.equal(Model.locationsFresh(80, now - (ttl + 1), now, ttl), false)
+  // Nothing loaded yet, or a list that came back empty: always fetch.
+  assert.equal(Model.locationsFresh(0, now - 1000, now, ttl), false)
+  assert.equal(Model.locationsFresh(80, 0, now, ttl), false)
+  // A clock that jumped backwards must not freeze the list.
+  assert.equal(Model.locationsFresh(80, now + 60_000, now, ttl), false)
+  // Junk arguments fall back to "fetch", never to "skip forever".
+  assert.equal(Model.locationsFresh(null, null, now, ttl), false)
+  assert.equal(Model.locationsFresh(80, "nope", now, ttl), false)
+  // maxAgeMs defaults to the constant when it isn't given.
+  assert.equal(Model.locationsFresh(80, now - 1000, now), true)
+  assert.equal(Model.locationsFresh(80, now - (ttl + 1), now), false)
+})
+
+test("Service.qml skips a fresh locations refresh but never one that was asked for", () => {
+  const fs = require("node:fs"), path = require("node:path")
+  const src = fs.readFileSync(path.join(__dirname, "..", "Service.qml"), "utf8")
+  assert.match(src, /function refreshLocations\(force\)/)
+  assert.match(src, /force !== true && Model\.locationsFresh\(locations\.length, _locationsAt, Date\.now\(\), Model\.LOCATIONS_TTL_MS\)/)
+  assert.match(src, /function refreshAll\(force\)/)
+  assert.match(src, /refreshLocations\(force === true\)/)
+  assert.match(src, /_locationsAt = Date\.now\(\)/)
+  // Every explicit refresh path in the panel forces the refetch; the panel
+  // open (onPanelOpenChanged) is the one that must not.
+  const panel = fs.readFileSync(path.join(__dirname, "..", "Panel.qml"), "utf8")
+  const calls = panel.match(/refreshAll\([^)]*\)/g) || []
+  assert.equal(calls.length, 4)
+  for (const call of calls) assert.equal(call, "refreshAll(true)")
+  assert.match(src, /onPanelOpenChanged: if \(panelOpen\) refreshAll\(\)/)
+})
+
 test("Service.qml starts up with the snapshot first in the queue", () => {
   const src = require("node:fs").readFileSync(require("node:path").join(__dirname, "..", "Service.qml"), "utf8")
   const block = /Component\.onCompleted:\s*\{[\s\S]*?\n  \}/.exec(src)

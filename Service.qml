@@ -151,7 +151,18 @@ Item {
   // aborts when several instances run at once (seen as SIGABRT coredumps of
   // `list-locations` while `status` and `license` were also running).
   function refresh() { enqueue(["snapshot"], "snapshot", true) }
-  function refreshLocations() { enqueue(["locations"], "locations", true) }
+
+  // When applyLocations last landed a list (epoch ms, 0 = never). Only the
+  // TTL below reads it, so it is deliberately not persisted: a fresh shell
+  // always fetches once.
+  property real _locationsAt: 0
+  // `force`: fetch even when the list we have is still fresh. The explicit
+  // refresh paths (footer button, `r`, bar middle-click, IPC `refresh`) pass
+  // it; a panel open does not — see Model.locationsFresh for why.
+  function refreshLocations(force) {
+    if (force !== true && Model.locationsFresh(locations.length, _locationsAt, Date.now(), Model.LOCATIONS_TTL_MS)) return
+    enqueue(["locations"], "locations", true)
+  }
   function refreshAccount() { enqueue(["account"], "account", true) }
   function refreshExclusions() { enqueue(["exclusions", "show"], "exclusions", true) }
   function refreshHome() { enqueue(["home"], "home", true) }
@@ -181,9 +192,12 @@ Item {
       autoConnectPending: autoConnectPending, dropHold: dropHold, wasConnected: wc })) refreshHome()
   }
 
-  function refreshAll() {
+  // `force`: true from the explicit refresh paths (footer button, `r`, bar
+  // middle-click, IPC `refresh`), which must really refetch the location
+  // list; a plain panel open leaves it undefined and reuses a fresh list.
+  function refreshAll(force) {
     refresh()
-    refreshLocations()
+    refreshLocations(force === true)
     if (!accountLoaded) refreshAccount()
     maybeRefreshHome()
     // Whenever the panel opens (refreshAll's only real caller, plus the "r"
@@ -625,6 +639,9 @@ Item {
   function applyLocations(obj) {
     if (obj.ok === false) { noteError(obj); return }
     locations = Model.normalizeLocations(obj)
+    // Stamped even for an empty answer; locationsFresh's own count check is
+    // what keeps an empty list from being treated as fresh.
+    _locationsAt = Date.now()
   }
 
   function applyAccount(obj) {

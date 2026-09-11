@@ -86,6 +86,30 @@ function normalizeLocations(obj) {
   return list
 }
 
+// How long a location list stays good enough to reuse. `list-locations` is
+// the slowest CLI call there is (24 s budget) and holds the one serialized
+// queue for as long as it runs, so refetching it on every panel open made a
+// drop-confirmation snapshot wait behind it. The list itself changes on
+// AdGuard's timetable, not ours, and the pings it carries are a rough tier
+// (Model.pingTier), so a few minutes old is the same answer.
+var LOCATIONS_TTL_MS = 5 * 60 * 1000
+
+// Whether Service may skip a `locations` refresh: a list it already has, no
+// older than maxAgeMs. An explicit refresh (the footer button, `r`, bar
+// middle-click, the IPC verb) passes force and never asks.
+//   count: how many locations are loaded, appliedAtMs: when they landed
+//     (0 = never), nowMs: now, maxAgeMs: the TTL (LOCATIONS_TTL_MS)
+function locationsFresh(count, appliedAtMs, nowMs, maxAgeMs) {
+  if (num(count, 0) <= 0) return false
+  var at = num(appliedAtMs, 0)
+  if (at <= 0) return false
+  var age = num(nowMs, 0) - at
+  // A stamp in the future is a clock that moved (suspend/resume, NTP step);
+  // call the list stale rather than freeze it until the clock catches up.
+  if (age < 0) return false
+  return age < num(maxAgeMs, LOCATIONS_TTL_MS)
+}
+
 function locationKey(loc) {
   if (!loc) return ""
   return str(loc.iso) + "|" + str(loc.city)
@@ -1001,6 +1025,8 @@ if (typeof module !== "undefined") {
     toList: toList,
     normalizeSnapshot: normalizeSnapshot,
     normalizeLocations: normalizeLocations,
+    LOCATIONS_TTL_MS: LOCATIONS_TTL_MS,
+    locationsFresh: locationsFresh,
     locationKey: locationKey,
     orderLocations: orderLocations,
     foldText: foldText,

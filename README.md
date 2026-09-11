@@ -120,6 +120,11 @@ Settings live inline on the widget's entry in `~/.config/omarchy/shell.json`:
 | `lastUpdateCheck` | internal | epoch seconds of the last `check-update`; checked again after 24 h |
 | `locateHome` | `true` | look up your location from `ipinfo.io` while the VPN is off, to place the home marker on the map; off deletes the cached location and falls back to a time-zone estimate |
 
+The location list is the slowest thing the CLI does, so opening the panel
+reuses the list it already has for up to 5 minutes; the footer's refresh
+button, `r`, a middle click on the bar and `omarchy-shell … refresh` always
+refetch it.
+
 Connection settings (mode, protocol, post-quantum, DNS, SOCKS) are not stored
 by Aegis: they are read from and written to the CLI with `adguardvpn-cli config`.
 Changes to mode, protocol, post-quantum or DNS apply on the next connect.
