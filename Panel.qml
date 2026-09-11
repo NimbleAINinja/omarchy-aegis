@@ -408,11 +408,18 @@ Panel {
       onDeleteRequested: if (root.focusSection === "list" && root.viewItem && typeof root.viewItem.removeAt === "function") root.viewItem.removeAt(root.cursorIndex)
       onTextKey: function(t) { root.handleTextKey(t) }
 
+      // The scrolling part: everything above the footer. It ends where the
+      // footer begins, so a view taller than the card scrolls under a footer
+      // that stays put. Before the first open the footer Loader is inactive
+      // and zero-high, and this fills the card — with nothing in it.
       Flickable {
         id: panelFlick
-        anchors.fill: parent
+        anchors.left: parent.left
+        anchors.right: parent.right
+        anchors.top: parent.top
+        anchors.bottom: footerLoader.top
         contentWidth: width
-        contentHeight: root.popupContentHeight
+        contentHeight: root.popupColumnHeight
         clip: true
         boundsBehavior: Flickable.StopAtBounds
         flickableDirection: Flickable.VerticalFlick
@@ -433,13 +440,34 @@ Panel {
           sourceComponent: popupContent
         }
       }
+
+      // The icon bar sits outside the Flickable, pinned to the bottom of the
+      // card: it used to be the last row of the scrolling column, so on a long
+      // location list or the settings tab it scrolled out of reach and the way
+      // to another tab was to scroll back down. Lazy on the same latch as the
+      // column above, so the first open still builds both at once and the card
+      // measures them together.
+      Loader {
+        id: footerLoader
+        anchors.left: parent.left
+        anchors.right: parent.right
+        anchors.bottom: parent.bottom
+        active: root.popupReady
+        sourceComponent: popupFooter
+      }
     }
   }
 
-  // What the card and the Flickable size themselves to. 0 before the first
-  // open, when fittedContentHeight falls back to the card's own insets and
-  // nothing is drawn anyway.
-  readonly property real popupContentHeight: contentLoader.item ? contentLoader.item.implicitHeight : 0
+  // How tall the scrolling column wants to be: what the Flickable scrolls
+  // through. 0 before the first open.
+  readonly property real popupColumnHeight: contentLoader.item ? contentLoader.item.implicitHeight : 0
+  readonly property real popupFooterHeight: footerLoader.item ? footerLoader.item.implicitHeight : 0
+  // What the card sizes itself to: the column, the footer that no longer
+  // scrolls with it, and one column gap between them. 0 before the first open,
+  // when fittedContentHeight falls back to the card's own insets and nothing
+  // is drawn anyway.
+  readonly property real popupContentHeight: popupColumnHeight > 0
+    ? popupColumnHeight + Style.space(10) + popupFooterHeight : 0
   // The current view's item, or null before the popup has ever been built.
   // This is the only way into the deferred content — the view Loader's id
   // lives inside the Component — and every use of it above checks for null
@@ -554,6 +582,17 @@ Panel {
           : (root.view === "settings" ? settingsView
           : (root.view === "killswitch" ? killSwitchView : locationView)))
       }
+    }
+  }
+
+  Component {
+    id: popupFooter
+
+    // Separator and icon bar in one block so the card can measure them as one
+    // and the Flickable above can end at the separator.
+    Column {
+      id: footerBlock
+      spacing: Style.space(10)
 
       PanelSeparator { foreground: root.foreground }
 
