@@ -62,8 +62,18 @@ Item {
   property real latMin: -58
   property real latMax: 84
 
+  // Ping tints: the land dot nearest each of these is painted in its tier's
+  // colour, so the map reads good/ok/poor exactly as the list does. Panel
+  // builds the list (Model.dotTints) because this file may not import
+  // Model.js; `tintDots` is the user's setting.
+  property var dotTints: []            // [{lat, lon, tier}], tier: good | ok | poor
+  property bool tintDots: true
+
   property color dotColor: Qt.rgba(1, 1, 1, 0.22)
   property color gridColor: Qt.rgba(1, 1, 1, 0.06)
+  property color goodColor: "white"
+  property color okColor: "white"
+  property color poorColor: "white"
   property color markerColor: "white"
   property color accent: "white"
   property color textColor: "white"
@@ -96,6 +106,15 @@ Item {
   property real cacheLatMin: 0
   property real cacheLatMax: 0
   property var cacheGrid: null
+  // The lattice the cells sit on, kept so a point can be turned into a
+  // column and a row without searching; see rebuildTints.
+  property int cacheCols: 0
+  property int cacheRows: 0
+  property real cacheOffsetX: 0
+  property real cacheOffsetY: 0
+  // Bumped every time the cells are actually rebuilt, so the tint cache below
+  // can tell "same cells" from "same size" without comparing buffers.
+  property int cellsGeneration: 0
 
   // Link geometry in map pixels, one or two quadratic segments (two when the
   // shorter way round crosses the antimeridian).
@@ -172,9 +191,12 @@ Item {
     cacheLatMin = latMin
     cacheLatMax = latMax
     cacheGrid = grid
+    cellsGeneration++
     if (!grid || width <= 0 || height <= 0 || dotPitch <= 0) {
       cellX = new Float32Array(0)
       cellY = new Float32Array(0)
+      cacheCols = 0
+      cacheRows = 0
       return
     }
     var pitch = dotPitch
@@ -182,6 +204,10 @@ Item {
     var rows = Math.floor(height / pitch)
     var offsetX = (width - cols * pitch) / 2
     var offsetY = (height - rows * pitch) / 2
+    cacheCols = cols
+    cacheRows = rows
+    cacheOffsetX = offsetX
+    cacheOffsetY = offsetY
     // Pixel coordinates, so float32 is more precision than the canvas can
     // use; filled into a buffer for every cell and trimmed to the land ones.
     var xs = new Float32Array(rows * cols)
@@ -200,6 +226,134 @@ Item {
     }
     cellX = xs.slice(0, found)
     cellY = ys.slice(0, found)
+  }
+
+  // The tinted dots, as flat buffers: where to paint and which tier's colour
+  // to use (1 good, 2 ok, 3 poor — better tiers first, which is how two
+  // locations landing on the same dot are resolved).
+  property var tintX: new Float32Array(0)
+  property var tintY: new Float32Array(0)
+  property var tintTier: new Uint8Array(0)
+  property int tintGeneration: -1
+  property var tintSource: null
+
+  function tierRank(tier) {
+    if (tier === "good") return 1
+    if (tier === "ok") return 2
+    if (tier === "poor") return 3
+    return 0
+  }
+
+  // Which land dot each tint belongs to, resolved once per cells/tints
+  // change rather than per paint. The cells sit on a regular pitch lattice,
+  // so the dot nearest a projected point is found by looking at the 3x3
+  // neighbourhood of its own column and row; only a point with no land
+  // anywhere near it (an island the 1° grid drops, a city out at sea) falls
+  // back to a scan of every cell.
+  function rebuildTints() {
+    if (tintGeneration === cellsGeneration && tintSource === dotTints) return
+    tintGeneration = cellsGeneration
+    tintSource = dotTints
+    var tints = dotTints || []
+    var cells = cellX.length
+    if (!tintDots || tints.length === 0 || cells === 0) {
+      if (tintTier.length > 0) {
+        tintX = new Float32Array(0)
+        tintY = new Float32Array(0)
+        tintTier = new Uint8Array(0)
+      }
+      return
+    }
+    // Land cell index by lattice slot, -1 where there is no land.
+    var cols = cacheCols
+    var slots = new Int32Array(cols * cacheRows)
+    for (var s = 0; s < slots.length; s++) slots[s] = -1
+    var pitch = dotPitch
+    var i
+    for (i = 0; i < cells; i++) {
+      var col = Math.floor((cellX[i] - cacheOffsetX) / pitch)
+      var row = Math.floor((cellY[i] - cacheOffsetY) / pitch)
+      if (col >= 0 && col < cols && row >= 0 && row < cacheRows) slots[row * cols + col] = i
+    }
+    // One tier per land cell, the best one that asked for it.
+    var best = new Uint8Array(cells)
+    for (var t = 0; t < tints.length; t++) {
+      var tint = tints[t]
+      var rank = tierRank(tint ? String(tint.tier) : "")
+      // Number(null) and Number("") are both a finite 0, so a tint without
+      // coordinates would otherwise land on the dot nearest 0,0 — the same
+      // trap Link.finiteCoord exists for.
+      if (rank === 0 || !Link.finiteCoord(tint)) continue
+      var hit = nearestCell(projectX(Number(tint.lon)), projectY(Number(tint.lat)), slots)
+      if (hit < 0) continue
+      if (best[hit] === 0 || rank < best[hit]) best[hit] = rank
+    }
+    var xs = new Float32Array(cells)
+    var ys = new Float32Array(cells)
+    var tiers = new Uint8Array(cells)
+    var found = 0
+    for (i = 0; i < cells; i++) {
+      if (best[i] === 0) continue
+      xs[found] = cellX[i]
+      ys[found] = cellY[i]
+      tiers[found] = best[i]
+      found++
+    }
+    tintX = xs.slice(0, found)
+    tintY = ys.slice(0, found)
+    tintTier = tiers.slice(0, found)
+  }
+
+  function nearestCell(x, y, slots) {
+    if (!isFinite(x) || !isFinite(y)) return -1
+    var cols = cacheCols
+    var rows = cacheRows
+    var pitch = dotPitch
+    var col = Math.floor((x - cacheOffsetX) / pitch)
+    var row = Math.floor((y - cacheOffsetY) / pitch)
+    var best = -1
+    var bestDist = Infinity
+    for (var r = row - 1; r <= row + 1; r++) {
+      if (r < 0 || r >= rows) continue
+      for (var c = col - 1; c <= col + 1; c++) {
+        if (c < 0 || c >= cols) continue
+        var index = slots[r * cols + c]
+        if (index < 0) continue
+        var dx = cellX[index] - x
+        var dy = cellY[index] - y
+        var dist = dx * dx + dy * dy
+        if (dist < bestDist) { bestDist = dist; best = index }
+      }
+    }
+    if (best >= 0) return best
+    for (var i = 0; i < cellX.length; i++) {
+      var ex = cellX[i] - x
+      var ey = cellY[i] - y
+      var far = ex * ex + ey * ey
+      if (far < bestDist) { bestDist = far; best = i }
+    }
+    return best
+  }
+
+  // Over the land dots, on the same static layer, in the tier's colour and a
+  // touch larger than a land dot: at a 4 px pitch the dots are 2 px squares,
+  // and at that size a tint reads as a slightly off-colour speck rather than a
+  // city. One pass per tier, so the context takes three fill styles at most.
+  function paintTints(ctx) {
+    if (!tintDots) return
+    var count = tintTier.length
+    if (count === 0) return
+    var side = Math.max(2, Math.round(dotPitch * Math.min(1, dotFill + 0.25)))
+    var half = side / 2
+    var colors = [goodColor, okColor, poorColor]
+    for (var rank = 1; rank <= 3; rank++) {
+      var painted = false
+      for (var i = 0; i < count; i++) {
+        if (tintTier[i] !== rank) continue
+        if (!painted) { ctx.fillStyle = colors[rank - 1]; painted = true }
+        ctx.fillRect(Math.round(tintX[i] - half), Math.round(tintY[i] - half), side, side)
+      }
+    }
   }
 
   function paintGrid(ctx) {
@@ -436,6 +590,14 @@ Item {
   onGridColorChanged: baseCanvas.requestPaint()
   onDotFillChanged: baseCanvas.requestPaint()
   onDotColorChanged: baseCanvas.requestPaint()
+  // The tints live on the static layer, so they repaint with it — and a new
+  // list (or the setting going off and on) has to invalidate the cache the
+  // cells generation alone would call current.
+  onDotTintsChanged: baseCanvas.requestPaint()
+  onTintDotsChanged: { tintGeneration = -1; baseCanvas.requestPaint() }
+  onGoodColorChanged: baseCanvas.requestPaint()
+  onOkColorChanged: baseCanvas.requestPaint()
+  onPoorColorChanged: baseCanvas.requestPaint()
   onHomeChanged: dotCanvas.requestPaint()
   onExitChanged: dotCanvas.requestPaint()
   onHoverChanged: dotCanvas.requestPaint()
@@ -497,8 +659,10 @@ Item {
       ctx.reset()
       ctx.clearRect(0, 0, width, height)
       root.rebuildCells()
+      root.rebuildTints()
       root.paintGrid(ctx)
       root.paintDots(ctx)
+      root.paintTints(ctx)
     }
   }
 

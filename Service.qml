@@ -68,6 +68,7 @@ Item {
   readonly property var killApps: Model.parseAppList(setting("killApps", ""))
   readonly property real lastUpdateCheck: Number(setting("lastUpdateCheck", 0)) || 0
   readonly property bool locateHome: String(setting("locateHome", true)) === "true"
+  readonly property bool pingDots: String(setting("pingDots", true)) === "true"
 
   property var procs: []
   readonly property var pausedExclusions: Model.normalizePaused(setting("pausedExclusions", null))

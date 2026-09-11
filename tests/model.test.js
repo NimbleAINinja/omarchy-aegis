@@ -472,6 +472,32 @@ test("pingTier buckets latency", () => {
   assert.equal(Model.pingTier(NaN), "none")
 })
 
+test("dotTints keeps the locations the map can tint, and nothing else", () => {
+  const at = (city, ping, lat, lon) => Object.assign(loc("XX", "Country", city, ping), { lat, lon })
+  assert.deepEqual(Model.dotTints([
+    at("Montreal", 15, 45.5, -73.57),
+    at("Madrid", 90, 40.42, -3.7),
+    at("Sydney", 300, -33.87, 151.21)
+  ]), [
+    { lat: 45.5, lon: -73.57, tier: "good" },
+    { lat: 40.42, lon: -3.7, tier: "ok" },
+    { lat: -33.87, lon: 151.21, tier: "poor" }
+  ])
+  // No ping is no tier: an unpinged city leaves its dot the colour of land.
+  assert.deepEqual(Model.dotTints([at("Nowhere", null, 10, 10)]), [])
+  // Number(null) and Number("") are both a finite 0, so a location without
+  // coordinates must be dropped explicitly or it would tint Null Island.
+  for (const [lat, lon] of [[null, null], ["", ""], [10, ""], [undefined, 5], [NaN, 5], [5, Infinity]])
+    assert.deepEqual(Model.dotTints([at("Broken", 20, lat, lon)]), [], `lat ${lat} lon ${lon}`)
+  assert.deepEqual(Model.dotTints([null, undefined]), [])
+  assert.deepEqual(Model.dotTints(null), [])
+  // Strings from a loose source still become numbers the projection can use.
+  assert.deepEqual(Model.dotTints([at("Strings", "20", "45.5", "-73.57")]), [{ lat: 45.5, lon: -73.57, tier: "good" }])
+  // Every tier here is exactly what the list's own dot shows.
+  const list = [at("A", 59, 1, 1), at("B", 60, 2, 2), at("C", 149, 3, 3), at("D", 150, 4, 4)]
+  assert.deepEqual(Model.dotTints(list).map(t => t.tier), list.map(l => Model.pingTier(l.pingMs)))
+})
+
 test("linkState: a pending connect is always 'connecting', connected or not", () => {
   // The bug this fixes: switching location while connected moves the map's
   // exit to the pending city straight away, and vpnState is still

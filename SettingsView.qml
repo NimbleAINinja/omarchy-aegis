@@ -16,7 +16,7 @@ Column {
   readonly property bool socks: config.mode === "socks"
   // Keyboard cursor targets, top to bottom. Text fields are reached by mouse
   // or Tab; the cursor walks the toggles and chip rows.
-  readonly property var targets: ["mode", "protocol", "postQuantum", "changeSystemDns", "autoConnect", "locateHome", "update"]
+  readonly property var targets: ["mode", "protocol", "postQuantum", "changeSystemDns", "autoConnect", "locateHome", "pingDots", "update"]
   readonly property int count: targets.length
   readonly property bool editing: dnsField.activeFocus || hostField.activeFocus || userField.activeFocus
     || passField.activeFocus || portField.activeFocus
@@ -37,6 +37,7 @@ Column {
     else if (name === "changeSystemDns") vpn.setConfig("changeSystemDns", !config.changeSystemDns)
     else if (name === "autoConnect") panel.persistSettings({ autoConnect: !vpn.autoConnect })
     else if (name === "locateHome") vpn.setLocateHome(!vpn.locateHome)
+    else if (name === "pingDots") panel.persistSettings({ pingDots: !vpn.pingDots })
     else if (name === "update") { if (!vpn.update.upToDate && vpn.update.latest) vpn.runUpdate(); else vpn.checkUpdate(false) }
   }
 
@@ -215,6 +216,18 @@ Column {
     fontFamily: panel.fontFamily
     onHovered: function(on) { if (on) root.setCursor("locateHome") }
     onClicked: vpn.setLocateHome(!vpn.locateHome)
+  }
+
+  Toggle {
+    width: parent.width
+    label: "Colour map dots by ping"
+    description: "Tint each city's nearest dot with its ping tier"
+    checked: vpn ? vpn.pingDots : true
+    hasCursor: root.hasCursor("pingDots")
+    foreground: panel.foreground
+    fontFamily: panel.fontFamily
+    onHovered: function(on) { if (on) root.setCursor("pingDots") }
+    onClicked: panel.persistSettings({ pingDots: !vpn.pingDots })
   }
 
   CursorSurface {

@@ -20,6 +20,8 @@ location, it connects. That is the whole interface.
 - Kill switch: closes the apps you pick (suggested from what is running) within seconds of a drop, and tells you;
   optionally also when you disconnect or log out yourself. It closes apps, it doesn't block traffic ([details](#kill-switch))
 - Exclusions can be paused and resumed without retyping them
+- Every city's nearest land dot is tinted with its ping tier, in the same three
+  colours the list uses, so the map shows where the fast exits are (`pingDots`)
 - Hover the map: the nearest city lights up with its name, click to connect
 - The row under your cursor rings its city on the map
 - Kill switch has its own tab (skull in the footer, filled and lit while armed)
@@ -120,6 +122,7 @@ Settings live inline on the widget's entry in `~/.config/omarchy/shell.json`:
 | `pausedExclusions` | internal | `{general: [], selective: []}` domains you paused; they are removed from the CLI list and re-added on resume |
 | `lastUpdateCheck` | internal | epoch seconds of the last `check-update`; checked again after 24 h |
 | `locateHome` | `true` | look up your location from `ipinfo.io` while the VPN is off, to place the home marker on the map; off deletes the cached location and falls back to a time-zone estimate |
+| `pingDots` | `true` | tint the land dot nearest each city with its ping tier (under 60 ms, under 150 ms, slower), the same colours the list uses; off leaves the map plain |
 
 The location list is the slowest thing the CLI does, so opening the panel
 reuses the list it already has for up to 5 minutes; the footer's refresh

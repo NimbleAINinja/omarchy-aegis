@@ -431,6 +431,34 @@ function pingTier(ms) {
   return "poor"
 }
 
+// The map's ping tints: every location with usable coordinates and a ping to
+// speak of, as { lat, lon, tier }. WorldMap paints the land dot nearest each
+// one in that tier's colour, which turns the map itself into the same
+// good/ok/poor reading the list gives — but it may not import Model.js (it
+// stays free of everything but QtQuick, Grid.js and Link.js so it can be
+// rendered headlessly), so Panel computes this once per locations change and
+// hands it over.
+//
+// Number(null) and Number("") are both a finite 0, so a location missing
+// coordinates has to be rejected explicitly or it would tint Null Island.
+// Same trap as Link.finiteCoord, which is the copy WorldMap uses.
+function dotTints(list) {
+  var items = toList(list)
+  var out = []
+  for (var i = 0; i < items.length; i++) {
+    var loc = items[i]
+    if (!loc) continue
+    var tier = pingTier(loc.pingMs)
+    if (tier === "none") continue
+    var lat = loc.lat, lon = loc.lon
+    if (lat === null || lat === undefined || lat === "" || lon === null || lon === undefined || lon === "") continue
+    var y = Number(lat), x = Number(lon)
+    if (!isFinite(y) || !isFinite(x)) continue
+    out.push({ lat: y, lon: x, tier: tier })
+  }
+  return out
+}
+
 // What the map draws: "connected" (solid arc with beads riding it),
 // "connecting" (the arc drawing itself in, dashed and marching), "none".
 //
@@ -1422,6 +1450,7 @@ if (typeof module !== "undefined") {
     filterLocations: filterLocations,
     toggleFavorite: toggleFavorite,
     pingTier: pingTier,
+    dotTints: dotTints,
     linkState: linkState,
     formatRate: formatRate,
     formatUptime: formatUptime,

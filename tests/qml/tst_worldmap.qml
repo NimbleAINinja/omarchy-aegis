@@ -109,6 +109,86 @@ TestCase {
     compare(ctx.record.fillStyles.length, 1)
   }
 
+  // The one land cell of tinyGrid(6, 1) covers lon [90,135], lat [0,45]; at a
+  // 45 px pitch on 360x180 its dot sits at (292.5, 67.5).
+  function tintMap(tints, tintDots) {
+    var map = makeMap({ goodColor: "#00ff00", okColor: "#ffff00", poorColor: "#ff0000" })
+    map.grid = Grid.decodeRle(tinyGrid(6, 1))
+    map.tintDots = tintDots !== false
+    map.dotTints = tints
+    map.rebuildCells()
+    map.rebuildTints()
+    compare(map.cellX.length, 1)
+    return map
+  }
+
+  function test_a_ping_tint_paints_the_nearest_land_dot_in_its_tier_colour() {
+    // lat 20, lon 100 lands inside the land cell itself.
+    var map = tintMap([{ lat: 20, lon: 100, tier: "good" }])
+    compare(map.tintTier.length, 1)
+    var ctx = fakeContext()
+    map.paintDots(ctx)
+    compare(ctx.record.rects.length, 1, "the land dot")
+    map.paintTints(ctx)
+    compare(ctx.record.rects.length, 2, "and the tint over it")
+    var land = ctx.record.rects[0]
+    var tint = ctx.record.rects[1]
+    compare(tint.w, tint.h, "square")
+    verify(tint.w > land.w, "a touch larger than a land dot, or it reads as a speck")
+    // Centred on the same dot, so it covers the land dot it replaces.
+    fuzzyCompare(tint.x + tint.w / 2, land.x + land.w / 2, 1)
+    fuzzyCompare(tint.y + tint.h / 2, land.y + land.h / 2, 1)
+    verify(tint.x <= land.x && tint.y <= land.y)
+    compare(ctx.record.fillStyles[1], map.goodColor)
+  }
+
+  function test_a_tint_with_no_land_nearby_still_finds_the_closest_dot() {
+    // Far from the only land cell: the 3x3 neighbourhood is empty and the
+    // scan over every cell is what answers.
+    var map = tintMap([{ lat: -40, lon: -170, tier: "poor" }])
+    compare(map.tintTier.length, 1)
+    fuzzyCompare(map.tintX[0], map.cellX[0], 1e-6)
+    fuzzyCompare(map.tintY[0], map.cellY[0], 1e-6)
+    var ctx = fakeContext()
+    map.paintTints(ctx)
+    compare(ctx.record.rects.length, 1)
+    compare(ctx.record.fillStyles[0], map.poorColor)
+  }
+
+  function test_two_cities_on_one_dot_take_the_better_tier() {
+    var map = tintMap([{ lat: 20, lon: 100, tier: "poor" }, { lat: 25, lon: 110, tier: "ok" },
+      { lat: 10, lon: 95, tier: "good" }])
+    compare(map.tintTier.length, 1, "one dot, one tint")
+    var ctx = fakeContext()
+    map.paintTints(ctx)
+    compare(ctx.record.rects.length, 1)
+    compare(ctx.record.fillStyles[0], map.goodColor)
+    compare(ctx.record.fillStyles.length, 1, "one fill style per tier painted")
+  }
+
+  function test_tints_are_off_when_the_setting_is_off() {
+    var map = tintMap([{ lat: 20, lon: 100, tier: "good" }], false)
+    var ctx = fakeContext()
+    map.paintDots(ctx)
+    map.paintTints(ctx)
+    compare(ctx.record.rects.length, 1, "the land dot alone")
+    compare(map.tintTier.length, 0, "and nothing cached for it")
+    // Turning it back on rebuilds the cache the cells generation alone would
+    // have called current.
+    map.tintDots = true
+    map.rebuildTints()
+    compare(map.tintTier.length, 1)
+  }
+
+  function test_a_tint_without_coordinates_is_never_painted() {
+    // Model.dotTints drops these, but the map must not put one at 0,0 either.
+    var map = tintMap([{ lat: null, lon: null, tier: "good" }, { lat: 20, lon: 100, tier: "" }])
+    compare(map.tintTier.length, 0)
+    var ctx = fakeContext()
+    map.paintTints(ctx)
+    compare(ctx.record.rects.length, 0)
+  }
+
   function test_link_none_paints_nothing() {
     var map = makeMap({ home: paris, exit: tokyo, linkState: "none" })
     var ctx = fakeContext()

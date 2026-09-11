@@ -34,7 +34,8 @@
       "killSwitch": false,
       "killOnDisconnect": false,
       "killApps": "",
-      "locateHome": true
+      "locateHome": true,
+      "pingDots": true
     },
     "schema": [
       {
@@ -85,6 +86,12 @@
         "key": "locateHome",
         "type": "boolean",
         "label": "Locate home: ask ipinfo.io where you are while the VPN is off",
+        "defaultValue": true
+      },
+      {
+        "key": "pingDots",
+        "type": "boolean",
+        "label": "Colour the map dots by ping",
         "defaultValue": true
       }
     ]

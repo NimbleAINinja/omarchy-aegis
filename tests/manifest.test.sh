@@ -13,12 +13,13 @@ jq -e '
   and .barWidget.allowMultiple == false
   and .barWidget.defaults.barMode == "icon"
   and .barWidget.defaults.refreshIntervalSec == 30
-  and ([.barWidget.schema[] | .key] == ["barMode", "refreshIntervalSec", "autoConnect", "killSwitch", "killOnDisconnect", "killApps", "locateHome"])
+  and ([.barWidget.schema[] | .key] == ["barMode", "refreshIntervalSec", "autoConnect", "killSwitch", "killOnDisconnect", "killApps", "locateHome", "pingDots"])
   and .barWidget.defaults.autoConnect == true
   and .barWidget.defaults.killSwitch == false
   and .barWidget.defaults.killOnDisconnect == false
   and .barWidget.defaults.killApps == ""
   and .barWidget.defaults.locateHome == true
+  and .barWidget.defaults.pingDots == true
   and (.barWidget.schema[0].options == ["icon", "iso", "rate"])
 ' "$dir/manifest.json" >/dev/null
 

@@ -121,6 +121,11 @@ Panel {
   // tick; it used to walk all ~90 locations each time for one ISO code. The
   // map is rebuilt only when the location list itself changes.
   readonly property var countryByIso: Model.countryIndex(vpn.locations)
+  // The map's ping tints, built once per locations change: WorldMap paints the
+  // land dot nearest each city in its ping tier's colour, and it cannot call
+  // Model.pingTier itself (it imports only QtQuick, Grid.js and Link.js, so
+  // that it can be rendered headlessly).
+  readonly property var dotTints: Model.dotTints(vpn.locations)
   function countryFor(iso) { return Model.countryFrom(countryByIso, iso) }
 
   function switchView(next) {
@@ -438,6 +443,13 @@ Panel {
         gridColor: Util.alpha(root.foreground, 0.06)
         markerColor: root.glow
         accent: root.glow
+        // The same three colours the list's ping dots use (LocationList's
+        // tierColor), so one reading works across both.
+        dotTints: root.dotTints
+        tintDots: vpn.pingDots
+        goodColor: root.glow
+        okColor: Util.alpha(root.foreground, 0.6)
+        poorColor: root.urgent
         textColor: root.foreground
         haloColor: Util.alpha(Color.popups.background, 0.92)
         fontFamily: root.fontFamily
