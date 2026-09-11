@@ -483,28 +483,45 @@ Panel {
             spacing: Style.space(6)
 
             Repeater {
-              model: [
-                { icon: "󰈲", tip: "Exclusions (e)" },
-                { icon: "󰀄", tip: "Account (a)" },
-                { icon: "󰒓", tip: "Settings (s)" },
-                { icon: vpn.killSwitch ? "󰯆" : "󰯇", tip: vpn.killSwitch ? "Kill switch armed (K)" : "Kill switch (K)" },
-                { icon: root.barMode === "iso" ? "󰬴" : (root.barMode === "rate" ? "󰓅" : "󰒘"), tip: "Bar shows " + root.barMode },
-                { icon: "󰑐", tip: "Refresh (r)" }
-              ]
+              // A constant list of ids, in footerAction's index order. The
+              // model used to be an inline array literal whose entries read
+              // vpn.killSwitch and root.barMode, so arming the kill switch or
+              // cycling the bar mode rebuilt the array, and a Repeater given a
+              // new model destroys and recreates every delegate: all six
+              // buttons, to change one glyph on one of them. The per-button
+              // expressions now live in the delegate, where they change a
+              // property on a button that stays put.
+              model: ["exclusions", "account", "settings", "killswitch", "barmode", "refresh"]
               PanelActionButton {
-                required property var modelData
+                required property string modelData
                 required property int index
-                iconText: modelData.icon
-                tooltipText: modelData.tip
-                foreground: (index === 0 && root.view === "exclusions") || (index === 1 && root.view === "account")
-                  || (index === 2 && root.view === "settings") || (index === 3 && (root.view === "killswitch" || vpn.killSwitch)) ? root.glow : root.dim
+                readonly property bool lit: modelData === "killswitch"
+                  ? (root.view === "killswitch" || vpn.killSwitch)
+                  : (modelData === "exclusions" || modelData === "account" || modelData === "settings") && root.view === modelData
+                iconText: {
+                  if (modelData === "exclusions") return "󰈲"
+                  if (modelData === "account") return "󰀄"
+                  if (modelData === "settings") return "󰒓"
+                  if (modelData === "killswitch") return vpn.killSwitch ? "󰯆" : "󰯇"
+                  if (modelData === "barmode") return root.barMode === "iso" ? "󰬴" : (root.barMode === "rate" ? "󰓅" : "󰒘")
+                  return "󰑐"
+                }
+                tooltipText: {
+                  if (modelData === "exclusions") return "Exclusions (e)"
+                  if (modelData === "account") return "Account (a)"
+                  if (modelData === "settings") return "Settings (s)"
+                  if (modelData === "killswitch") return vpn.killSwitch ? "Kill switch armed (K)" : "Kill switch (K)"
+                  if (modelData === "barmode") return "Bar shows " + root.barMode
+                  return "Refresh (r)"
+                }
+                foreground: lit ? root.glow : root.dim
                 hoverColor: root.foreground
                 fontFamily: root.fontFamily
                 hasCursor: root.cursorActive && root.focusSection === "footer" && root.footerIndex === index
                 onHovered: function(on) { if (on) root.setFooterCursor(index) }
                 onClicked: root.footerAction(index)
                 NumberAnimation on rotation {
-                  running: index === 5 && vpn.refreshing
+                  running: modelData === "refresh" && vpn.refreshing
                   from: 0; to: 360; duration: 900; loops: Animation.Infinite
                   onRunningChanged: if (!running) parent.rotation = 0
                 }

@@ -260,6 +260,29 @@ test("orderLocations' lastLocation only sets a flag, never the order", () => {
     Model.filterLocations(base, "a").map(l => l.city))
 })
 
+test("Panel.qml's footer model is constant and in footerAction's order", () => {
+  const fs = require("node:fs"), path = require("node:path")
+  const panel = fs.readFileSync(path.join(__dirname, "..", "Panel.qml"), "utf8")
+  const ids = ["exclusions", "account", "settings", "killswitch", "barmode", "refresh"]
+  const model = /Repeater \{[\s\S]*?\n *model: (\[[^\]]*\])/.exec(panel)
+  assert.ok(model, "footer Repeater model present")
+  assert.deepEqual(JSON.parse(model[1].replace(/"/g, '"')), ids)
+  // Nothing that changes while the panel is open may appear in the model, or
+  // the Repeater rebuilds all six buttons whenever it does.
+  assert.doesNotMatch(model[1], /vpn\.|root\./)
+  // footerAction must keep mapping those indexes to those actions.
+  const action = /function footerAction\(index\) \{[\s\S]*?\n  \}/.exec(panel)
+  assert.ok(action, "footerAction present")
+  assert.match(action[0], /index === 0\) switchView\("exclusions"\)/)
+  assert.match(action[0], /index === 1\) switchView\("account"\)/)
+  assert.match(action[0], /index === 2\) switchView\("settings"\)/)
+  assert.match(action[0], /index === 3\) switchView\("killswitch"\)/)
+  assert.match(action[0], /index === 4\) cycleBarMode\(\)/)
+  assert.match(action[0], /else vpn\.refreshAll\(true\)/)
+  // ensureCursor clamps the footer cursor to the last of those six.
+  assert.match(panel, /if \(footerIndex > 5\) footerIndex = 5/)
+})
+
 test("Panel.qml freezes both ordering inputs for as long as the panel is open", () => {
   const fs = require("node:fs"), path = require("node:path")
   const panel = fs.readFileSync(path.join(__dirname, "..", "Panel.qml"), "utf8")
