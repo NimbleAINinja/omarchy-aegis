@@ -352,15 +352,27 @@ class Verbs(unittest.TestCase):
         self.assertTrue(mum["virtual"])
         self.assertEqual(mum["cliName"], "Mumbai (Virtual)")
 
-    def test_connect_passes_cli_name_and_returns_state(self):
+    def test_connect_passes_cli_name_and_returns_the_whole_snapshot(self):
+        # The `status` call connect always made is now a full snapshot, at the
+        # same price: two CLI calls, and Service.qml can apply the answer
+        # instead of blanking the hero until the next poll.
         with tempfile.TemporaryDirectory() as d:
             log = Path(d, "argv.log")
-            rc, out, _ = run_verb("connect", "Mumbai (Virtual)", env_extra={"FAKE_LOG": str(log)})
-            argv = log.read_text()
+            Path(d, "tunnel.log").write_text(fixture("tunnel_tail.txt"))
+            rc, out, _ = run_verb("connect", "Mumbai (Virtual)", env_extra={"FAKE_LOG": str(log), "data": d})
+            calls = log.read_text().splitlines()
+            rc2, snap, _ = run_verb("snapshot", env_extra={"data": d})
         j = self.check_json(out)
         self.assertTrue(j["ok"])
         self.assertEqual(j["state"], "connected")
-        self.assertIn("connect -l Mumbai (Virtual) -y --no-progress", argv)
+        self.assertEqual(calls, ["connect -l Mumbai (Virtual) -y --no-progress", "status"])
+        self.assertEqual(sorted(j), sorted(self.check_json(snap)))
+        self.assertEqual(j["location"], "Montreal")
+        self.assertEqual(j["iso"], "CA")
+        self.assertEqual(j["iface"], "tun0")
+        self.assertEqual(j["mode"], "tun")
+        self.assertEqual(j["endpoint"]["ip"], "91.245.254.14")
+        self.assertIsNotNone(j["sinceEpoch"])
 
     def test_connect_rejects_option_like_name_without_running(self):
         with tempfile.TemporaryDirectory() as d:
@@ -383,11 +395,26 @@ class Verbs(unittest.TestCase):
         rc, out, _ = run_verb("connect", "Sydney", mode="login")
         self.assertEqual(self.check_json(out)["code"], "logged_out")
 
-    def test_disconnect(self):
-        rc, out, _ = run_verb("disconnect", mode="disconnected")
+    def test_disconnect_returns_the_whole_snapshot(self):
+        with tempfile.TemporaryDirectory() as d:
+            log = Path(d, "argv.log")
+            rc, out, _ = run_verb("disconnect", mode="disconnected", env_extra={"FAKE_LOG": str(log), "data": d})
+            calls = log.read_text().splitlines()
+            rc2, snap, _ = run_verb("snapshot", mode="disconnected", env_extra={"data": d})
         j = self.check_json(out)
         self.assertTrue(j["ok"])
         self.assertEqual(j["state"], "disconnected")
+        self.assertEqual(calls, ["disconnect", "status"])
+        self.assertEqual(j, self.check_json(snap))
+
+    def test_connect_still_answers_when_the_status_after_it_fails(self):
+        # The VPN did what it was told; only the details are missing. The
+        # answer keeps the snapshot's shape so Service.qml can apply it.
+        with mock.patch.object(agvpn, "run_cli", return_value=(0, "", "")), \
+                mock.patch.object(agvpn, "verb_snapshot", side_effect=agvpn.CliError("unknown", "status broke")):
+            j = agvpn.verb_connect("Sydney")
+        self.assertEqual(j, agvpn.blank_snapshot("unknown"))
+        self.assertTrue(j["ok"])
 
     def test_account(self):
         rc, out, _ = run_verb("account")
@@ -1084,8 +1111,10 @@ class Budgets(unittest.TestCase):
     """agvpn.py is the authority on how long a verb may take; Model.js only
     copies verb_budgets() for the watchdog (checked in tests/model.test.js)."""
 
-    # Non-CLI sub-calls on each verb's longest path.
-    EXTRA = {"snapshot": agvpn.PS_TIMEOUT, "home": agvpn.ROUTE_TIMEOUT + agvpn.CURL_TIMEOUT}
+    # Non-CLI sub-calls on each verb's longest path. connect/disconnect end in
+    # a full snapshot, so they pay for its ps lookup too.
+    EXTRA = {"snapshot": agvpn.PS_TIMEOUT, "connect": agvpn.PS_TIMEOUT, "disconnect": agvpn.PS_TIMEOUT,
+             "home": agvpn.ROUTE_TIMEOUT + agvpn.CURL_TIMEOUT}
     SAMPLES = [
         (("snapshot",), "connected"), (("locations",), "connected"), (("connect", "Sydney"), "connected"),
         (("disconnect",), "disconnected"), (("account",), "connected"), (("logout",), "connected"),
@@ -1116,7 +1145,8 @@ class Budgets(unittest.TestCase):
         self.assertGreaterEqual(agvpn.verb_budget("exclusions"), 3 * agvpn.CLI_TIMEOUT)
         self.assertGreaterEqual(agvpn.verb_budget("connect"), agvpn.CONNECT_TIMEOUT + agvpn.CLI_TIMEOUT)
         with mock.patch.dict(os.environ, {"AEGIS_TIMEOUT": "1"}):
-            self.assertEqual(agvpn.verb_budget("disconnect"), 3)  # lock wait + disconnect + status
+            # lock wait + disconnect + the snapshot's status and ps
+            self.assertEqual(agvpn.verb_budget("disconnect"), 3 + agvpn.PS_TIMEOUT)
         with mock.patch.dict(os.environ, {"AEGIS_BUDGET": "2.5"}):
             self.assertEqual(agvpn.verb_budget("connect"), 2.5)
             self.assertIsNone(agvpn.verb_budget("kill"))

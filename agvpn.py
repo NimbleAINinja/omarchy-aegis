@@ -544,11 +544,12 @@ def verb_budgets():
     listed: it is not a queued job, and each pkill must get its chance."""
     cli = timeout_for(CLI_TIMEOUT)
     lock_wait = cli
+    snapshot = cli + PS_TIMEOUT                           # status, ps for the daemon's age
     calls = {
-        "snapshot": cli + PS_TIMEOUT,                     # status, ps for the daemon's age
+        "snapshot": snapshot,
         "locations": cli,
-        "connect": timeout_for(CONNECT_TIMEOUT) + cli,    # connect, then status
-        "disconnect": 2 * cli,                            # disconnect, then status
+        "connect": timeout_for(CONNECT_TIMEOUT) + snapshot,  # connect, then the whole snapshot
+        "disconnect": cli + snapshot,                     # disconnect, then the whole snapshot
         "account": cli,
         "logout": cli,
         "exclusions": 3 * cli,                            # mode/add/remove, then show (+ mode if it has no header)
@@ -770,6 +771,15 @@ def classify_failure(stdout, stderr, fallback="unknown"):
 
 # ------------------------------------------------------------------ verbs --
 
+def blank_snapshot(state):
+    """Every field a snapshot answers with, for `state` and nothing else
+    known. connect/disconnect answer in this shape too (see _snapshot_after),
+    so Service.qml can apply any of them the same way."""
+    return {"ok": True, "state": state, "location": None, "iso": None,
+            "iface": None, "mode": None, "listen": None,
+            "endpoint": None, "sinceEpoch": None, "rx": 0, "tx": 0}
+
+
 def verb_snapshot():
     rc, out, err = run_cli(["status"])
     status = parse_status(out)
@@ -777,9 +787,10 @@ def verb_snapshot():
         code, message = classify_failure(out, err)
         raise CliError(code, message)
     tail = parse_tunnel_tail(read_tunnel_tail(data_dir()))
-    result = {"ok": True, "state": status["state"], "location": None, "iso": None,
-              "iface": status["iface"], "mode": status.get("mode"), "listen": status.get("listen"),
-              "endpoint": None, "sinceEpoch": None, "rx": 0, "tx": 0}
+    result = blank_snapshot(status["state"])
+    result["iface"] = status["iface"]
+    result["mode"] = status.get("mode")
+    result["listen"] = status.get("listen")
     if status["location"]:
         match = match_location(load_locations(), status["location"])
         result["location"] = match["city"] if match else status["location"].title()
@@ -811,9 +822,18 @@ def verb_locations():
     return {"ok": True, "locations": merged}
 
 
-def _state_after():
-    rc, out, err = run_cli(["status"])
-    return parse_status(out)["state"]
+def _snapshot_after():
+    """The whole snapshot after a connect or disconnect, for the price of the
+    `status` call those verbs already made anyway: the panel gets the new
+    location, endpoint, uptime and counters straight from the job it asked
+    for, instead of blanking the hero until the next poll lands.
+
+    A `status` that fails here must not turn a successful connect into an
+    error — the VPN did what it was told — so it only costs the details."""
+    try:
+        return verb_snapshot()
+    except CliError:
+        return blank_snapshot("unknown")
 
 
 def verb_connect(name):
@@ -828,7 +848,7 @@ def verb_connect(name):
     if rc != 0:
         code, message = classify_failure(out, err)
         raise CliError(code, message)
-    return {"ok": True, "state": _state_after()}
+    return _snapshot_after()
 
 
 def verb_disconnect():
@@ -836,7 +856,7 @@ def verb_disconnect():
     if rc != 0:
         code, message = classify_failure(out, err)
         raise CliError(code, message)
-    return {"ok": True, "state": _state_after()}
+    return _snapshot_after()
 
 
 def verb_account():

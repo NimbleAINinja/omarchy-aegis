@@ -177,7 +177,10 @@ omarchy plugin validate .
 `agvpn.py` wraps the CLI and prints one JSON document per call (`snapshot`,
 `locations`, `connect <name>`, `disconnect`, `account`, `logout`,
 `exclusions …`, `config show|set <key> <value>`, `update-check`, `kill <name…>`,
-`home`, `home cached`, `home forget`). `home cached` reads only the cached
+`home`, `home cached`, `home forget`). `connect` and `disconnect` answer with
+the same fields as `snapshot` — the `status` call they end in costs the same
+either way — so the panel can apply the result of the job it asked for
+instead of waiting for the next poll. `home cached` reads only the cached
 location — no CLI call, no network, any VPN state — so the panel can show a
 last-known location immediately; `home forget` just deletes the cached
 home.json — no CLI call, no network — for turning the "Locate home" setting
