@@ -25,7 +25,7 @@ TestCase {
   }
 
   function fakeContext() {
-    var record = { rects: [], fillStyles: [], strokeStyles: [], arcs: [], texts: [], quads: [], lines: [], strokes: 0, fills: 0, moves: 0 }
+    var record = { rects: [], fillStyles: [], strokeStyles: [], arcs: [], texts: [], quads: [], lines: [], strokes: 0, fills: 0, moves: 0, measures: [] }
     return {
       record: record,
       font: "",
@@ -46,7 +46,7 @@ TestCase {
       arc: function(x, y, r) { record.arcs.push({ x: x, y: y, r: r }) },
       stroke: function() { record.strokes++ },
       fill: function() { record.fills++ },
-      measureText: function(text) { return { width: text.length * 6 } },
+      measureText: function(text) { record.measures.push(text); return { width: text.length * 6 } },
       strokeText: function() {},
       fillText: function(text, x, y) { record.texts.push({ text: text, x: x, y: y }) },
       clearRect: function() {},
@@ -122,7 +122,8 @@ TestCase {
     compare(map.segments.length, 1)
     var ctx = fakeContext()
     map.paintLink(ctx)
-    compare(ctx.record.quads.length, 2)
+    // One trace, stroked twice: the path survives a stroke.
+    compare(ctx.record.quads.length, 1)
     compare(ctx.record.strokes, 2)
     compare(ctx.record.lines.length, 0)
     compare(ctx.record.arcs.length, 4)
@@ -144,6 +145,7 @@ TestCase {
     compare(ctx.record.quads.length, 0)
     compare(ctx.record.arcs.length, 0)
     verify(ctx.record.lines.length > 4)
+    compare(ctx.record.moves, 1, "one trace, stroked twice")
     compare(ctx.record.strokes, 2)
     // The polyline ends about halfway along the chord in x.
     var x0 = map.pointFor(paris.lat, paris.lon).x
@@ -168,7 +170,7 @@ TestCase {
     compare(map.segments.length, 1)
     var ctx = fakeContext()
     map.paintLink(ctx)
-    compare(ctx.record.quads.length, 2)
+    compare(ctx.record.quads.length, 1)
     compare(ctx.record.arcs.length, 4)
   }
 
@@ -307,5 +309,21 @@ TestCase {
     map.paintMarkers(ctx)
     compare(ctx.record.rects.length, 0)
     compare(ctx.record.arcs.length, 0)
+  }
+
+  function test_label_widths_are_measured_once_per_font() {
+    var map = makeMap({ home: paris, exit: tokyo, linkState: "connected" })
+    var first = fakeContext()
+    map.paintMarkers(first)
+    verify(first.record.measures.indexOf("Paris") >= 0)
+    verify(first.record.measures.indexOf("Tokyo") >= 0)
+    var second = fakeContext()
+    map.paintMarkers(second)
+    compare(second.record.measures.length, 0, "measured widths are reused")
+    compare(second.record.texts.length, first.record.texts.length)
+    map.labelPixelSize = map.labelPixelSize + 2
+    var third = fakeContext()
+    map.paintMarkers(third)
+    verify(third.record.measures.length > 0, "a new font measures again")
   }
 }

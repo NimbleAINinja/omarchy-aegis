@@ -55,7 +55,15 @@ Item {
   // Land cells for the current size, rebuilt only when geometry changes.
   property var cellX: []
   property var cellY: []
-  property string cacheKey: ""
+  // What cellX/cellY were built for. Compared field by field: rebuildCells
+  // runs on every paint of the static layer, and a cache key string would be
+  // built (and thrown away) each time.
+  property real cacheW: -1
+  property real cacheH: -1
+  property real cachePitch: -1
+  property real cacheLatMin: 0
+  property real cacheLatMax: 0
+  property var cacheGrid: null
 
   // Link geometry in map pixels, one or two quadratic segments (two when the
   // shorter way round crosses the antimeridian).
@@ -88,10 +96,34 @@ Item {
     return "rgba(" + Math.round(color.r * 255) + "," + Math.round(color.g * 255) + "," + Math.round(color.b * 255) + "," + alpha + ")"
   }
 
+  // The accent at the four alphas the link and the markers use it at, as
+  // the strings the context wants: css() ran on every paint otherwise. The
+  // colours that are used at their own alpha (dotColor, markerColor,
+  // haloColor, textColor) go to the context as colours, which is both exact
+  // and free — building a string for them would round each channel to 1/255.
+  readonly property string cssLinkHalo: css(accent, 0.22)
+  readonly property string cssLinkCore: css(accent, 0.9)
+  readonly property string cssAccent: css(accent, 1)
+  readonly property string cssBead: css(Qt.lighter(accent, 1.4), 1)
+
   function canvasFont() {
     var family = String(fontFamily || "monospace")
     if (family.indexOf(" ") >= 0 && family.charAt(0) !== "'") family = "'" + family + "'"
     return Math.max(6, Math.round(labelPixelSize)) + "px " + family
+  }
+
+  // Label metrics are the same from paint to paint for the same string in the
+  // same font, and measureText is the most expensive call in paintMarkers.
+  readonly property string labelFont: canvasFont()
+  property var labelWidths: ({})
+  onLabelFontChanged: labelWidths = ({})
+
+  function labelWidth(ctx, text) {
+    var cached = labelWidths[text]
+    if (cached !== undefined) return cached
+    var measured = ctx.measureText(text).width
+    labelWidths[text] = measured
+    return measured
   }
 
   function computeSegments(homePoint, exitPoint, state, w, h, lo, hi) {
@@ -100,9 +132,14 @@ Item {
   }
 
   function rebuildCells() {
-    var key = width + "x" + height + "@" + dotPitch + ":" + latMin + ":" + latMax + ":" + (grid ? grid.rows + "x" + grid.cols : "none")
-    if (key === cacheKey) return
-    cacheKey = key
+    if (width === cacheW && height === cacheH && dotPitch === cachePitch
+        && latMin === cacheLatMin && latMax === cacheLatMax && grid === cacheGrid) return
+    cacheW = width
+    cacheH = height
+    cachePitch = dotPitch
+    cacheLatMin = latMin
+    cacheLatMax = latMax
+    cacheGrid = grid
     var xs = [], ys = []
     if (grid && width > 0 && height > 0 && dotPitch > 0) {
       var pitch = dotPitch
@@ -173,15 +210,17 @@ Item {
     }
   }
 
-  function strokeLink(ctx, trace) {
+  // A fat translucent halo under a thin bright core. The path survives a
+  // stroke, so both share one trace; tEnd < 0 means the whole segment.
+  function strokeLink(ctx, seg, tEnd) {
     ctx.lineCap = "round"
     ctx.lineJoin = "round"
-    trace()
-    ctx.strokeStyle = css(accent, 0.22)
+    if (tEnd < 0) traceSegment(ctx, seg)
+    else tracePartial(ctx, seg, tEnd)
+    ctx.strokeStyle = cssLinkHalo
     ctx.lineWidth = 4
     ctx.stroke()
-    trace()
-    ctx.strokeStyle = css(accent, 0.9)
+    ctx.strokeStyle = cssLinkCore
     ctx.lineWidth = 1.4
     ctx.stroke()
   }
@@ -191,10 +230,7 @@ Item {
     if (segs.length === 0) return
     var progress = Math.max(0, Math.min(1, drawProgress))
     if (progress >= 1) {
-      for (var i = 0; i < segs.length; i++) {
-        var seg = segs[i]
-        strokeLink(ctx, function() { traceSegment(ctx, seg) })
-      }
+      for (var i = 0; i < segs.length; i++) strokeLink(ctx, segs[i], -1)
     } else {
       // Progress runs across the whole link by chord length, so segment B
       // only starts once A is fully drawn.
@@ -202,12 +238,12 @@ Item {
       for (var j = 0; j < parts.length; j++) {
         var part = parts[j]
         if (part.tEnd <= 0) continue
-        strokeLink(ctx, function() { tracePartial(ctx, part, part.tEnd) })
+        strokeLink(ctx, part, part.tEnd)
       }
     }
     if (linkState !== "connected") return
     var beads = Link.beadPositions(segs, phase, beadCount)
-    ctx.fillStyle = css(Qt.lighter(accent, 1.4), 1)
+    ctx.fillStyle = cssBead
     for (var b = 0; b < beads.length; b++) {
       ctx.beginPath()
       ctx.arc(beads[b].x, beads[b].y, 2.1, 0, Math.PI * 2)
@@ -229,7 +265,7 @@ Item {
     var labels = []
     var size = Math.max(3, Math.round(dotPitch * 0.9))
     var gap = Math.max(3, Math.round(dotPitch * 0.75))
-    ctx.font = canvasFont()
+    ctx.font = labelFont
     ctx.lineJoin = "round"
 
     if (exit && linkState !== "none") {
@@ -251,7 +287,7 @@ Item {
       // The pulse ring around it is the homePulse item, below this canvas.
       ctx.beginPath()
       ctx.arc(hx, hy, radius, 0, Math.PI * 2)
-      ctx.fillStyle = css(accent, 1)
+      ctx.fillStyle = cssAccent
       ctx.fill()
       placed.push({ x: hx - radius, y: hy - radius, w: radius * 2, h: radius * 2 })
       labels.push({ text: shortLabel(home.label), x: hx, y: hy, reach: radius + gap })
@@ -275,12 +311,12 @@ Item {
       }
       ctx.beginPath()
       ctx.arc(vx, vy, dotPitch * 1.6, 0, Math.PI * 2)
-      ctx.strokeStyle = css(accent, 0.9)
+      ctx.strokeStyle = cssLinkCore
       ctx.lineWidth = 1.2
       ctx.stroke()
       ctx.beginPath()
       ctx.arc(vx, vy, Math.max(1.5, dotPitch * 0.45), 0, Math.PI * 2)
-      ctx.fillStyle = css(accent, 1)
+      ctx.fillStyle = cssAccent
       ctx.fill()
     }
 
@@ -291,7 +327,7 @@ Item {
       var px = labels[j].x
       var py = labels[j].y
       var reach = labels[j].reach
-      var textWidth = ctx.measureText(label).width
+      var textWidth = labelWidth(ctx, label)
       var candidates = [
         { x: px + reach, y: py - textHeight / 2, align: "left", baseline: "middle", tx: px + reach, ty: py },
         { x: px - reach - textWidth, y: py - textHeight / 2, align: "right", baseline: "middle", tx: px - reach, ty: py },
@@ -328,7 +364,9 @@ Item {
     dotCanvas.requestPaint()
   }
 
-  onWidthChanged: repaintAll()
+  // A resize brings a new canvas context, so the measurements taken from the
+  // old one are dropped with it.
+  onWidthChanged: { labelWidths = ({}); repaintAll() }
   onHeightChanged: repaintAll()
   onDotPitchChanged: repaintAll()
   onGridChanged: repaintAll()
