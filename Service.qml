@@ -457,9 +457,11 @@ Item {
   // off the job onto jobProcess, which drops it once written.
   function enqueue(args, verb, dedupe, mutate, stdin) {
     if (dedupe && ((jobProcess.running && jobProcess.verb === verb) || queued(verb))) return
-    var q = _queue.slice()
-    q.push({ args: args, verb: verb, mutate: mutate === true, stdin: typeof stdin === "string" ? stdin : null })
-    _queue = q
+    // Model.queueAppend folds a connect into a connect already at the tail
+    // (last click wins) and appends everything else; the running job is not
+    // in the queue, so it is never touched.
+    _queue = Model.queueAppend(_queue, { args: args, verb: verb, mutate: mutate === true,
+      stdin: typeof stdin === "string" ? stdin : null })
     pump()
   }
 

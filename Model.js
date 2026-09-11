@@ -862,6 +862,26 @@ function queueFront(queue, job) {
   return out
 }
 
+// Adding a job to the back of the job queue. A connect takes the place of a
+// connect already waiting at the tail rather than queueing behind it: three
+// clicks down the location list used to run three tunnel bring-ups in a row,
+// each one to a place the user had already changed their mind about, and the
+// last click — the one they meant — arrived a minute later. Last click wins.
+//
+// Only the tail is ever replaced, and the running job is not in the queue, so
+// a connect already talking to the CLI is never interrupted; anything queued
+// between two connects (a jumped-ahead snapshot, a disconnect the user asked
+// for) keeps both its place and its meaning, since the second connect is then
+// not at the tail to fold into.
+function queueAppend(queue, job) {
+  var out = toList(queue)
+  var verb = job && typeof job === "object" ? job.verb : undefined
+  var tail = out.length > 0 ? out[out.length - 1] : null
+  if (verb === "connect" && tail && typeof tail === "object" && tail.verb === "connect") out[out.length - 1] = job
+  else out.push(job)
+  return out
+}
+
 function filterProcs(procs, query, chosen, limit) {
   var q = str(query).trim().toLowerCase()
   if (q === "") return []
@@ -1101,6 +1121,7 @@ if (typeof module !== "undefined") {
     tunnelLogAction: tunnelLogAction,
     confirmDrop: confirmDrop,
     queueFront: queueFront,
+    queueAppend: queueAppend,
     filterProcs: filterProcs,
     addApp: addApp,
     removeApp: removeApp,

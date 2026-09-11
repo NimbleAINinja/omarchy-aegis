@@ -901,6 +901,36 @@ test("queueFront puts one snapshot first without reordering anything else", () =
   assert.deepEqual(Model.queueFront([write], { verb: "config" }), [{ verb: "config" }, write])
 })
 
+test("queueAppend folds repeated connects into the last one and leaves everything else alone", () => {
+  const tokyo = { verb: "connect", args: ["connect", "Tokyo"] }
+  const paris = { verb: "connect", args: ["connect", "Paris"] }
+  const oslo = { verb: "connect", args: ["connect", "Oslo"] }
+  // Three clicks in a row queue one connect: the last one.
+  let q = Model.queueAppend(Model.queueAppend(Model.queueAppend([], tokyo), paris), oslo)
+  assert.deepEqual(q, [oslo])
+  // Not the head — only the tail. A connect already running isn't in the
+  // queue at all, so the first entry here is a job that is still waiting.
+  q = Model.queueAppend([tokyo, { verb: "snapshot" }], paris)
+  assert.deepEqual(q.map(j => j.verb), ["connect", "snapshot", "connect"])
+  assert.equal(q[0], tokyo)
+  assert.equal(q[2], paris)
+  // A disconnect between two connects means both were meant; nothing folds.
+  q = Model.queueAppend(Model.queueAppend(Model.queueAppend([], tokyo), { verb: "disconnect" }), paris)
+  assert.deepEqual(q.map(j => j.verb), ["connect", "disconnect", "connect"])
+  // Only a connect folds: a disconnect after a disconnect still queues.
+  q = Model.queueAppend([{ verb: "disconnect" }], { verb: "disconnect" })
+  assert.equal(q.length, 2)
+  q = Model.queueAppend([tokyo], { verb: "disconnect" })
+  assert.deepEqual(q.map(j => j.verb), ["connect", "disconnect"])
+  // Never mutates the queue it was handed.
+  const original = [tokyo]
+  assert.deepEqual(Model.queueAppend(original, paris), [paris])
+  assert.deepEqual(original, [tokyo])
+  // Degenerate inputs behave like a plain push.
+  assert.deepEqual(Model.queueAppend(null, tokyo), [tokyo])
+  assert.deepEqual(Model.queueAppend([null], tokyo), [null, tokyo])
+})
+
 test("needsFollowUpRefresh drops the extra poll only after a connect/disconnect that settled", () => {
   // The whole point: connect and disconnect now answer with a snapshot.
   assert.equal(Model.needsFollowUpRefresh("connect", true, "connected"), false)
