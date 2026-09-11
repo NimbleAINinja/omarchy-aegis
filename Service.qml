@@ -58,6 +58,17 @@ Item {
   //   { verb: "connect", target } | { verb: "disconnect" } | null
   property var errorIntent: null
   property string pendingLocation: ""    // city currently being connected
+  // Whether sudo would start the VPN service without a password: "ok",
+  // "missing", or "unknown" until the side channel's `sudo-check` has
+  // answered (checkSudoRule). A sudo_password error settles it as missing,
+  // a connect that went through settles it as ok. Model.setupStep turns it
+  // into the panel's setup prompt.
+  property string sudoRule: "unknown"
+  // True from installSudoRule() until its pkexec run has exited.
+  property bool sudoRuleBusy: false
+  // The city a connect was after when sudo asked for a password, so the
+  // connect can be repeated the moment the rule is in place.
+  property string _sudoRetry: ""
 
   // Optimistic switch state: -1 follows reality, 0/1 while an action is in flight.
   property int _desired: -1
@@ -218,6 +229,31 @@ Item {
     // — the cache read can only help and never leaks anything, so it always
     // runs rather than waiting on that.
     if (locateHome && home === null) refreshHomeCache()
+    if (sudoRule === "unknown") checkSudoRule()
+  }
+
+  // --- the sudo rule ------------------------------------------------------------
+  // A read-only `sudo -l` on the side channel (no CLI, no lock): the answer
+  // is what the next TUN connect will run into, and it lands as sudoRule
+  // through applyJob. Never asked while the CLI is missing — there is
+  // nothing to start its service for yet.
+  function checkSudoRule() {
+    if (!installed) return
+    sideEnqueue(["sudo-check"], "sudoCheck", false)
+  }
+
+  // Writes the README's rule for this user through pkexec (the shell's own
+  // polkit agent puts up the prompt). aegis-sudo-rule reads the user from
+  // PKEXEC_UID, checks the file with visudo and only then moves it into
+  // /etc/sudoers.d — see the script. Run through sh so a checkout that lost
+  // the executable bit still works.
+  function installSudoRule() {
+    if (sudoRuleBusy) return
+    sudoRuleBusy = true
+    actionStatus = "Authenticate to install the sudo rule"
+    sudoRuleProcess.errors = ""
+    sudoRuleProcess.command = ["pkexec", "/bin/sh", pluginFile("aegis-sudo-rule")]
+    sudoRuleProcess.running = true
   }
 
   // A snapshot that runs next: ahead of every queued job (a `locations`
@@ -340,8 +376,9 @@ Item {
     // not answer with a location a lookup has already replaced, and a forget
     // must not be overtaken by a lookup that writes the file back. So a home
     // job here waits for any `home` job on the main queue (jobProcess.onExited
-    // pumps this channel again). `procs` touches nothing shared and never waits.
-    if (next.verb !== "procs" && ((jobProcess.running && jobProcess.verb === "home") || queued("home"))) return
+    // pumps this channel again). `procs` and `sudoCheck` touch nothing
+    // shared and never wait.
+    if (next.verb !== "procs" && next.verb !== "sudoCheck" && ((jobProcess.running && jobProcess.verb === "home") || queued("home"))) return
     _sideQueue = _sideQueue.slice(1)
     sideProcess.verb = next.verb
     sideProcess.mutate = next.mutate === true
@@ -436,6 +473,9 @@ Item {
     pendingLocation = ""
     clearError()
     dropHold = false
+    // A disconnect asked for by hand is the user changing their mind: a
+    // connect that sudo turned away is not repeated once the rule lands.
+    _sudoRetry = ""
     if (wasConnected) persist({ wasConnected: false })
     enqueue(["disconnect"], "disconnect")
   }
@@ -568,6 +608,7 @@ Item {
     else if (verb === "config") applyConfig(obj)
     else if (verb === "update") applyUpdate(obj, _notifyUpdate)
     else if (verb === "procs") applyProcs(obj)
+    else if (verb === "sudoCheck") sudoRule = obj.allowed === true ? "ok" : "missing"
     else if (verb === "connect" || verb === "disconnect") applySnapshot(obj, verb === "disconnect", verb)
     else if (verb === "logout") {
       // Logging out takes the tunnel down on request: an intentional
@@ -615,7 +656,11 @@ Item {
       account = Model.loggedOutAccount()
       accountLoaded = true
     }
-    if (errorCode === "sudo_password") lastError = "sudo needs a password · see README"
+    if (errorCode === "sudo_password") {
+      lastError = "sudo needs a password to start the VPN service"
+      sudoRule = "missing"
+      _sudoRetry = intent && intent.verb === "connect" ? String(intent.target || "") : ""
+    }
   }
 
   // `requested`: the status came back from a disconnect the user asked for.
@@ -929,6 +974,9 @@ Item {
     // notices a login on its own once the panel comes back.
     if (loginPoll.running) loginPoll.stop()
   }
+  // A CLI that has just appeared (the setup prompt's installer, a package
+  // manager) gets the sudo probe the missing one was spared.
+  onInstalledChanged: if (installed && sudoRule === "unknown") checkSudoRule()
   // Every path that sets vpnState (snapshots, logout, noteError, account)
   // moves the loss base with it.
   onVpnStateChanged: _lossBase = Model.lossBase(_lossBase, vpnState)
@@ -981,6 +1029,33 @@ Item {
 
   Process {
     id: killProcess
+  }
+
+  // pkexec answers 126 when the prompt is dismissed and 127 when the user is
+  // not authorised (or pkexec itself failed); anything else is the script's
+  // own exit, explained on its stderr.
+  Process {
+    id: sudoRuleProcess
+    property string errors: ""
+    stderr: StdioCollector { waitForEnd: true; onStreamFinished: sudoRuleProcess.errors = text }
+    onExited: function(exitCode) {
+      root.sudoRuleBusy = false
+      var errors = String(sudoRuleProcess.errors || "").trim()
+      sudoRuleProcess.errors = ""
+      if (exitCode === 0) {
+        root.sudoRule = "ok"
+        if (root.errorCode === "sudo_password") root.clearError()
+        root.actionStatus = "sudo rule installed"
+        var retry = root._sudoRetry
+        root._sudoRetry = ""
+        var again = retry !== "" ? Model.findLocation(root.locations, retry) : null
+        if (again) root.connectTo(again.cliName, again.city)
+        return
+      }
+      if (exitCode === 126) { root.actionStatus = "Authentication cancelled"; return }
+      if (exitCode === 127) { root.actionStatus = "Not authorised to install the sudo rule"; return }
+      root.noteError({ error: errors !== "" ? errors.split("\n").pop() : "aegis-sudo-rule exited " + exitCode, code: "sudo_rule" }, "action", null)
+    }
   }
 
   // A change trigger only. With preload: false, FileView reads a file only
@@ -1094,6 +1169,9 @@ Item {
       // finished or failed either way: a home lookup held for
       // autoConnectPending is free to run again on the next snapshot.
       if (verb === "connect") root.autoConnectPending = false
+      // A tunnel that came up went through sudo without a prompt: whatever
+      // the probe said (or has not said yet), the rule is in place.
+      if (verb === "connect" && ok && Model.normalizeSnapshot(obj).state === "connected") root.sudoRule = "ok"
       if (!ok) {
         // Captured before the pendingLocation reset below, so a later
         // snapshot can tell whether connect/disconnect got there anyway.

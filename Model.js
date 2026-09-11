@@ -475,6 +475,19 @@ function linkState(vpnState, pendingLocation) {
   return "none"
 }
 
+// The one thing standing between the user and a tunnel, for the panel's
+// setup prompt: "install" (no adguardvpn-cli), "login" (the CLI is signed
+// out), "sudo" (sudo would ask for a password, so a TUN connect cannot
+// start its service — SOCKS mode never goes through sudo, so it is not
+// held up by a missing rule), or "" when nothing is in the way. sudoRule is
+// Service's verdict: "ok", "missing", or "unknown" while unchecked.
+function setupStep(installed, vpnState, sudoRule, mode) {
+  if (!installed) return "install"
+  if (str(vpnState) === "logged_out") return "login"
+  if (str(sudoRule) === "missing" && str(mode) !== "socks") return "sudo"
+  return ""
+}
+
 function formatRate(bytesPerSec) {
   var v = num(bytesPerSec, 0)
   if (v <= 0) return "0"
@@ -1469,7 +1482,7 @@ function findExclusionDomain(domains, needle) {
 // against agvpn.py, so change both together.
 var HELPER_BUDGET_SEC = {
   "snapshot": 24, "locations": 24, "connect": 84, "disconnect": 36, "account": 24, "logout": 24,
-  "exclusions": 48, "home": 35, "config": 39, "update-check": 36, "procs": 17
+  "exclusions": 48, "home": 35, "config": 39, "update-check": 36, "procs": 17, "sudo-check": 17
 }
 // On top of a budget: python start-up, reaping a timed-out CLI, the answer.
 var WATCHDOG_SLACK_MS = 5000
@@ -1518,6 +1531,7 @@ if (typeof module !== "undefined") {
     pingTier: pingTier,
     dotTints: dotTints,
     linkState: linkState,
+    setupStep: setupStep,
     formatRate: formatRate,
     formatUptime: formatUptime,
     rateFrom: rateFrom,

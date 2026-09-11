@@ -1590,21 +1590,22 @@ test("procsFresh reuses a process list for ten seconds and always fetches the fi
 
 test("Service.qml runs the lock-free verbs off the CLI queue without reordering home.json", () => {
   const src = require("node:fs").readFileSync(require("node:path").join(__dirname, "..", "Service.qml"), "utf8")
-  // The three verbs agvpn.py answers without ever calling run_cli.
+  // The four verbs agvpn.py answers without ever calling run_cli.
   assert.match(src, /sideEnqueue\(\["procs"\], "procs", false\)/)
   assert.match(src, /sideEnqueue\(\["home", "cached"\], "homeCache", false\)/)
   assert.match(src, /sideEnqueue\(\["home", "forget"\], "home", true\)/)
+  assert.match(src, /sideEnqueue\(\["sudo-check"\], "sudoCheck", false\)/)
   // ...and nothing else: every CLI-backed verb keeps the serialized queue.
   const side = src.match(/sideEnqueue\(\[[^\]]*\]/g) || []
-  assert.equal(side.length, 3)
-  assert.equal(new Set(side).size, 3)
+  assert.equal(side.length, 4)
+  assert.equal(new Set(side).size, 4)
   assert.doesNotMatch(src, /sideEnqueue\(\["(snapshot|locations|account|connect|disconnect|logout|config|exclusions|update-check)"/)
   // The TTL gate sits in front of the procs job.
   assert.match(src, /if \(Model\.procsFresh\(_procsAt, Date\.now\(\), Model\.PROCS_TTL_MS\)\) return/)
   assert.match(src, /_procsAt = Date\.now\(\)/)
   // A home job on the side channel still orders against the `home` lookup,
   // which writes the same file from the CLI-serialized queue.
-  assert.match(src, /next\.verb !== "procs" && \(\(jobProcess\.running && jobProcess\.verb === "home"\) \|\| queued\("home"\)\)/)
+  assert.match(src, /next\.verb !== "procs" && next\.verb !== "sudoCheck" && \(\(jobProcess\.running && jobProcess\.verb === "home"\) \|\| queued\("home"\)\)/)
   assert.match(src, /root\.pump\(\)\n\s*\/\/[\s\S]*?\n\s*root\.sidePump\(\)/)
   // The write still reports its failures; the reads still stay quiet.
   assert.match(src, /else if \(mutate\) root\.noteError\(/)
@@ -1863,4 +1864,17 @@ test("Service.qml uses tunnel.log's FileView as a trigger only, and urgent snaps
   assert.doesNotMatch(src, /tunnelLogWatch\.(text|data|reload)\s*\(/)
   assert.match(src, /Model\.queueFront\(_queue, \{ args: \["snapshot"\], verb: "snapshot"/)
   assert.match(src, /prevState: _lossBase/)
+})
+
+test("setupStep names the first missing prerequisite, and only a TUN connect needs the sudo rule", () => {
+  assert.equal(Model.setupStep(false, "disconnected", "ok", "tun"), "install")
+  assert.equal(Model.setupStep(false, "logged_out", "missing", "tun"), "install")
+  assert.equal(Model.setupStep(true, "logged_out", "missing", "tun"), "login")
+  assert.equal(Model.setupStep(true, "disconnected", "missing", "tun"), "sudo")
+  assert.equal(Model.setupStep(true, "connected", "missing", "tun"), "sudo")
+  assert.equal(Model.setupStep(true, "disconnected", "missing", "socks"), "")
+  assert.equal(Model.setupStep(true, "disconnected", "unknown", "tun"), "")
+  assert.equal(Model.setupStep(true, "disconnected", "ok", "tun"), "")
+  assert.equal(Model.setupStep(true, "unknown", "ok", "tun"), "")
+  assert.equal(Model.setupStep(true, undefined, undefined, undefined), "")
 })

@@ -1105,6 +1105,51 @@ class ConfigVerbs(unittest.TestCase):
         self.assertEqual(j["skipped"], ["gnome-keyring-d"])
         self.assertNotIn("gnome-keyring", argv)
 
+    def test_sudo_check_asks_sudo_l_for_the_exact_connect_command(self):
+        with tempfile.TemporaryDirectory() as d:
+            log = Path(d, "sudo.log")
+            env = {"AEGIS_SUDO": str(ROOT / "tests" / "fake-sudo.sh"), "FAKE_LOG": str(log),
+                   "HOME": "/home/youruser", "XDG_DATA_HOME": "/home/youruser/.local/share",
+                   "DISPLAY": ":1", "DBUS_SESSION_BUS_ADDRESS": "unix:path=/run/user/1000/bus"}
+            rc, out, _ = run_verb("sudo-check", env_extra=env)
+            self.assertEqual(rc, 0)
+            data = self.check_json(out)
+            self.assertEqual(data, {"ok": True, "allowed": True})
+            argv = log.read_text().splitlines()
+            self.assertEqual(argv[:5], ["-n", "-k", "-l", "--", "/usr/bin/env"])
+            self.assertEqual(argv[5:], [
+                "HOME=/home/youruser", "XDG_DATA_HOME=/home/youruser/.local/share", "DISPLAY=:1",
+                "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus", os.path.realpath(FAKE),
+                "connect", "--no-fork", "-l", "Probe", "--log-to-file", "--wait-for-parent",
+                "--ppid-file", "/home/youruser/.local/share/adguardvpn-cli/vpn.pid"])
+            # sudo's "no" (a missing or passworded rule) is a plain false, not an error
+            env["FAKE_SUDO_RC"] = "1"
+            rc, out, _ = run_verb("sudo-check", env_extra=env)
+            self.assertEqual(rc, 0)
+            self.assertEqual(self.check_json(out), {"ok": True, "allowed": False})
+
+    def test_sudo_check_defaults_the_session_values_it_cannot_see(self):
+        with tempfile.TemporaryDirectory() as d:
+            log = Path(d, "sudo.log")
+            # an empty value is how the test runner's own session is hidden
+            env = {"AEGIS_SUDO": str(ROOT / "tests" / "fake-sudo.sh"), "FAKE_LOG": str(log), "HOME": "/home/u",
+                   "XDG_DATA_HOME": "", "DISPLAY": "", "DBUS_SESSION_BUS_ADDRESS": ""}
+            rc, out, _ = run_verb("sudo-check", env_extra=env)
+            self.assertEqual(rc, 0)
+            argv = log.read_text().splitlines()
+            self.assertIn("XDG_DATA_HOME=/home/u/.local/share", argv)
+            self.assertIn("DISPLAY=:0", argv)
+            self.assertIn("DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/%d/bus" % os.getuid(), argv)
+            self.assertIn("/home/u/.local/share/adguardvpn-cli/vpn.pid", argv)
+
+    def test_sudo_check_without_sudo_is_an_error_not_a_verdict(self):
+        rc, out, _ = run_verb("sudo-check", env_extra={"AEGIS_SUDO": "/nonexistent/sudo"})
+        self.assertEqual(rc, 0)
+        data = self.check_json(out)
+        self.assertFalse(data["ok"])
+        self.assertEqual(data["code"], "unknown")
+        self.assertNotIn("allowed", data)
+
     def test_procs_lists_unique_sorted_user_process_names(self):
         with tempfile.TemporaryDirectory() as proc:
             os.makedirs(os.path.join(proc, "42"))
@@ -1243,7 +1288,7 @@ class Budgets(unittest.TestCase):
 
     def test_queued_verbs_have_budgets_kill_and_unknown_do_not(self):
         for verb in ("snapshot", "locations", "connect", "disconnect", "account", "logout",
-                     "exclusions", "home", "config", "update-check", "procs"):
+                     "exclusions", "home", "config", "update-check", "procs", "sudo-check"):
             self.assertIsNotNone(agvpn.verb_budget(verb), verb)
         self.assertIsNone(agvpn.verb_budget("kill"))
         self.assertIsNone(agvpn.verb_budget("frobnicate"))
