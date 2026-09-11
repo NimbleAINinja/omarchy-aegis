@@ -473,28 +473,19 @@ test("the traffic tab is reachable from the footer, the keyboard and IPC, and on
   assert.match(view, /history: vpn \? vpn\.trafficHistory : \[\]/)
   assert.match(view, /floorRate: Model\.TRAFFIC_FLOOR/)
   assert.match(view, /dotPitch: Style\.space\(4\)/)
-  // No caption line: with no tunnel to measure the legend itself reads zero
-  // in the dim colour over an empty graph, which says the same thing in a row
-  // that is on screen anyway.
+  // No caption line and no live rates: the hero above already prints the
+  // current down/up, so the legend is the window's peaks alone, hard against
+  // the right edge (growing leftward as digits come and go) and folded away
+  // while there is nothing to report.
   assert.doesNotMatch(view, /property string caption/)
   assert.doesNotMatch(view, /Not connected/)
-  assert.match(view, /readonly property bool live: vpn \? vpn\.connected === true : false/)
-  assert.match(view, /readonly property var rates: live && vpn\.rates \? vpn\.rates : \(\{ down: 0, up: 0 \}\)/)
-  assert.match(view, /color: root\.live \? panel\.glow : panel\.dim/)
-  assert.match(view, /color: root\.live \? Util\.alpha\(panel\.foreground, 0\.7\) : panel\.dim/)
-  // A fixed slot per rate, left-aligned and never elided, so the up-rate does
-  // not hop sideways when the down-rate gains a digit; the peak takes what is
-  // left and is hard against the right edge.
-  assert.match(view, /readonly property real rateWidth: Style\.space\(96\)/)
-  assert.equal((view.match(/width: root\.rateWidth/g) || []).length, 2)
-  assert.equal((view.match(/horizontalAlignment: Text\.AlignLeft/g) || []).length, 2)
-  assert.equal((view.match(/elide: Text\.ElideNone/g) || []).length, 3)
-  assert.match(view, /anchors\.left: upRate\.right\s*\n\s*anchors\.right: parent\.right/)
+  assert.doesNotMatch(view, /vpn\.rates/)
+  assert.doesNotMatch(view, /rateWidth/)
+  assert.match(view, /visible: root\.peakText !== ""/)
   assert.match(view, /horizontalAlignment: Text\.AlignRight/)
-  // A space between each arrow and its number, everywhere a rate is printed.
-  assert.match(view, /text: "↓ " \+ Model\.formatRate\(root\.rates\.down\) \+ "\/s"/)
-  assert.match(view, /text: "↑ " \+ Model\.formatRate\(root\.rates\.up\) \+ "\/s"/)
-  assert.match(view, /"peak ↓ " \+ Model\.formatRate/)
+  assert.match(view, /elide: Text\.ElideNone/)
+  // A space between each arrow and its number.
+  assert.match(view, /"peak ↓ " \+ Model\.formatRate\(sampleWindow\.peakDown\) \+ "\/s ↑ " \+ Model\.formatRate/)
   // The graph itself stays free of the shell's modules, or it could not be
   // linted strictly or rendered headlessly.
   const graph = fs.readFileSync(path.join(dir, "TrafficGraph.qml"), "utf8")
