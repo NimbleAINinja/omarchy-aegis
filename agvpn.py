@@ -26,10 +26,11 @@ Every queued verb answers within its own overall budget (verb_budget), and
 SIGTERM/SIGHUP/SIGINT stop and reap a running adguardvpn-cli before the
 helper answers {"ok": false, "code": "timeout"}.
 
-State the helper writes (the CLI lock, home.json) only ever lives in a
-directory this user owns and nobody else can write to: $XDG_RUNTIME_DIR when
-it checks out (trusted_runtime_dir), otherwise a private 0700 directory under
-the user's own cache dir (private_dir) — never a shared temp dir. Files in it
+State the helper writes (the CLI lock, home.json, cli-version.json) only ever
+lives in a directory this user owns and nobody else can write to:
+$XDG_RUNTIME_DIR when it checks out (trusted_runtime_dir), otherwise a
+private 0700 directory under the user's own cache dir (private_dir) — never a
+shared temp dir. Files in it
 are opened without following symlinks and checked to be this user's regular
 files; a path that fails the checks is refused, not worked around.
 
@@ -41,8 +42,8 @@ child when stopped), AEGIS_LOCK (lock file, used as given — its directory is
 not checked, the file itself still is), AEGIS_CURL (curl binary), AEGIS_PKILL
 (pkill binary), AEGIS_PS (ps binary), AEGIS_PROC (the /proc to read process
 start times and executables from). Also honoured: XDG_RUNTIME_DIR (CLI lock)
-and XDG_CACHE_HOME (home.json, and the CLI lock when XDG_RUNTIME_DIR can't be
-trusted).
+and XDG_CACHE_HOME (home.json and cli-version.json, and the CLI lock when
+XDG_RUNTIME_DIR can't be trusted).
 """
 import errno
 import fcntl
@@ -602,7 +603,7 @@ def verb_budgets():
         "exclusions": 3 * cli,                            # mode/add/remove, then show (+ mode if it has no header)
         "home": cli + ROUTE_TIMEOUT + CURL_TIMEOUT,       # status, ip route, curl
         "config": STDIN_TIMEOUT + 2 * cli,                # stdin (socksPassword), set, then show
-        "update-check": 2 * cli,                          # check-update, --version
+        "update-check": 2 * cli,                          # check-update, --version (cached per binary)
         "procs": PROCS_TIMEOUT,
     }
     return {verb: lock_wait + seconds for verb, seconds in calls.items()}
@@ -1288,10 +1289,39 @@ def verb_config(args):
     raise CliError("unknown", "unknown config action: %s" % action)
 
 
+def version_cache_path():
+    return cache_dir() / "cli-version.json"
+
+
+def cli_version():
+    """`adguardvpn-cli --version`, remembered under cache_dir() and keyed on
+    the binary's (mtime, size): the version can only change when the binary
+    does, so a CLI that hasn't been updated costs no second call on every
+    update check. A cache that can't be read or written just means the call
+    is made, as it always was."""
+    try:
+        st = os.stat(cli_path())
+        key = [st.st_mtime_ns, st.st_size]
+    except OSError:
+        key = None
+    if key is not None:
+        cached = read_private_json(version_cache_path())
+        if cached and cached.get("key") == key and isinstance(cached.get("version"), str):
+            return cached["version"]
+    rc, version, _ = run_cli(["--version"])
+    if key is not None:
+        try:
+            private_dir(cache_dir())
+            write_private_json(version_cache_path(), {"key": key, "version": version})
+        except (UntrustedPath, OSError):
+            pass  # a cache we may not write only costs the next check a call
+    return version
+
+
 def verb_update_check():
     # check-update exits 17 when already up to date, so the exit code is noise.
     rc, out, err = run_cli(["check-update"])
-    rc2, version, _ = run_cli(["--version"])
+    version = cli_version()
     result = parse_update(out + "\n" + err, version)
     if result["upToDate"] is None:
         # check-update's own output wasn't recognised (e.g. no network 20s

@@ -989,6 +989,30 @@ class ConfigVerbs(unittest.TestCase):
         self.assertFalse(j["upToDate"])
         self.assertEqual(j["latest"], "1.8.3")
 
+    def test_update_check_asks_for_the_version_only_when_the_binary_changed(self):
+        """--version can't answer anything new while the binary is the same
+        file, so its output is cached under cache_dir() keyed on the binary's
+        mtime and size: the second check is one CLI call, not two."""
+        with tempfile.TemporaryDirectory() as d:
+            cli = Path(d, "adguardvpn-cli")  # a stand-in whose mtime is ours to change
+            cli.write_text('#!/bin/sh\nexec "%s" "$@"\n' % FAKE)
+            cli.chmod(0o755)
+
+            def calls(n):
+                log = Path(d, "argv%d.log" % n)
+                rc, out, _ = run_verb("update-check", cli=str(cli),
+                                      env_extra={"FAKE_LOG": str(log), "XDG_CACHE_HOME": d})
+                self.assertTrue(self.check_json(out)["upToDate"], out)
+                self.assertEqual(self.check_json(out)["current"], "1.7.12")
+                return log.read_text().splitlines()
+
+            self.assertEqual(calls(1), ["check-update", "--version"])
+            self.assertEqual(calls(2), ["check-update"])
+            cached = Path(d, agvpn.PLUGIN_ID, "cli-version.json")
+            self.assertEqual(stat.S_IMODE(os.lstat(cached).st_mode), 0o600)
+            os.utime(cli, (1, 1))  # an update to the CLI invalidates it
+            self.assertEqual(calls(3), ["check-update", "--version"])
+
     def test_update_check_failure_is_ok_false_not_up_to_date(self):
         rc, out, _ = run_verb("update-check", mode="updatefail")
         j = self.check_json(out)
