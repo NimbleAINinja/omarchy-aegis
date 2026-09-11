@@ -37,14 +37,24 @@ then `omarchy plugin enable io.github.nimbleaininja.aegis --section right`.
 ## Requirements
 
 - `adguardvpn-cli` (the official AdGuard VPN CLI), logged in
-- A sudoers rule so the CLI can start its tunnel without a password prompt.
-  The CLI runs `sudo env HOME=… XDG_DATA_HOME=… DISPLAY=… DBUS_SESSION_BUS_ADDRESS=… /opt/adguardvpn_cli/adguardvpn-cli …`,
-  so the rule must match that command. Colons inside values have to be escaped (replace `youruser` and `1000` with your user name and `id -u`):
+- A sudoers rule so the CLI can start its VPN service without a password prompt (sudo 1.9.10 or newer).
+  To connect, the CLI runs one command as root:
+  `sudo -b env HOME=… XDG_DATA_HOME=… DISPLAY=… DBUS_SESSION_BUS_ADDRESS=… /opt/adguardvpn_cli/adguardvpn-cli connect --no-fork -l <location> … --ppid-file …/vpn.pid`.
+  The rule below allows exactly that, for any location, and nothing else. Its arguments are a regular
+  expression, so keep it on one line; replace every `youruser` and the `1000` with your user name and `id -u`:
 
   ```
   # /etc/sudoers.d/adguardvpn-cli  (mode 0440, check with: visudo -cf <file>)
-  youruser ALL=(root) NOPASSWD: /usr/bin/env HOME=/home/youruser XDG_DATA_HOME=/home/youruser/.local/share DISPLAY=\:[0-9] DBUS_SESSION_BUS_ADDRESS=unix\:path=/run/user/1000/bus /opt/adguardvpn_cli/adguardvpn-cli *
+  youruser ALL=(root) NOPASSWD: /usr/bin/env ^HOME=/home/youruser XDG_DATA_HOME=/home/youruser/\.local/share DISPLAY=:[0-9]+(\.[0-9]+)? DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus /opt/adguardvpn_cli/adguardvpn-cli connect --no-fork -l [^-[:space:]][^[:space:]]*( [^-[:space:]][^[:space:]]*)* (-v )?--log-to-file --wait-for-parent --ppid-file /home/youruser/\.local/share/adguardvpn-cli/vpn\.pid$
   ```
+
+  If you installed the earlier rule ending in `adguardvpn-cli *`, replace it: it let any program running
+  as you run every CLI subcommand as root, e.g. `export-logs -o <path> -f` to overwrite any file.
+  Two rarely used paths aren't covered and will ask for a password: the CLI's `sudo kill` fallback when
+  the service won't stop, and `config create-route-script`.
+  What remains: the root VPN service runs with your `HOME` and `XDG_DATA_HOME`, uses the settings in your
+  data directory and writes its log, pid file and socket there, and any program running as you can still
+  start it without a password.
 
   When the rule is missing or broken the panel shows “sudo needs a password”.
 - `python3` (standard library only), `curl` for the one-time location lookup

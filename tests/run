@@ -5,6 +5,7 @@ dir=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 cd "$dir"
 
 bash tests/manifest.test.sh
+bash tests/sudoers.test.sh
 
 node_tests=()
 for t in tests/model.test.js tests/link.test.js; do
