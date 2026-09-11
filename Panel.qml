@@ -115,11 +115,12 @@ Panel {
   readonly property string barText: verticalBar ? "" : Model.barLabel(barMode, snapForMeta, vpn.rates)
   readonly property string barTooltip: vpn.connected ? (vpn.location + (vpn.iso ? " · " + vpn.iso : "")) : heroMeta
 
-  function countryFor(iso) {
-    var list = vpn.locations
-    for (var i = 0; i < list.length; i++) if (list[i].iso === iso) return list[i].country
-    return ""
-  }
+  // heroMeta calls countryFor from a binding that re-runs on every rate tick
+  // (two seconds, while connected with the panel open) and on every uptime
+  // tick; it used to walk all ~90 locations each time for one ISO code. The
+  // map is rebuilt only when the location list itself changes.
+  readonly property var countryByIso: Model.countryIndex(vpn.locations)
+  function countryFor(iso) { return Model.countryFrom(countryByIso, iso) }
 
   function switchView(next) {
     view = view === next ? "list" : next

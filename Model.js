@@ -183,6 +183,34 @@ function sameUpdate(a, b) {
     && (num(p.checkedAt, 0) > 0) === (num(q.checkedAt, 0) > 0)
 }
 
+// ISO code → country name, first row of that ISO wins (what a linear scan
+// found). Panel.qml's countryFor used to walk all ~90 locations on every call,
+// and heroMeta calls it from a binding that re-runs on the rate tick — every
+// two seconds while connected, with the panel open. Built once per locations
+// change instead.
+//
+// Read it back with a hasOwnProperty guard: a plain object inherits
+// "constructor", "toString" and friends, and while a two-letter ISO code can
+// never be one of those, a lookup should not depend on that.
+function countryIndex(list) {
+  var items = toList(list)
+  var map = {}
+  for (var i = 0; i < items.length; i++) {
+    var it = items[i]
+    if (!it) continue
+    var iso = str(it.iso)
+    if (iso === "" || Object.prototype.hasOwnProperty.call(map, iso)) continue
+    map[iso] = str(it.country)
+  }
+  return map
+}
+
+function countryFrom(map, iso) {
+  var m = map && typeof map === "object" ? map : {}
+  var key = str(iso)
+  return Object.prototype.hasOwnProperty.call(m, key) ? str(m[key]) : ""
+}
+
 function locationKey(loc) {
   if (!loc) return ""
   return str(loc.iso) + "|" + str(loc.city)
@@ -1368,6 +1396,8 @@ if (typeof module !== "undefined") {
     LOCATIONS_TTL_MS: LOCATIONS_TTL_MS,
     locationsFresh: locationsFresh,
     locationKey: locationKey,
+    countryIndex: countryIndex,
+    countryFrom: countryFrom,
     sameRow: sameRow,
     diffRows: diffRows,
     applyRowOps: applyRowOps,

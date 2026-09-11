@@ -260,6 +260,37 @@ test("orderLocations' lastLocation only sets a flag, never the order", () => {
     Model.filterLocations(base, "a").map(l => l.city))
 })
 
+test("countryIndex answers exactly what the linear scan did", () => {
+  const list = [loc("CA", "Canada", "Montreal", 15), loc("US", "United States", "New York", 23),
+    loc("US", "United States", "Chicago", 30), loc("IL", "Israel", "Tel Aviv", 140)]
+  const scan = (rows, iso) => {
+    for (const r of rows) if (r.iso === iso) return r.country
+    return ""
+  }
+  const map = Model.countryIndex(list)
+  for (const iso of ["CA", "US", "IL", "XX", "", "ca"])
+    assert.equal(Model.countryFrom(map, iso), scan(list, iso), "iso " + JSON.stringify(iso))
+  assert.deepEqual(map, { CA: "Canada", US: "United States", IL: "Israel" })
+  // Junk rows are skipped, not thrown on.
+  assert.deepEqual(Model.countryIndex([null, {}, { iso: "DE", country: "Germany" }]), { DE: "Germany" })
+  assert.deepEqual(Model.countryIndex(null), {})
+  // A key every plain object inherits must not answer as a country.
+  assert.equal(Model.countryFrom({}, "constructor"), "")
+  assert.equal(Model.countryFrom({}, "toString"), "")
+  assert.equal(Model.countryFrom(null, "US"), "")
+  assert.equal(Model.countryFrom(Model.countryIndex([{ iso: "toString", country: "Nowhere" }]), "toString"), "Nowhere")
+  // heroMeta takes the lookup as a function and prints what it returns.
+  const snap = { state: "connected", iso: "US", endpoint: null, sinceEpoch: 0, mode: "tun" }
+  assert.equal(Model.heroMeta(snap, 0, iso => Model.countryFrom(map, iso)), "United States")
+})
+
+test("Panel.qml looks a country up in a map, not by walking the location list", () => {
+  const fs = require("node:fs"), path = require("node:path")
+  const panel = fs.readFileSync(path.join(__dirname, "..", "Panel.qml"), "utf8")
+  assert.match(panel, /readonly property var countryByIso: Model\.countryIndex\(vpn\.locations\)/)
+  assert.match(panel, /function countryFor\(iso\) \{ return Model\.countryFrom\(countryByIso, iso\) \}/)
+})
+
 test("Panel.qml's footer model is constant and in footerAction's order", () => {
   const fs = require("node:fs"), path = require("node:path")
   const panel = fs.readFileSync(path.join(__dirname, "..", "Panel.qml"), "utf8")
