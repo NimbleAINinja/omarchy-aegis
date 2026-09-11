@@ -231,9 +231,15 @@ Item {
   // `tail -c` rather than FileView's own content: reading the whole log
   // (~1.4 MB and never rotated) on every change is exactly what the watch
   // must not do. The path is an argument, never shell text.
+  // When the last look at the tail actually started (epoch ms, 0 = none
+  // since the watch was armed). Only rearmTunnelLog's safety-net look reads
+  // it; the watch's own scans are never rationed, they just reset it.
+  property real _logScanAt: 0
+
   function scanTunnelLog() {
     if (!watchingTunnelLog) return
     if (tunnelLogTail.running) { tunnelLogTail.again = true; return }
+    _logScanAt = Date.now()
     tunnelLogTail.output = ""
     tunnelLogTail.command = ["tail", "-c", String(Model.TUNNEL_TAIL_BYTES), tunnelLogPath]
     tunnelLogTail.running = true
@@ -260,7 +266,12 @@ Item {
     if (!watchingTunnelLog) return
     _logRearming = true
     _logRearming = false
-    scheduleLogScan()
+    // Rebuilding the watch above costs nothing and happens every time. The
+    // look, though, is a `tail -c 65536` spawn, and all it covers is a write
+    // landing in the instant the watch was down — the watch reports the rest
+    // as it happens — so it is rationed (Model.logScanDue). Anything the
+    // FileView itself triggers goes straight to scheduleLogScan, untouched.
+    if (Model.logScanDue(_logScanAt, Date.now(), Model.LOG_SCAN_TTL_MS)) scheduleLogScan()
   }
 
   // Flips the locateHome setting. Turning it off deletes the cached real

@@ -901,6 +901,41 @@ test("queueFront puts one snapshot first without reordering anything else", () =
   assert.deepEqual(Model.queueFront([write], { verb: "config" }), [{ verb: "config" }, write])
 })
 
+test("logScanDue rations the rearm's tail read without ever blocking the first one", () => {
+  const now = 1_700_000_000_000
+  const ttl = Model.LOG_SCAN_TTL_MS
+  assert.equal(ttl, 5 * 60 * 1000)
+  // Nothing looked yet since the watch armed: always look.
+  assert.equal(Model.logScanDue(0, now, ttl), true)
+  assert.equal(Model.logScanDue(null, now, ttl), true)
+  assert.equal(Model.logScanDue(now - 1000, now, ttl), false)
+  assert.equal(Model.logScanDue(now - (ttl - 1), now, ttl), false)
+  assert.equal(Model.logScanDue(now - ttl, now, ttl), true)
+  assert.equal(Model.logScanDue(now - (ttl + 1), now, ttl), true)
+  // A clock that moved forward past the stamp looks rather than waits it out.
+  assert.equal(Model.logScanDue(now + 60_000, now, ttl), true)
+  assert.equal(Model.logScanDue(now - 1000, now), false)
+  assert.equal(Model.logScanDue(now - (ttl + 1), now), true)
+})
+
+test("Service.qml rearms the tunnel.log watch every time but rations the tail read", () => {
+  const src = require("node:fs").readFileSync(require("node:path").join(__dirname, "..", "Service.qml"), "utf8")
+  const rearm = /function rearmTunnelLog\(\) \{[\s\S]*?\n  \}/.exec(src)
+  assert.ok(rearm, "rearmTunnelLog present")
+  // The pulse that rebuilds the FileView watch is unconditional.
+  assert.match(rearm[0], /_logRearming = true\n\s*_logRearming = false/)
+  assert.match(rearm[0], /if \(Model\.logScanDue\(_logScanAt, Date\.now\(\), Model\.LOG_SCAN_TTL_MS\)\) scheduleLogScan\(\)/)
+  // The FileView's own trigger still goes straight to scheduleLogScan.
+  assert.match(src, /onFileChanged: root\.scheduleLogScan\(\)/)
+  assert.match(src, /if \(watchingTunnelLog\) \{ scheduleLogScan\(\); return \}/)
+  // Every scan, whoever asked for it, stamps the TTL.
+  assert.match(src, /_logScanAt = Date\.now\(\)\n\s*tunnelLogTail\.output = ""/)
+  // The tail timings the review left alone.
+  assert.equal(Model.TUNNEL_SCAN_DELAY_MS, 400)
+  assert.equal(Model.TUNNEL_CONFIRM_MS, 3000)
+  assert.equal(Model.TUNNEL_TAIL_BYTES, 65536)
+})
+
 test("pollIntervalMs slows the closed-panel poll only where the tunnel.log watch covers it", () => {
   const ctx = extra => Object.assign({ intervalSec: 30, panelOpen: false, connected: true,
     watchingTunnelLog: true, barMode: "icon" }, extra)

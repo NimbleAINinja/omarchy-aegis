@@ -792,6 +792,26 @@ var TUNNEL_SCAN_DELAY_MS = 400
 // log CONNECTED first and cost no CLI call. See confirmDrop.
 var TUNNEL_CONFIRM_MS = 3000
 
+// How long rearmTunnelLog's safety-net look at the tail stays satisfied.
+// Rebuilding the watch (Service's _logRearming pulse) is free and happens on
+// every connected snapshot; the look that used to follow it is a `tail -c
+// 65536` spawn, and it is only there to catch a write that landed in the
+// instant the watch was being rebuilt. The watch itself reports everything
+// else as it happens, and its own scans are never rationed — they reset this
+// — so once every few minutes is all the safety net needs to be.
+var LOG_SCAN_TTL_MS = 5 * 60 * 1000
+
+// Whether that safety-net look is due. lastScanAtMs is 0 before any look.
+function logScanDue(lastScanAtMs, nowMs, maxAgeMs) {
+  var at = num(lastScanAtMs, 0)
+  if (at <= 0) return true
+  var age = num(nowMs, 0) - at
+  // A stamp in the future is a clock that moved; look now rather than sit
+  // out the difference.
+  if (age < 0) return true
+  return age >= num(maxAgeMs, LOG_SCAN_TTL_MS)
+}
+
 var TUNNEL_STATE_LINE = /^\d{2}\.\d{2}\.\d{4} \d{2}:\d{2}:\d{2}\.\d+ .*\bVPNCORE raise_state: \[\d+\] VPN_SS_([A-Z_]+)$/
 
 // Every complete raise_state line in a chunk of tunnel.log, oldest first:
@@ -1148,6 +1168,8 @@ if (typeof module !== "undefined") {
     TUNNEL_TAIL_BYTES: TUNNEL_TAIL_BYTES,
     TUNNEL_SCAN_DELAY_MS: TUNNEL_SCAN_DELAY_MS,
     TUNNEL_CONFIRM_MS: TUNNEL_CONFIRM_MS,
+    LOG_SCAN_TTL_MS: LOG_SCAN_TTL_MS,
+    logScanDue: logScanDue,
     tunnelLogStates: tunnelLogStates,
     scanTunnelLog: scanTunnelLog,
     tunnelLogAction: tunnelLogAction,
