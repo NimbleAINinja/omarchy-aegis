@@ -177,8 +177,11 @@ omarchy plugin validate .
 `agvpn.py` wraps the CLI and prints one JSON document per call (`snapshot`,
 `locations`, `connect <name>`, `disconnect`, `account`, `logout`,
 `exclusions …`, `config show|set <key> <value>`, `update-check`, `kill <name…>`,
-`home`, `home forget`). `home forget` just deletes the cached home.json — no
-CLI call, no network — for turning the "Locate home" setting off. The SOCKS
+`home`, `home cached`, `home forget`). `home cached` reads only the cached
+location — no CLI call, no network, any VPN state — so the panel can show a
+last-known location immediately; `home forget` just deletes the cached
+home.json — no CLI call, no network — for turning the "Locate home" setting
+off. The SOCKS
 password is the one exception to `set <key> <value>`:
 `config set socksPassword -` reads it as a single line on stdin, and a value
 passed on the command line is refused. `Model.js` and `Link.js` are pure ES5 shared by QML

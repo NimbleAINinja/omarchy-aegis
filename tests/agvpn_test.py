@@ -522,6 +522,88 @@ class Verbs(unittest.TestCase):
         j = self.check_json(out)
         self.assertTrue(j["ok"], j)
 
+    # ------------------------------------------------------- home cached --
+
+    def recording_curl(self, directory, log):
+        """A curl stand-in that would prove itself if run: appends its argv
+        to `log` before answering. Any invocation the cache-only path made
+        would show up here even though it's never plausible for it to run."""
+        curl = Path(directory, "curl")
+        curl.write_text('#!/bin/sh\nprintf \'%%s\\n\' "$*" >> "%s"\n'
+                         'echo \'{"city":"Haifa","country":"IL","loc":"32.79,34.99"}\'\n' % log)
+        curl.chmod(0o755)
+        return curl
+
+    def test_home_cached_returns_the_cache_calling_neither_the_cli_nor_curl(self):
+        with tempfile.TemporaryDirectory() as d:
+            cli_log = Path(d, "cli.log")
+            curl_log = Path(d, "curl.log")
+            curl = self.recording_curl(d, curl_log)
+            cache_root = Path(d, "cache")
+            cdir = cache_root / "io.github.nimbleaininja.aegis"
+            cdir.mkdir(parents=True)
+            (cdir / "home.json").write_text(json.dumps({"lat": 1.5, "lon": 2.5, "city": "X", "iso": "XX",
+                                                        "gateway": "gw", "fetchedAt": 0}))
+            # mode="connected": the plain `home` verb would refuse to fetch
+            # here (see test_home_skips_lookup_while_connected) and this
+            # must behave identically — cached must not even care.
+            rc, out, _ = run_verb("home", "cached", mode="connected",
+                                   env_extra={"XDG_CACHE_HOME": str(cache_root), "AEGIS_CURL": str(curl),
+                                              "FAKE_LOG": str(cli_log)})
+        j = self.check_json(out)
+        self.assertTrue(j["ok"], j)
+        self.assertEqual(j["home"], {"lat": 1.5, "lon": 2.5, "city": "X", "iso": "XX"})
+        self.assertTrue(j["stale"])
+        self.assertFalse(cli_log.exists(), "home cached must never invoke adguardvpn-cli")
+        self.assertFalse(curl_log.exists(), "home cached must never invoke curl")
+
+    def test_home_cached_is_null_with_no_cache_and_still_calls_neither(self):
+        with tempfile.TemporaryDirectory() as d:
+            cli_log = Path(d, "cli.log")
+            curl_log = Path(d, "curl.log")
+            curl = self.recording_curl(d, curl_log)
+            rc, out, _ = run_verb("home", "cached", mode="disconnected",
+                                   env_extra={"XDG_CACHE_HOME": str(Path(d, "cache")), "AEGIS_CURL": str(curl),
+                                              "FAKE_LOG": str(cli_log)})
+        j = self.check_json(out)
+        self.assertTrue(j["ok"], j)
+        self.assertIsNone(j["home"])
+        self.assertTrue(j["stale"])
+        self.assertFalse(cli_log.exists())
+        self.assertFalse(curl_log.exists())
+
+    def test_home_cached_never_follows_a_symlinked_home_json(self):
+        with tempfile.TemporaryDirectory() as d:
+            cache_root = Path(d, "cache")
+            cdir = cache_root / "io.github.nimbleaininja.aegis"
+            cdir.mkdir(parents=True)
+            elsewhere = Path(d, "elsewhere.json")
+            elsewhere.write_text(json.dumps({"lat": 9, "lon": 9, "city": "Planted", "iso": "ZZ",
+                                             "gateway": "gw", "fetchedAt": 0}))
+            (cdir / "home.json").symlink_to(elsewhere)
+            rc, out, _ = run_verb("home", "cached", env_extra={"XDG_CACHE_HOME": str(cache_root),
+                                                                "AEGIS_CURL": "/bin/false"})
+        j = self.check_json(out)
+        self.assertTrue(j["ok"], j)
+        self.assertIsNone(j["home"], "a symlinked home.json must never be read through")
+
+    def test_home_cached_narrows_a_0644_cache_file_to_0600(self):
+        with tempfile.TemporaryDirectory() as d:
+            cache_root = Path(d, "cache")
+            cdir = cache_root / "io.github.nimbleaininja.aegis"
+            cdir.mkdir(parents=True)
+            home = cdir / "home.json"
+            home.write_text(json.dumps({"lat": 1.5, "lon": 2.5, "city": "X", "iso": "XX",
+                                        "gateway": "gw", "fetchedAt": 0}))
+            home.chmod(0o644)
+            rc, out, _ = run_verb("home", "cached", env_extra={"XDG_CACHE_HOME": str(cache_root),
+                                                                "AEGIS_CURL": "/bin/false"})
+            mode = stat.S_IMODE(os.lstat(home).st_mode)
+        j = self.check_json(out)
+        self.assertTrue(j["ok"], j)
+        self.assertEqual(j["home"]["city"], "X")
+        self.assertEqual(mode, 0o600)
+
 
 class ParseConfig(unittest.TestCase):
     def test_defaults_resolve(self):

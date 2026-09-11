@@ -156,6 +156,15 @@ Item {
   function refreshExclusions() { enqueue(["exclusions", "show"], "exclusions", true) }
   function refreshHome() { enqueue(["home"], "home", true) }
 
+  // The cache-only read (agvpn.py's `home cached`): no CLI call, no network,
+  // works whatever the VPN state is — unlike refreshHome() this is never
+  // gated by Model.mayLocateHome, only by the locateHome setting itself (see
+  // its call sites). A distinct queue verb ("homeCache" vs "home") from
+  // refreshHome's so enqueue's dedupe never lets one swallow the other: both
+  // jobs run agvpn.py with args[0] "home" (same Model.watchdogMs budget —
+  // see HELPER_BUDGET_SEC), but they are different queue entries.
+  function refreshHomeCache() { enqueue(["home", "cached"], "homeCache", true) }
+
   // The only place that decides whether an ipinfo.io lookup may actually
   // run (Model.mayLocateHome) — every call site that used to call
   // refreshHome() directly goes through this instead.
@@ -177,6 +186,13 @@ Item {
     refreshLocations()
     if (!accountLoaded) refreshAccount()
     maybeRefreshHome()
+    // Whenever the panel opens (refreshAll's only real caller, plus the "r"
+    // shortcut/middle-click/IPC refresh) with locateHome on and no home
+    // loaded yet — a shell restart while connected leaves it null, since
+    // maybeRefreshHome above is a no-op until the tunnel is down by choice
+    // — the cache read can only help and never leaks anything, so it always
+    // runs rather than waiting on that.
+    if (locateHome && home === null) refreshHomeCache()
   }
 
   // A snapshot that runs next: ahead of every queued job (a `locations`
@@ -407,7 +423,7 @@ Item {
   }
 
   property var _queue: []
-  readonly property var _refreshVerbs: ["snapshot", "locations", "account", "exclusions", "home", "config", "update", "procs"]
+  readonly property var _refreshVerbs: ["snapshot", "locations", "account", "exclusions", "home", "homeCache", "config", "update", "procs"]
   readonly property bool busy: jobProcess.running && _refreshVerbs.indexOf(jobProcess.verb) === -1
   readonly property bool refreshing: jobProcess.running && _refreshVerbs.indexOf(jobProcess.verb) !== -1
   readonly property bool updateChecking: (jobProcess.running && jobProcess.verb === "update") || queued("update")
@@ -459,7 +475,8 @@ Item {
     else if (verb === "locations") applyLocations(obj)
     else if (verb === "account") applyAccount(obj)
     else if (verb === "exclusions") applyExclusions(obj)
-    else if (verb === "home") applyHome(obj)
+    else if (verb === "home") applyHome(obj, false)
+    else if (verb === "homeCache") applyHome(obj, true)
     else if (verb === "config") applyConfig(obj)
     else if (verb === "update") applyUpdate(obj, _notifyUpdate)
     else if (verb === "procs") applyProcs(obj)
@@ -623,9 +640,17 @@ Item {
     exclusions = Model.normalizeExclusions(obj)
   }
 
-  function applyHome(obj) {
+  // `fromCache`: whether this answer came from the cache-only job
+  // (refreshHomeCache, agvpn.py's `home cached`) rather than a real lookup
+  // (refreshHome/maybeRefreshHome, `home`). Model.shouldApplyHomeJob refuses
+  // a cache-only miss that would blow away a home a real lookup already set
+  // — see its own comment; every other answer (a cache hit, or anything
+  // from a real lookup) is applied as before.
+  function applyHome(obj, fromCache) {
     if (obj.ok === false) return
-    home = obj.home && typeof obj.home === "object" ? obj.home : null
+    var incoming = obj.home && typeof obj.home === "object" ? obj.home : null
+    if (!Model.shouldApplyHomeJob(home, fromCache === true, incoming)) return
+    home = incoming
     homeStale = obj.stale === true || home === null
   }
 
@@ -773,6 +798,13 @@ Item {
     // fires from applySnapshot once startup settles and auto-connect's fate
     // is known. See Model.mayLocateHome.
     maybeRefreshHome()
+    // Unlike the lookup above, reading the cache needs no network and
+    // reveals nothing, so it runs right away regardless of vpnState (still
+    // "unknown" here) — this is what fixes home staying null after a
+    // restart while connected, since the cached location was always there
+    // on disk. Skipped only when locateHome is off: `home forget` already
+    // deleted the cache then, so there would be nothing to read anyway.
+    if (locateHome) refreshHomeCache()
     refreshLocations()
     if (Model.updateCheckDue(lastUpdateCheck, Date.now())) updateCheckDelay.start()
   }

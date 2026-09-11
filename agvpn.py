@@ -9,6 +9,7 @@
     python3 agvpn.py logout
     python3 agvpn.py exclusions show | mode <general|selective> | add <domain> | remove <domain>
     python3 agvpn.py home
+    python3 agvpn.py home cached          # cached location only; no CLI call, no network, any VPN state
     python3 agvpn.py home forget          # delete the cached location; no CLI call, no network
     python3 agvpn.py config show | set <key> <value>
     python3 agvpn.py config set socksPassword -   # the password is one line on stdin
@@ -883,7 +884,10 @@ def read_private_json(path):
     """The JSON object in `path`, or None unless it is this user's regular
     file. O_NOFOLLOW: a symlink planted as home.json is not read through;
     O_NONBLOCK: a FIFO planted there can't hang the helper (regular files
-    ignore the flag)."""
+    ignore the flag). A file that passes those checks but is wider than 0600
+    (existing installs can have a 0644 home.json from before the privacy fix
+    — it only got narrowed on the next fetch) is tightened right here, via
+    the same fd, so a read alone fixes it instead of waiting on a write."""
     try:
         fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC)
     except OSError:
@@ -893,6 +897,8 @@ def read_private_json(path):
             st = os.fstat(f.fileno())
             if not (stat.S_ISREG(st.st_mode) and _owned_by_me(st)):
                 return None
+            if stat.S_IMODE(st.st_mode) & ~0o600:
+                os.fchmod(f.fileno(), 0o600)
             value = json.loads(f.read().decode("utf-8"))
         except (OSError, ValueError):
             return None
@@ -992,6 +998,8 @@ def home_lookup(state, cache_file, curl):
 def verb_home(args):
     if args and args[0] == "forget":
         return verb_home_forget()
+    if args and args[0] == "cached":
+        return verb_home_cached()
     rc, out, err = run_cli(["status"])
     state = parse_status(out)["state"]
     curl = os.environ.get("AEGIS_CURL") or shutil.which("curl") or "curl"
@@ -999,6 +1007,28 @@ def verb_home(args):
     if home is None and state == "disconnected":
         raise CliError("network", "geolocation lookup failed")
     return {"ok": True, "home": home, "stale": stale}
+
+
+def verb_home_cached():
+    """The cached location, straight off disk: no adguardvpn-cli call, no
+    curl, and no dependence on VPN state at all — reading the cache reveals
+    nothing (it never fetches), only a real lookup (plain `home`, itself
+    gated by Service.qml's Model.mayLocateHome) does that. Lets the panel
+    show a last-known location immediately, e.g. right after a shell restart
+    while still connected, instead of waiting for the tunnel to go down
+    before `home` is even allowed to run.
+
+    `stale` is always True: this never proves the cache is still fresh (that
+    needs the current default gateway, which `home` alone checks), so
+    Service.applyHome keeps trying a real lookup once one is allowed."""
+    cache_file = cache_path()
+    try:
+        private_dir(cache_file.parent)
+        usable = True
+    except (UntrustedPath, OSError):
+        usable = False
+    cached = read_private_json(cache_file) if usable else None
+    return {"ok": True, "home": _home_public(cached) if cached else None, "stale": True}
 
 
 def verb_home_forget():

@@ -533,6 +533,24 @@ test("mayLocateHome only allows a lookup once the tunnel is down by choice", () 
   assert.equal(Model.mayLocateHome(undefined), false)
 })
 
+test("shouldApplyHomeJob never lets a cache-only miss erase a home a real lookup already set", () => {
+  const set = { lat: 1, lon: 2, city: "X", iso: "XX" }
+  // The dangerous case this exists for: a cache-only answer (fromCache
+  // true) with nothing on disk (incomingHome null) must not blow away a
+  // home a real lookup already set.
+  assert.equal(Model.shouldApplyHomeJob(set, true, null), false)
+  // Nothing to protect when there is no in-memory home yet.
+  assert.equal(Model.shouldApplyHomeJob(null, true, null), true)
+  // A cache hit is always applied, home already set or not — it can only
+  // ever repeat what a lookup itself would have written to disk.
+  assert.equal(Model.shouldApplyHomeJob(set, true, { lat: 3, lon: 4, city: "Y", iso: "YY" }), true)
+  assert.equal(Model.shouldApplyHomeJob(null, true, { lat: 3, lon: 4, city: "Y", iso: "YY" }), true)
+  // A real lookup's own answer is always applied, null included — it is the
+  // freshest information there is, unaffected by this guard.
+  assert.equal(Model.shouldApplyHomeJob(set, false, null), true)
+  assert.equal(Model.shouldApplyHomeJob(null, false, null), true)
+})
+
 test("updateCheckDue is true when never checked or older than the interval", () => {
   const now = 1700000000 * 1000
   assert.equal(Model.updateCheckDue(0, now), true)

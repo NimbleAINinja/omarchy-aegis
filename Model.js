@@ -611,6 +611,27 @@ function mayLocateHome(ctx) {
   return c.state === "disconnected"
 }
 
+// Whether Service.applyHome should apply a `home`/`home cached` job's answer
+// to the in-memory home, or leave it alone.
+//
+// The cache-only job (agvpn.py's `home cached`, run at startup and when the
+// panel opens on a still-null home — see Service.qml's refreshHomeCache) and
+// the real lookup (`home`, gated behind Model.mayLocateHome) share the same
+// applyHome path but answer at different, unordered times: the cache job
+// merely fills the gap before any lookup has run, so its answer must never
+// erase a value a real lookup already set. That only matters for a cache
+// *miss* (incomingHome null) — a cache *hit* only ever repeats what's on
+// disk, which after any lookup is exactly what that lookup just wrote, so
+// applying it again is harmless. A real lookup's answer (fromCache false) is
+// always applied, null included, exactly as before this cache-only job
+// existed: it is the freshest information there is.
+//   current: the in-memory home right now (object or null)
+//   fromCache: whether this job was `home cached` rather than `home`
+//   incomingHome: the job's obj.home (already null-checked by the caller)
+function shouldApplyHomeJob(current, fromCache, incomingHome) {
+  return !(fromCache === true && incomingHome === null && current !== null)
+}
+
 function updateCheckDue(lastCheckEpochSec, nowMs, intervalSec) {
   var last = num(lastCheckEpochSec, 0)
   if (last <= 0) return true
@@ -1017,6 +1038,7 @@ if (typeof module !== "undefined") {
     errorResolved: errorResolved,
     shouldAutoConnect: shouldAutoConnect,
     mayLocateHome: mayLocateHome,
+    shouldApplyHomeJob: shouldApplyHomeJob,
     updateCheckDue: updateCheckDue,
     protocolLabel: protocolLabel,
     dnsLabel: dnsLabel,
