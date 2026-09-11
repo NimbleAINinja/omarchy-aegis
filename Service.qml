@@ -66,6 +66,7 @@ Item {
   readonly property bool killOnDisconnect: String(setting("killOnDisconnect", false)) === "true"
   readonly property var killApps: Model.parseAppList(setting("killApps", ""))
   readonly property real lastUpdateCheck: Number(setting("lastUpdateCheck", 0)) || 0
+  readonly property bool locateHome: String(setting("locateHome", true)) === "true"
 
   property var procs: []
   readonly property var pausedExclusions: Model.normalizePaused(setting("pausedExclusions", null))
@@ -82,6 +83,19 @@ Item {
   // shell starts. A drop later in the session notifies (and runs the kill
   // switch) but never reconnects behind the user's back.
   property bool startupSettled: false
+  // True from the moment maybeAutoConnect() actually starts a reconnect
+  // until that connect job finishes or fails (jobProcess.onExited clears
+  // it). While true, Model.mayLocateHome refuses the home lookup: the VPN
+  // is about to come back up, so there is nothing to reveal a location for
+  // yet, and firing the lookup here is exactly the login-on-cafe-wifi leak.
+  property bool autoConnectPending: false
+  // True once a snapshot reports the tunnel dropped unexpectedly (Model.
+  // settleStatus's "drop"), until the user takes some explicit action
+  // (connect, disconnect, toggle — see connectTo/down/logout). Model.
+  // mayLocateHome refuses lookups the whole time: right after a drop is
+  // exactly when the user expects to be protected, and without this a drop
+  // would just defer one snapshot before the next 30s poll looked up anyway.
+  property bool dropHold: false
 
   signal actionFinished(string verb, bool ok)
   // Ask the panel (which owns the shell.json entry) to persist inline settings.
@@ -110,11 +124,34 @@ Item {
   function refreshExclusions() { enqueue(["exclusions", "show"], "exclusions", true) }
   function refreshHome() { enqueue(["home"], "home", true) }
 
+  // The only place that decides whether an ipinfo.io lookup may actually
+  // run (Model.mayLocateHome) — every call site that used to call
+  // refreshHome() directly goes through this instead.
+  function maybeRefreshHome() {
+    if (Model.mayLocateHome({ locateHome: locateHome, state: vpnState, startupSettled: startupSettled,
+      autoConnectPending: autoConnectPending, dropHold: dropHold })) refreshHome()
+  }
+
   function refreshAll() {
     refresh()
     refreshLocations()
     if (!accountLoaded) refreshAccount()
-    refreshHome()
+    maybeRefreshHome()
+  }
+
+  // Flips the locateHome setting. Turning it off deletes the cached real
+  // location right away (no CLI call, no network — agvpn.py's `home forget`
+  // just unlinks home.json) and forgets it in memory too, so the map falls
+  // straight back to homePoint's time-zone estimate instead of showing a
+  // location that can no longer be refreshed.
+  function setLocateHome(on) {
+    var v = on === true
+    persist({ locateHome: v })
+    if (!v) {
+      home = null
+      homeStale = true
+      enqueue(["home", "forget"], "home", false, true)
+    }
   }
 
   function refreshProcs() { enqueue(["procs"], "procs", true) }
@@ -190,6 +227,10 @@ Item {
     _desired = 1
     pendingLocation = String(city || target)
     clearError()
+    // The user (or startup auto-connect) is acting on the tunnel again — a
+    // home lookup held since an earlier unexpected drop no longer needs to
+    // wait; see dropHold / Model.mayLocateHome.
+    dropHold = false
     enqueue(["connect", target], "connect")
   }
 
@@ -198,6 +239,7 @@ Item {
     _desired = 0
     pendingLocation = ""
     clearError()
+    dropHold = false
     if (wasConnected) persist({ wasConnected: false })
     enqueue(["disconnect"], "disconnect")
   }
@@ -231,6 +273,7 @@ Item {
 
   function logout() {
     if (wasConnected) persist({ wasConnected: false })
+    dropHold = false
     enqueue(["logout"], "logout")
   }
 
@@ -243,6 +286,10 @@ Item {
     autoConnectAttempted = true
     if (lastLocation === "") return
     var last = Model.findLocation(locations, lastLocation)
+    // From here a connect is actually about to run — hold any home lookup
+    // until it finishes or fails (see autoConnectPending, cleared in
+    // jobProcess.onExited).
+    autoConnectPending = true
     connectTo(last ? last.cliName : lastLocation, lastLocation)
   }
 
@@ -405,7 +452,11 @@ Item {
       accountLoaded = true
     }
     if (snap.state !== "connected") rates = { down: 0, up: 0 }
-    if (snap.state === "disconnected" && homeStale) refreshHome()
+    // An unexpected drop holds off any home lookup until the user acts
+    // again (dropHold, cleared by connectTo/down/logout) — right after a
+    // drop is exactly when the user expects to be protected, not queried.
+    if (step.loss === "drop") dropHold = true
+    if (homeStale) maybeRefreshHome()
     // A background/routine status refresh clears only errors it is entitled
     // to supersede; an action's own error otherwise stands until the user
     // starts a new action (see connectTo/down/setConfig/exclusion mutators)
@@ -418,6 +469,11 @@ Item {
     if (!startupSettled && snap.state !== "connecting") {
       startupSettled = true
       maybeAutoConnect(snap.state)
+      // Now it's clear whether the VPN will stay off (auto-connect off,
+      // not due, failed already, or no last location) or is about to come
+      // back up (autoConnectPending) — either way Model.mayLocateHome knows
+      // what to do with it.
+      maybeRefreshHome()
     }
   }
 
@@ -585,7 +641,11 @@ Item {
   onActionStatusChanged: if (actionStatus !== "") actionStatusTimer.restart()
   Component.onCompleted: {
     tzProcess.running = true
-    refreshHome()
+    // A no-op here (startupSettled is still false) — kept so every
+    // refreshHome() call site is gated the same way; the real first lookup
+    // fires from applySnapshot once startup settles and auto-connect's fate
+    // is known. See Model.mayLocateHome.
+    maybeRefreshHome()
     refreshLocations()
     if (Model.updateCheckDue(lastUpdateCheck, Date.now())) updateCheckDelay.start()
   }
@@ -648,6 +708,11 @@ Item {
       jobProcess.output = ""
       var ok = obj.ok !== false && exitCode === 0
       var isAction = root._refreshVerbs.indexOf(verb) === -1
+      // Whatever connect job this was (auto-connect's own or a manual one
+      // queued behind it — the queue never runs two at once), it has now
+      // finished or failed either way: a home lookup held for
+      // autoConnectPending is free to run again on the next snapshot.
+      if (verb === "connect") root.autoConnectPending = false
       if (!ok) {
         // Captured before the pendingLocation reset below, so a later
         // snapshot can tell whether connect/disconnect got there anyway.

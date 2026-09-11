@@ -502,6 +502,27 @@ test("shouldAutoConnect requires every precondition", () => {
   assert.equal(Model.shouldAutoConnect(null), false)
 })
 
+test("mayLocateHome only allows a lookup once the tunnel is down by choice", () => {
+  const base = { locateHome: true, state: "disconnected", startupSettled: true, autoConnectPending: false, dropHold: false }
+  assert.equal(Model.mayLocateHome(base), true)
+  // The setting itself.
+  assert.equal(Model.mayLocateHome(Object.assign({}, base, { locateHome: false })), false)
+  // Only while the tunnel is actually down.
+  assert.equal(Model.mayLocateHome(Object.assign({}, base, { state: "connected" })), false)
+  assert.equal(Model.mayLocateHome(Object.assign({}, base, { state: "connecting" })), false)
+  assert.equal(Model.mayLocateHome(Object.assign({}, base, { state: "logged_out" })), false)
+  assert.equal(Model.mayLocateHome(Object.assign({}, base, { state: "unknown" })), false)
+  // Never before the first status has settled, even if it already reads
+  // "disconnected" (the very first snapshot hasn't been judged yet).
+  assert.equal(Model.mayLocateHome(Object.assign({}, base, { startupSettled: false })), false)
+  // Never while startup auto-connect is about to reconnect.
+  assert.equal(Model.mayLocateHome(Object.assign({}, base, { autoConnectPending: true })), false)
+  // Held after an unexpected drop until the user acts again.
+  assert.equal(Model.mayLocateHome(Object.assign({}, base, { dropHold: true })), false)
+  assert.equal(Model.mayLocateHome(null), false)
+  assert.equal(Model.mayLocateHome(undefined), false)
+})
+
 test("updateCheckDue is true when never checked or older than the interval", () => {
   const now = 1700000000 * 1000
   assert.equal(Model.updateCheckDue(0, now), true)

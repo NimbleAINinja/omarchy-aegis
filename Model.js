@@ -580,6 +580,28 @@ function shouldAutoConnect(ctx) {
     && ctx.installed === true && ctx.loggedIn !== false && ctx.state === "disconnected"
 }
 
+// Whether a home-location lookup (ipinfo.io, run by agvpn.py's `home` verb)
+// may fire right now. The setting alone isn't enough: even with it on, a
+// lookup may only run once the tunnel is down by the user's own choice —
+//   - never before the first status has settled (state is still "unknown",
+//     or the very first snapshot hasn't been judged yet)
+//   - never while startup's auto-connect is about to reconnect a VPN that
+//     was on last session (Model.shouldAutoConnect said yes and that
+//     connect hasn't finished or failed yet) — the first lookup at login
+//     waits until it's clear the VPN will stay off
+//   - never after an unexpected drop, until the user takes some explicit
+//     action (connect, disconnect, toggle) — an intentional disconnect or
+//     logout is fine, the user chose the clear net that time
+//   ctx: { locateHome, state, startupSettled, autoConnectPending, dropHold }
+function mayLocateHome(ctx) {
+  var c = ctx && typeof ctx === "object" ? ctx : {}
+  if (c.locateHome !== true) return false
+  if (c.startupSettled !== true) return false
+  if (c.autoConnectPending === true) return false
+  if (c.dropHold === true) return false
+  return c.state === "disconnected"
+}
+
 function updateCheckDue(lastCheckEpochSec, nowMs, intervalSec) {
   var last = num(lastCheckEpochSec, 0)
   if (last <= 0) return true
@@ -839,6 +861,7 @@ if (typeof module !== "undefined") {
     errorProtected: errorProtected,
     errorResolved: errorResolved,
     shouldAutoConnect: shouldAutoConnect,
+    mayLocateHome: mayLocateHome,
     updateCheckDue: updateCheckDue,
     protocolLabel: protocolLabel,
     dnsLabel: dnsLabel,

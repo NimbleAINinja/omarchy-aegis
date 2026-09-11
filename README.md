@@ -108,6 +108,7 @@ Settings live inline on the widget's entry in `~/.config/omarchy/shell.json`:
 | `killApps` | `""` | comma separated process names, each killed with `pkill -x`; pick them from the suggestions of running processes |
 | `pausedExclusions` | internal | `{general: [], selective: []}` domains you paused; they are removed from the CLI list and re-added on resume |
 | `lastUpdateCheck` | internal | epoch seconds of the last `check-update`; checked again after 24 h |
+| `locateHome` | `true` | look up your location from `ipinfo.io` while the VPN is off, to place the home marker on the map; off deletes the cached location and falls back to a time-zone estimate |
 
 Connection settings (mode, protocol, post-quantum, DNS, SOCKS) are not stored
 by Aegis: they are read from and written to the CLI with `adguardvpn-cli config`.
@@ -118,12 +119,24 @@ so it never shows up in `ps` for other local users.
 ## Privacy
 
 Everything runs locally against `adguardvpn-cli`. The only outbound request the
-plugin itself makes is one lookup to `https://ipinfo.io/json`, made while the
-VPN is disconnected, to place your home marker. The result is cached in
-`~/.cache/io.github.nimbleaininja.aegis/home.json` (a 0600 file in a 0700
-directory, readable only by you) and refreshed only when your
-default gateway changes or after 24 hours. Until a lookup succeeds, the marker
-falls back to a rough position derived from your time zone.
+plugin itself makes is one lookup to `https://ipinfo.io/json`, which sends
+your public IP address (and gets back an approximate city/coordinates in
+return) to place your home marker.
+
+That lookup only ever runs while the VPN is off by your own choice: never at
+login before startup has settled and auto-connect has had its chance to
+reconnect a VPN that was on last session, and never right after the tunnel
+drops unexpectedly — a hold that lasts until you connect, disconnect, or
+toggle the VPN yourself, not just for one status check. Disconnecting or
+logging out on purpose can still look up, since that's the clear net you
+chose. The result is cached in `~/.cache/io.github.nimbleaininja.aegis/home.json`
+(a 0600 file in a 0700 directory, readable only by you) and refreshed only
+when your default gateway changes or after 24 hours.
+
+Turn it off with the "Locate home" setting: no lookup ever runs, the cached
+location is deleted immediately, and the marker falls back to a rough
+position derived from your time zone (also the fallback until the first
+lookup succeeds, with the setting on).
 
 ## Development
 
@@ -135,7 +148,9 @@ omarchy plugin validate .
 `agvpn.py` wraps the CLI and prints one JSON document per call (`snapshot`,
 `locations`, `connect <name>`, `disconnect`, `account`, `logout`,
 `exclusions …`, `config show|set <key> <value>`, `update-check`, `kill <name…>`,
-`home`). The SOCKS password is the one exception to `set <key> <value>`:
+`home`, `home forget`). `home forget` just deletes the cached home.json — no
+CLI call, no network — for turning the "Locate home" setting off. The SOCKS
+password is the one exception to `set <key> <value>`:
 `config set socksPassword -` reads it as a single line on stdin, and a value
 passed on the command line is refused. `Model.js` and `Link.js` are pure ES5 shared by QML
 and the node tests. Set `AEGIS_CLI` to point the helper at a fake CLI.

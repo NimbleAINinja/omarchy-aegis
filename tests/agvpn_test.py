@@ -473,6 +473,34 @@ class Verbs(unittest.TestCase):
         self.assertFalse(j["ok"])
         self.assertEqual(j["code"], "network")
 
+    def test_home_forget_deletes_an_existing_cache(self):
+        with tempfile.TemporaryDirectory() as d:
+            cdir = Path(d, "io.github.nimbleaininja.aegis")
+            cdir.mkdir()
+            (cdir / "home.json").write_text(json.dumps({"lat": 1.5, "lon": 2.5, "city": "X", "iso": "XX",
+                                                        "gateway": "gw", "fetchedAt": 0}))
+            rc, out, _ = run_verb("home", "forget", env_extra={"XDG_CACHE_HOME": d, "AEGIS_CURL": "/bin/false"})
+            remaining = list(cdir.iterdir())
+        j = self.check_json(out)
+        self.assertTrue(j["ok"], j)
+        self.assertEqual(remaining, [])
+
+    def test_home_forget_is_ok_with_nothing_to_delete(self):
+        with tempfile.TemporaryDirectory() as d:
+            rc, out, _ = run_verb("home", "forget", env_extra={"XDG_CACHE_HOME": d, "AEGIS_CURL": "/bin/false"})
+        j = self.check_json(out)
+        self.assertTrue(j["ok"], j)
+
+    def test_home_forget_never_calls_the_cli(self):
+        # AEGIS_CLI points at nothing runnable: forget must not shell out to
+        # it (no `status` call — deleting a file needs neither the CLI nor
+        # the network).
+        with tempfile.TemporaryDirectory() as d:
+            rc, out, _ = run_verb("home", "forget", cli="/nonexistent/adguardvpn-cli",
+                                   env_extra={"XDG_CACHE_HOME": d, "AEGIS_CURL": "/bin/false"})
+        j = self.check_json(out)
+        self.assertTrue(j["ok"], j)
+
 
 class ParseConfig(unittest.TestCase):
     def test_defaults_resolve(self):
@@ -1298,6 +1326,20 @@ class PrivateState(unittest.TestCase):
         self.assertEqual(j["home"]["city"], "Haifa", "the lookup's answer stands without a cache")
         self.assertEqual([p.name for p in self.victim.iterdir()], ["home.json"])
         self.assertEqual(planted.read_text(), before)
+
+    def test_forget_removes_a_symlinked_home_json_without_touching_its_target(self):
+        self.app_dir.mkdir(parents=True)
+        elsewhere = self.victim / "elsewhere.json"
+        elsewhere.write_text(self.planted("Planted"))
+        before = elsewhere.read_text()
+        home = self.app_dir / "home.json"
+        home.symlink_to(elsewhere)
+        rc, out, _ = run_verb("home", "forget", env_extra=self.env)
+        j = json.loads(out)
+        self.assertTrue(j["ok"], j)
+        self.assertFalse(home.exists(), "the link itself is gone")
+        self.assertTrue(elsewhere.exists(), "unlink never follows the link onto its target")
+        self.assertEqual(elsewhere.read_text(), before)
 
     def test_a_failed_cache_write_removes_its_temp_file(self):
         d = self.root / "d"

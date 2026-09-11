@@ -33,7 +33,8 @@
       "autoConnect": true,
       "killSwitch": false,
       "killOnDisconnect": false,
-      "killApps": ""
+      "killApps": "",
+      "locateHome": true
     },
     "schema": [
       {
@@ -79,6 +80,12 @@
         "type": "string",
         "label": "Apps to close (comma separated process names)",
         "defaultValue": ""
+      },
+      {
+        "key": "locateHome",
+        "type": "boolean",
+        "label": "Locate home: ask ipinfo.io where you are while the VPN is off",
+        "defaultValue": true
       }
     ]
   }

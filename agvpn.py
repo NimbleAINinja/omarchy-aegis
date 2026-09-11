@@ -9,6 +9,7 @@
     python3 agvpn.py logout
     python3 agvpn.py exclusions show | mode <general|selective> | add <domain> | remove <domain>
     python3 agvpn.py home
+    python3 agvpn.py home forget          # delete the cached location; no CLI call, no network
     python3 agvpn.py config show | set <key> <value>
     python3 agvpn.py config set socksPassword -   # the password is one line on stdin
     python3 agvpn.py update-check
@@ -981,7 +982,9 @@ def home_lookup(state, cache_file, curl):
     return _home_public(record), False, True
 
 
-def verb_home():
+def verb_home(args):
+    if args and args[0] == "forget":
+        return verb_home_forget()
     rc, out, err = run_cli(["status"])
     state = parse_status(out)["state"]
     curl = os.environ.get("AEGIS_CURL") or shutil.which("curl") or "curl"
@@ -989,6 +992,22 @@ def verb_home():
     if home is None and state == "disconnected":
         raise CliError("network", "geolocation lookup failed")
     return {"ok": True, "home": home, "stale": stale}
+
+
+def verb_home_forget():
+    """Delete the cached home location: no CLI call, no network. ok: True
+    whether or not a file was there to delete — there's nothing left to
+    forget either way. `os.unlink` acts on the directory entry itself, never
+    the file it points to, so a symlink planted as home.json is removed as
+    a link and its target is left alone, the same guarantee
+    write_private_json's replace-by-rename gives a real fetch."""
+    try:
+        os.unlink(cache_path())
+    except FileNotFoundError:
+        pass
+    except OSError as e:
+        raise CliError("unknown", "could not delete cached location: %s" % (e.strerror or e))
+    return {"ok": True}
 
 
 # ----------------------------------------------------------------- config --
@@ -1284,7 +1303,7 @@ def dispatch(argv):
     if verb == "exclusions":
         return verb_exclusions(rest)
     if verb == "home":
-        return verb_home()
+        return verb_home(rest)
     if verb == "config":
         return verb_config(rest)
     if verb == "update-check":

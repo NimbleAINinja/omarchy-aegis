@@ -16,7 +16,7 @@ Column {
   readonly property bool socks: config.mode === "socks"
   // Keyboard cursor targets, top to bottom. Text fields are reached by mouse
   // or Tab; the cursor walks the toggles and chip rows.
-  readonly property var targets: ["mode", "protocol", "postQuantum", "changeSystemDns", "autoConnect", "update"]
+  readonly property var targets: ["mode", "protocol", "postQuantum", "changeSystemDns", "autoConnect", "locateHome", "update"]
   readonly property int count: targets.length
   readonly property bool editing: dnsField.activeFocus || hostField.activeFocus || userField.activeFocus
     || passField.activeFocus || portField.activeFocus
@@ -36,6 +36,7 @@ Column {
     else if (name === "postQuantum") vpn.setConfig("postQuantum", !config.postQuantum)
     else if (name === "changeSystemDns") vpn.setConfig("changeSystemDns", !config.changeSystemDns)
     else if (name === "autoConnect") panel.persistSettings({ autoConnect: !vpn.autoConnect })
+    else if (name === "locateHome") vpn.setLocateHome(!vpn.locateHome)
     else if (name === "update") { if (!vpn.update.upToDate && vpn.update.latest) vpn.runUpdate(); else vpn.checkUpdate(false) }
   }
 
@@ -202,6 +203,18 @@ Column {
     fontFamily: panel.fontFamily
     onHovered: function(on) { if (on) root.setCursor("autoConnect") }
     onClicked: panel.persistSettings({ autoConnect: !vpn.autoConnect })
+  }
+
+  Toggle {
+    width: parent.width
+    label: "Locate home"
+    description: "Ask ipinfo.io where you are while the VPN is off, to place you on the map"
+    checked: vpn ? vpn.locateHome : true
+    hasCursor: root.hasCursor("locateHome")
+    foreground: panel.foreground
+    fontFamily: panel.fontFamily
+    onHovered: function(on) { if (on) root.setCursor("locateHome") }
+    onClicked: vpn.setLocateHome(!vpn.locateHome)
   }
 
   CursorSurface {
