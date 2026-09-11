@@ -698,7 +698,12 @@ Item {
   // --- timers -------------------------------------------------------------------
   Timer {
     id: refreshTimer
-    interval: (root.panelOpen ? root.refreshIntervalSec : root.refreshIntervalSec * 2) * 1000
+    // Changing a Timer's interval restarts its countdown, so every input here
+    // is deliberately coarse: a panel open/close, a connect or drop, the
+    // tunnel.log watch arming, or a bar-mode change — never anything that
+    // moves on its own. See Model.pollIntervalMs for what each one means.
+    interval: Model.pollIntervalMs({ intervalSec: root.refreshIntervalSec, panelOpen: root.panelOpen,
+      connected: root.connected, watchingTunnelLog: root.watchingTunnelLog, barMode: root.barMode })
     running: true
     repeat: true
     triggeredOnStart: true

@@ -108,7 +108,7 @@ Settings live inline on the widget's entry in `~/.config/omarchy/shell.json`:
 | Key | Default | Meaning |
 |---|---|---|
 | `barMode` | `icon` | `icon`, `iso` (country code), or `rate` (live down/up). Vertical bars always show the icon |
-| `refreshIntervalSec` | `30` | status poll while the panel is open (doubled while closed); while connected, a state change in the CLI's `tunnel.log` also triggers a check within seconds |
+| `refreshIntervalSec` | `30` | status poll while the panel is open (doubled while closed); while connected, a state change in the CLI's `tunnel.log` also triggers a check within seconds, so with the panel closed the poll itself backs off to at least 3 minutes (except in `rate` bar mode, which keeps live counters on the bar) |
 | `favorites` | `[]` | `ISO|City` keys, managed with `f` or the star |
 | `lastLocation` | `""` | what the switch reconnects to |
 | `autoConnect` | `true` | reconnect at login when `wasConnected` is still set |
@@ -144,7 +144,8 @@ seconds, longer if another CLI call is still running. Until then the apps
 can keep sending over your normal connection,
 and nothing stops an app you start again afterwards. If the VPN daemon dies
 without logging anything, the drop is only caught at the next status poll
-(`refreshIntervalSec`, doubled while the panel is closed). A drop while the
+(`refreshIntervalSec` while the panel is open, up to 3 minutes while it is
+closed and the log watch is carrying the load). A drop while the
 shell isn't running, or before you log in, isn't caught at all.
 
 ## Privacy

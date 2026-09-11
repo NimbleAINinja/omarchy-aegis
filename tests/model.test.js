@@ -901,6 +901,32 @@ test("queueFront puts one snapshot first without reordering anything else", () =
   assert.deepEqual(Model.queueFront([write], { verb: "config" }), [{ verb: "config" }, write])
 })
 
+test("pollIntervalMs slows the closed-panel poll only where the tunnel.log watch covers it", () => {
+  const ctx = extra => Object.assign({ intervalSec: 30, panelOpen: false, connected: true,
+    watchingTunnelLog: true, barMode: "icon" }, extra)
+  // Open panel: exactly the configured cadence, whatever else is true.
+  assert.equal(Model.pollIntervalMs(ctx({ panelOpen: true })), 30000)
+  assert.equal(Model.pollIntervalMs(ctx({ panelOpen: true, connected: false })), 30000)
+  // Connected, closed, watch armed: the slow fallback cadence.
+  assert.equal(Model.pollIntervalMs(ctx()), Model.POLL_SLOW_MIN_MS)
+  assert.equal(Model.POLL_SLOW_MIN_MS, 180000)
+  // Disconnected keeps the old closed cadence — polling is the only way an
+  // external connect is ever noticed.
+  assert.equal(Model.pollIntervalMs(ctx({ connected: false })), 60000)
+  // So does a watch that could not be armed (no log path, not installed).
+  assert.equal(Model.pollIntervalMs(ctx({ watchingTunnelLog: false })), 60000)
+  // ...and "rate" mode, which keeps live counters on the bar while closed.
+  assert.equal(Model.pollIntervalMs(ctx({ barMode: "rate" })), 60000)
+  assert.equal(Model.pollIntervalMs(ctx({ barMode: "iso" })), Model.POLL_SLOW_MIN_MS)
+  // A configured interval whose doubled value already exceeds the floor is
+  // never sped up by it.
+  assert.equal(Model.pollIntervalMs(ctx({ intervalSec: 300 })), 600000)
+  assert.equal(Model.pollIntervalMs(ctx({ intervalSec: 300, connected: false })), 600000)
+  // Junk falls back to the 30 s default rather than to zero.
+  assert.equal(Model.pollIntervalMs({ panelOpen: true }), 30000)
+  assert.equal(Model.pollIntervalMs(null), 60000)
+})
+
 test("queueAppend folds repeated connects into the last one and leaves everything else alone", () => {
   const tokyo = { verb: "connect", args: ["connect", "Tokyo"] }
   const paris = { verb: "connect", args: ["connect", "Paris"] }

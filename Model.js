@@ -734,6 +734,36 @@ function lossBase(prevBase, state) {
   return prevBase === undefined || prevBase === null || String(prevBase) === "" ? "unknown" : String(prevBase)
 }
 
+// The slowest the status poll ever goes while the tunnel is up: see
+// pollIntervalMs. Three minutes is the worst case for noticing a VPN daemon
+// that died without writing anything to tunnel.log — the one failure the
+// watch cannot see — where the poll used to be the only detector at all.
+var POLL_SLOW_MIN_MS = 180000
+
+// Service's refreshTimer interval.
+//   ctx: { intervalSec, panelOpen, connected, watchingTunnelLog, barMode }
+// Panel open: the configured cadence, since what the poll fetches (uptime,
+// ping, endpoint) is on screen. Panel closed: twice that, as before — while
+// the tunnel is down, polling is the only way an external connect is ever
+// noticed, so that cadence stands.
+//
+// While the tunnel is up AND the tunnel.log watch is armed, though, the
+// daemon tells us about every state change within seconds (scheduleLogScan →
+// applyTunnelLog) and the closed panel shows nothing the poll would update,
+// so it drops to a fallback for a daemon that dies without logging anything:
+// at least POLL_SLOW_MIN_MS between looks, rather than ~1440 helper + CLI
+// spawns a day for an answer nobody reads. Bar mode "rate" is the exception —
+// it keeps live counters on the bar with the panel closed.
+function pollIntervalMs(ctx) {
+  var c = ctx && typeof ctx === "object" ? ctx : {}
+  var base = num(c.intervalSec, 30) * 1000
+  if (c.panelOpen === true) return base
+  var closed = base * 2
+  if (c.connected === true && c.watchingTunnelLog === true && str(c.barMode) !== "rate")
+    return Math.max(closed, POLL_SLOW_MIN_MS)
+  return closed
+}
+
 // tunnel.log is written by the root VPN daemon (the user can read it) the
 // moment the tunnel changes state — long before the next status poll. Same
 // lookup as agvpn.py data_dir(): $AEGIS_DATA_DIR, else
@@ -1112,6 +1142,8 @@ if (typeof module !== "undefined") {
     describeDisconnect: describeDisconnect,
     lossResponse: lossResponse,
     lossBase: lossBase,
+    POLL_SLOW_MIN_MS: POLL_SLOW_MIN_MS,
+    pollIntervalMs: pollIntervalMs,
     tunnelLogPath: tunnelLogPath,
     TUNNEL_TAIL_BYTES: TUNNEL_TAIL_BYTES,
     TUNNEL_SCAN_DELAY_MS: TUNNEL_SCAN_DELAY_MS,
