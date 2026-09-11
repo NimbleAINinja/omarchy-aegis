@@ -331,6 +331,8 @@ Item {
   onLatMaxChanged: repaintAll()
   onShowGridChanged: baseCanvas.requestPaint()
   onGridColorChanged: baseCanvas.requestPaint()
+  onDotFillChanged: baseCanvas.requestPaint()
+  onDotColorChanged: baseCanvas.requestPaint()
   onHomeChanged: dotCanvas.requestPaint()
   onExitChanged: dotCanvas.requestPaint()
   onHoverChanged: dotCanvas.requestPaint()
@@ -343,8 +345,6 @@ Item {
   }
   onPhaseChanged: dotCanvas.requestPaint()
   onDrawProgressChanged: dotCanvas.requestPaint()
-  onDotFillChanged: dotCanvas.requestPaint()
-  onDotColorChanged: dotCanvas.requestPaint()
   onMarkerColorChanged: dotCanvas.requestPaint()
   onAccentChanged: dotCanvas.requestPaint()
   onTextColorChanged: dotCanvas.requestPaint()
@@ -363,6 +363,9 @@ Item {
     }
   }
 
+  // Static layer: graticule and the ~1800 land dots. Neither depends on the
+  // link, the pointer or the animation phase, so this repaints only when the
+  // geometry, the grid or one of the two dot colours changes.
   Canvas {
     id: baseCanvas
     anchors.fill: parent
@@ -373,10 +376,13 @@ Item {
       if (!ctx) return
       ctx.reset()
       ctx.clearRect(0, 0, width, height)
+      root.rebuildCells()
       root.paintGrid(ctx)
+      root.paintDots(ctx)
     }
   }
 
+  // Dynamic layer: the link with its beads, and the markers with their labels.
   Canvas {
     id: dotCanvas
     anchors.fill: parent
@@ -387,8 +393,6 @@ Item {
       if (!ctx) return
       ctx.reset()
       ctx.clearRect(0, 0, width, height)
-      root.rebuildCells()
-      root.paintDots(ctx)
       root.paintLink(ctx)
       root.paintMarkers(ctx)
     }
