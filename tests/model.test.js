@@ -284,6 +284,50 @@ test("countryIndex answers exactly what the linear scan did", () => {
   assert.equal(Model.heroMeta(snap, 0, iso => Model.countryFrom(map, iso)), "United States")
 })
 
+test("Panel.qml builds the popup content on first open and never throws it away", () => {
+  const fs = require("node:fs"), path = require("node:path")
+  const panel = fs.readFileSync(path.join(__dirname, "..", "Panel.qml"), "utf8")
+  // The focus target and the Flickable stay eager — the panel takes keyboard
+  // focus before anything inside it exists — and only the column is deferred.
+  assert.match(panel, /focusTarget: keyCatcher/)
+  assert.match(panel, /PanelKeyCatcher \{\s*\n\s*id: keyCatcher/)
+  assert.match(panel, /Flickable \{\s*\n\s*id: panelFlick/)
+  assert.match(panel, /Loader \{\s*\n\s*id: contentLoader\s*\n\s*width: panelFlick\.width\s*\n\s*active: root\.popupReady\s*\n\s*sourceComponent: popupContent\s*\n\s*\}/)
+  // Latched inside the open branch, never cleared.
+  assert.match(panel, /property bool popupReady: false/)
+  const opened = /onOpenedChanged:\s*\{[\s\S]*?\n  \}/.exec(panel)
+  assert.ok(opened, "onOpenedChanged present")
+  assert.match(opened[0], /if \(opened\) \{/)
+  assert.match(opened[0], /\n\s*popupReady = true\n/)
+  assert.doesNotMatch(panel, /popupReady = false/)
+  // Card and Flickable size themselves to the loaded column.
+  assert.match(panel, /readonly property real popupContentHeight: contentLoader\.item \? contentLoader\.item\.implicitHeight : 0/)
+  assert.match(panel, /contentHeight: panel\.fittedContentHeight\(root\.popupContentHeight, Style\.space\(760\)\)/)
+  assert.match(panel, /contentHeight: root\.popupContentHeight/)
+  assert.doesNotMatch(panel, /column\.implicitHeight/)
+  // Everything that reaches into the content goes through one null-safe
+  // property, so the bar icon and every IPC verb work unopened.
+  assert.match(panel, /readonly property var viewItem: contentLoader\.item \? contentLoader\.item\.viewItem : null/)
+  assert.match(panel, /readonly property var viewItem: viewLoader\.item/)
+  // The view Loader's id only exists inside the deferred Component, so the
+  // alias is the one and only place that may name it.
+  assert.equal((panel.match(/viewLoader\.item/g) || []).length, 1)
+  // Nothing calls into the view without checking it is there first.
+  assert.ok((panel.match(/root\.viewItem/g) || []).length >= 12)
+  for (const guarded of [
+    /listCount: root\.viewItem \? root\.viewItem\.count : 0/,
+    /root\.viewItem && typeof root\.viewItem\.moveHorizontal === "function"/,
+    /root\.viewItem && typeof root\.viewItem\.ensureVisible === "function"/,
+    /focusSection === "list" && root\.viewItem\) root\.viewItem\.activate/,
+    /root\.viewItem && typeof root\.viewItem\.pauseAt === "function"/,
+    /root\.viewItem && typeof root\.viewItem\.favoriteAt === "function"/,
+    /root\.viewItem && typeof root\.viewItem\.focusSearch === "function"/,
+    /root\.viewItem && typeof root\.viewItem\.removeAt === "function"/,
+    /blocked: root\.viewItem \? root\.viewItem\.editing === true : false/,
+    /editing: root\.viewItem \? root\.viewItem\.editing : null/
+  ]) assert.match(panel, guarded)
+})
+
 test("Panel.qml looks a country up in a map, not by walking the location list", () => {
   const fs = require("node:fs"), path = require("node:path")
   const panel = fs.readFileSync(path.join(__dirname, "..", "Panel.qml"), "utf8")

@@ -110,6 +110,7 @@ Panel {
     return "Off"
   }
   readonly property string statusLine: vpn.actionStatus !== "" ? vpn.actionStatus : vpn.lastError
+  readonly property color statusColor: vpn.lastError !== "" && vpn.actionStatus === "" ? urgent : dim
   readonly property color heroIconColor: vpn.vpnState === "logged_out" || !vpn.installed ? urgent : (vpn.active ? glow : dim)
   readonly property string barGlyph: "󰒘"
   readonly property string barText: verticalBar ? "" : Model.barLabel(barMode, snapForMeta, vpn.rates)
@@ -136,7 +137,7 @@ Panel {
   }
 
   // --- cursor ----------------------------------------------------------------------
-  readonly property int listCount: viewLoader.item ? viewLoader.item.count : 0
+  readonly property int listCount: root.viewItem ? root.viewItem.count : 0
 
   function ensureCursor() {
     if (focusSection === "list" && listCount === 0) focusSection = "header"
@@ -160,17 +161,17 @@ Panel {
       }
     } else if (dx !== 0) {
       if (focusSection === "footer") footerIndex = Math.max(0, Math.min(5, footerIndex + dx))
-      else if (viewLoader.item && typeof viewLoader.item.moveHorizontal === "function") viewLoader.item.moveHorizontal(dx)
+      else if (root.viewItem && typeof root.viewItem.moveHorizontal === "function") root.viewItem.moveHorizontal(dx)
     }
     ensureCursor()
-    if (focusSection === "list" && viewLoader.item && typeof viewLoader.item.ensureVisible === "function")
-      viewLoader.item.ensureVisible(cursorIndex)
+    if (focusSection === "list" && root.viewItem && typeof root.viewItem.ensureVisible === "function")
+      root.viewItem.ensureVisible(cursorIndex)
   }
 
   function activateCursor() {
     ensureCursor()
     if (focusSection === "header") vpn.toggleVpn()
-    else if (focusSection === "list" && viewLoader.item) viewLoader.item.activate(cursorIndex)
+    else if (focusSection === "list" && root.viewItem) root.viewItem.activate(cursorIndex)
     else if (focusSection === "footer") footerAction(footerIndex)
   }
 
@@ -206,15 +207,15 @@ Panel {
     if (k === "s") { switchView("settings"); return }
     if (t === "K") { switchView("killswitch"); return }  // plain k is cursor-up in the key catcher
     if (k === "p" && view === "exclusions" && focusSection === "list") {
-      if (viewLoader.item && typeof viewLoader.item.pauseAt === "function") viewLoader.item.pauseAt(cursorIndex)
+      if (root.viewItem && typeof root.viewItem.pauseAt === "function") root.viewItem.pauseAt(cursorIndex)
       return
     }
     if (k === "f" && view === "list" && focusSection === "list") {
-      if (viewLoader.item && typeof viewLoader.item.favoriteAt === "function") viewLoader.item.favoriteAt(cursorIndex)
+      if (root.viewItem && typeof root.viewItem.favoriteAt === "function") root.viewItem.favoriteAt(cursorIndex)
       return
     }
-    if (view === "list" && viewLoader.item && typeof viewLoader.item.focusSearch === "function") {
-      viewLoader.item.focusSearch(k === "/" ? "" : t)
+    if (view === "list" && root.viewItem && typeof root.viewItem.focusSearch === "function") {
+      root.viewItem.focusSearch(k === "/" ? "" : t)
     }
   }
 
@@ -228,6 +229,12 @@ Panel {
       nowMs = Date.now()
       if (panelFlick) panelFlick.contentY = 0
       if (vpn.vpnState === "logged_out") view = "account"
+      // Build the popup content, if this is the first open — after the resets
+      // above, so the rows and the view Loader are built once, already showing
+      // what this open should show. Loaders are synchronous, so the column
+      // exists by the time the card is measured on this same change and there
+      // is no first-open size pop.
+      popupReady = true
       Qt.callLater(function() { keyCatcher.forceActiveFocus() })
     }
   }
@@ -283,7 +290,7 @@ Panel {
     function debug(): string {
       return JSON.stringify({ view: root.view, focusSection: root.focusSection, cursorIndex: root.cursorIndex,
         cursorActive: root.cursorActive, listCount: root.listCount, footerIndex: root.footerIndex,
-        editing: viewLoader.item ? viewLoader.item.editing : null })
+        editing: root.viewItem ? root.viewItem.editing : null })
     }
     function view(name: string): string {
       var v = String(name)
@@ -355,12 +362,12 @@ Panel {
     open: root.opened
     focusTarget: keyCatcher
     contentWidth: panel.fittedContentWidth(Style.space(520))
-    contentHeight: panel.fittedContentHeight(column.implicitHeight, Style.space(760))
+    contentHeight: panel.fittedContentHeight(root.popupContentHeight, Style.space(760))
 
     PanelKeyCatcher {
       id: keyCatcher
       anchors.fill: parent
-      blocked: viewLoader.item ? viewLoader.item.editing === true : false
+      blocked: root.viewItem ? root.viewItem.editing === true : false
       onMoveRequested: function(dx, dy) {
         if (!root.cursorActive) { root.cursorActive = true; return }
         root.moveCursor(dx, dy)
@@ -368,170 +375,203 @@ Panel {
       onActivateRequested: if (root.cursorActive) root.activateCursor()
       onCloseRequested: { if (root.view !== "list") root.switchView("list"); else root.close() }
       onTabRequested: function(direction) { root.switchPanel(direction) }
-      onDeleteRequested: if (root.focusSection === "list" && viewLoader.item && typeof viewLoader.item.removeAt === "function") viewLoader.item.removeAt(root.cursorIndex)
+      onDeleteRequested: if (root.focusSection === "list" && root.viewItem && typeof root.viewItem.removeAt === "function") root.viewItem.removeAt(root.cursorIndex)
       onTextKey: function(t) { root.handleTextKey(t) }
 
       Flickable {
         id: panelFlick
         anchors.fill: parent
         contentWidth: width
-        contentHeight: column.implicitHeight
+        contentHeight: root.popupContentHeight
         clip: true
         boundsBehavior: Flickable.StopAtBounds
         flickableDirection: Flickable.VerticalFlick
         interactive: contentHeight > height
         ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
 
-        Column {
-          id: column
+        // Everything heavy lives behind this Loader: two Canvas image buffers
+        // (~378 KB each) plus the whole column of rows, built per screen at
+        // shell start-up for a popup the user may never open. It activates the
+        // moment `opened` flips — which is when KeyboardPanel starts its 140 ms
+        // fade-in, not when the fade finishes — so the card is measured with
+        // the content already there and never pops. It never deactivates: a
+        // panel opened once is one the user opens again.
+        Loader {
+          id: contentLoader
           width: panelFlick.width
-          spacing: Style.space(10)
+          active: root.popupReady
+          sourceComponent: popupContent
+        }
+      }
+    }
+  }
 
-          WorldMap {
-            id: map
-            width: parent.width
-            grid: root.landGrid
-            dotPitch: Style.space(4)
-            dotColor: Util.alpha(root.foreground, 0.22)
-            gridColor: Util.alpha(root.foreground, 0.06)
-            markerColor: root.glow
-            accent: root.glow
-            textColor: root.foreground
-            haloColor: Util.alpha(Color.popups.background, 0.92)
-            fontFamily: root.fontFamily
-            labelPixelSize: Style.font.caption
-            home: root.homePoint
-            exit: root.exitPoint
-            hover: root.hoverPoint
-            candidates: vpn.locations
-            onCandidateClicked: function(location) { root.connectTo(location) }
-            linkState: vpn.linkState
-            animate: root.opened
-          }
+  // What the card and the Flickable size themselves to. 0 before the first
+  // open, when fittedContentHeight falls back to the card's own insets and
+  // nothing is drawn anyway.
+  readonly property real popupContentHeight: contentLoader.item ? contentLoader.item.implicitHeight : 0
+  // The current view's item, or null before the popup has ever been built.
+  // This is the only way into the deferred content — the view Loader's id
+  // lives inside the Component — and every use of it above checks for null
+  // first: the bar icon and the IPC verbs (connect/down/toggleVpn/status/
+  // barMode/view) must work with the popup never opened, and `view <name>`
+  // only sets root.view, which the view Loader picks up whenever it is built.
+  readonly property var viewItem: contentLoader.item ? contentLoader.item.viewItem : null
+  // Latched on the first open and never cleared.
+  property bool popupReady: false
 
-          Item {
-            id: header
-            width: parent.width
-            implicitHeight: hero.implicitHeight
-            readonly property bool ringVisible: root.headerHasCursor
-            readonly property color iconColor: root.heroIconColor
-            readonly property string switchTip: vpn.active ? "Disconnect (t)" : (root.lastLocation !== "" ? "Connect to " + root.lastLocation + " (t)" : "Connect to fastest (t)")
-            function focusHero() { root.setHeaderCursor() }
+  Component {
+    id: popupContent
 
-            PanelHero {
-              id: hero
-              width: parent.width
-              title: root.heroTitle
-              meta: root.heroMeta
-              foreground: root.foreground
-              fontFamily: root.fontFamily
-              iconComponent: Component {
-                Text {
-                  text: "󰒘"
-                  color: header.iconColor
-                  font.family: root.fontFamily
-                  font.pixelSize: Style.font.display
-                  Behavior on color { ColorAnimation { duration: 160 } }
-                }
-              }
-              trailingControl: Component {
-                ToggleSwitch {
-                  id: powerSwitch
-                  visible: vpn.installed && vpn.vpnState !== "logged_out"
-                  checked: vpn.active
-                  busy: vpn.busy
-                  hasCursor: header.ringVisible
-                  foreground: hero.foreground
-                  onHovered: function(on) { if (on) header.focusHero() }
-                  onToggled: vpn.toggleVpn()
-                  PanelToolTip {
-                    visible: powerSwitch.containsMouse
-                    text: header.switchTip
-                    fontFamily: hero.fontFamily
-                  }
-                }
-              }
+    Column {
+      id: column
+      spacing: Style.space(10)
+      // How Panel.qml's own functions reach into the loaded content.
+      readonly property var viewItem: viewLoader.item
+
+      WorldMap {
+        id: map
+        width: parent.width
+        grid: root.landGrid
+        dotPitch: Style.space(4)
+        dotColor: Util.alpha(root.foreground, 0.22)
+        gridColor: Util.alpha(root.foreground, 0.06)
+        markerColor: root.glow
+        accent: root.glow
+        textColor: root.foreground
+        haloColor: Util.alpha(Color.popups.background, 0.92)
+        fontFamily: root.fontFamily
+        labelPixelSize: Style.font.caption
+        home: root.homePoint
+        exit: root.exitPoint
+        hover: root.hoverPoint
+        candidates: vpn.locations
+        onCandidateClicked: function(location) { root.connectTo(location) }
+        linkState: vpn.linkState
+        animate: root.opened
+      }
+
+      Item {
+        id: header
+        width: parent.width
+        implicitHeight: hero.implicitHeight
+        readonly property bool ringVisible: root.headerHasCursor
+        readonly property color iconColor: root.heroIconColor
+        readonly property string switchTip: vpn.active ? "Disconnect (t)" : (root.lastLocation !== "" ? "Connect to " + root.lastLocation + " (t)" : "Connect to fastest (t)")
+        function focusHero() { root.setHeaderCursor() }
+
+        PanelHero {
+          id: hero
+          width: parent.width
+          title: root.heroTitle
+          meta: root.heroMeta
+          foreground: root.foreground
+          fontFamily: root.fontFamily
+          iconComponent: Component {
+            Text {
+              text: "󰒘"
+              color: header.iconColor
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.display
+              Behavior on color { ColorAnimation { duration: 160 } }
             }
           }
-
-          Text {
-            textFormat: Text.PlainText
-            visible: root.statusLine !== ""
-            width: parent.width
-            text: root.statusLine
-            color: vpn.lastError !== "" && vpn.actionStatus === "" ? root.urgent : root.dim
-            font.family: root.fontFamily
-            font.pixelSize: Style.font.bodySmall
-            wrapMode: Text.WordWrap
-          }
-
-          PanelSeparator { foreground: root.foreground }
-
-          Loader {
-            id: viewLoader
-            width: parent.width
-            sourceComponent: root.view === "exclusions" ? exclusionsView
-              : (root.view === "account" ? accountView
-              : (root.view === "settings" ? settingsView
-              : (root.view === "killswitch" ? killSwitchView : locationView)))
-          }
-
-          PanelSeparator { foreground: root.foreground }
-
-          Row {
-            id: footer
-            width: parent.width
-            spacing: Style.space(6)
-
-            Repeater {
-              // A constant list of ids, in footerAction's index order. The
-              // model used to be an inline array literal whose entries read
-              // vpn.killSwitch and root.barMode, so arming the kill switch or
-              // cycling the bar mode rebuilt the array, and a Repeater given a
-              // new model destroys and recreates every delegate: all six
-              // buttons, to change one glyph on one of them. The per-button
-              // expressions now live in the delegate, where they change a
-              // property on a button that stays put.
-              model: ["exclusions", "account", "settings", "killswitch", "barmode", "refresh"]
-              PanelActionButton {
-                required property string modelData
-                required property int index
-                readonly property bool lit: modelData === "killswitch"
-                  ? (root.view === "killswitch" || vpn.killSwitch)
-                  : (modelData === "exclusions" || modelData === "account" || modelData === "settings") && root.view === modelData
-                iconText: {
-                  if (modelData === "exclusions") return "󰈲"
-                  if (modelData === "account") return "󰀄"
-                  if (modelData === "settings") return "󰒓"
-                  if (modelData === "killswitch") return vpn.killSwitch ? "󰯆" : "󰯇"
-                  if (modelData === "barmode") return root.barMode === "iso" ? "󰬴" : (root.barMode === "rate" ? "󰓅" : "󰒘")
-                  return "󰑐"
-                }
-                tooltipText: {
-                  if (modelData === "exclusions") return "Exclusions (e)"
-                  if (modelData === "account") return "Account (a)"
-                  if (modelData === "settings") return "Settings (s)"
-                  if (modelData === "killswitch") return vpn.killSwitch ? "Kill switch armed (K)" : "Kill switch (K)"
-                  if (modelData === "barmode") return "Bar shows " + root.barMode
-                  return "Refresh (r)"
-                }
-                foreground: lit ? root.glow : root.dim
-                hoverColor: root.foreground
-                fontFamily: root.fontFamily
-                hasCursor: root.cursorActive && root.focusSection === "footer" && root.footerIndex === index
-                onHovered: function(on) { if (on) root.setFooterCursor(index) }
-                onClicked: root.footerAction(index)
-                NumberAnimation on rotation {
-                  running: modelData === "refresh" && vpn.refreshing
-                  from: 0; to: 360; duration: 900; loops: Animation.Infinite
-                  onRunningChanged: if (!running) parent.rotation = 0
-                }
+          trailingControl: Component {
+            ToggleSwitch {
+              id: powerSwitch
+              visible: vpn.installed && vpn.vpnState !== "logged_out"
+              checked: vpn.active
+              busy: vpn.busy
+              hasCursor: header.ringVisible
+              foreground: hero.foreground
+              onHovered: function(on) { if (on) header.focusHero() }
+              onToggled: vpn.toggleVpn()
+              PanelToolTip {
+                visible: powerSwitch.containsMouse
+                text: header.switchTip
+                fontFamily: hero.fontFamily
               }
             }
-
-            Item { width: 1; height: 1 }
           }
         }
+      }
+
+      Text {
+        textFormat: Text.PlainText
+        visible: root.statusLine !== ""
+        width: parent.width
+        text: root.statusLine
+        color: root.statusColor
+        font.family: root.fontFamily
+        font.pixelSize: Style.font.bodySmall
+        wrapMode: Text.WordWrap
+      }
+
+      PanelSeparator { foreground: root.foreground }
+
+      Loader {
+        id: viewLoader
+        width: parent.width
+        sourceComponent: root.view === "exclusions" ? exclusionsView
+          : (root.view === "account" ? accountView
+          : (root.view === "settings" ? settingsView
+          : (root.view === "killswitch" ? killSwitchView : locationView)))
+      }
+
+      PanelSeparator { foreground: root.foreground }
+
+      Row {
+        id: footer
+        width: parent.width
+        spacing: Style.space(6)
+
+        Repeater {
+          // A constant list of ids, in footerAction's index order. The
+          // model used to be an inline array literal whose entries read
+          // vpn.killSwitch and root.barMode, so arming the kill switch or
+          // cycling the bar mode rebuilt the array, and a Repeater given a
+          // new model destroys and recreates every delegate: all six
+          // buttons, to change one glyph on one of them. The per-button
+          // expressions now live in the delegate, where they change a
+          // property on a button that stays put.
+          model: ["exclusions", "account", "settings", "killswitch", "barmode", "refresh"]
+          PanelActionButton {
+            required property string modelData
+            required property int index
+            readonly property bool lit: modelData === "killswitch"
+              ? (root.view === "killswitch" || vpn.killSwitch)
+              : (modelData === "exclusions" || modelData === "account" || modelData === "settings") && root.view === modelData
+            iconText: {
+              if (modelData === "exclusions") return "󰈲"
+              if (modelData === "account") return "󰀄"
+              if (modelData === "settings") return "󰒓"
+              if (modelData === "killswitch") return vpn.killSwitch ? "󰯆" : "󰯇"
+              if (modelData === "barmode") return root.barMode === "iso" ? "󰬴" : (root.barMode === "rate" ? "󰓅" : "󰒘")
+              return "󰑐"
+            }
+            tooltipText: {
+              if (modelData === "exclusions") return "Exclusions (e)"
+              if (modelData === "account") return "Account (a)"
+              if (modelData === "settings") return "Settings (s)"
+              if (modelData === "killswitch") return vpn.killSwitch ? "Kill switch armed (K)" : "Kill switch (K)"
+              if (modelData === "barmode") return "Bar shows " + root.barMode
+              return "Refresh (r)"
+            }
+            foreground: lit ? root.glow : root.dim
+            hoverColor: root.foreground
+            fontFamily: root.fontFamily
+            hasCursor: root.cursorActive && root.focusSection === "footer" && root.footerIndex === index
+            onHovered: function(on) { if (on) root.setFooterCursor(index) }
+            onClicked: root.footerAction(index)
+            NumberAnimation on rotation {
+              running: modelData === "refresh" && vpn.refreshing
+              from: 0; to: 360; duration: 900; loops: Animation.Infinite
+              onRunningChanged: if (!running) parent.rotation = 0
+            }
+          }
+        }
+
+        Item { width: 1; height: 1 }
       }
     }
   }
