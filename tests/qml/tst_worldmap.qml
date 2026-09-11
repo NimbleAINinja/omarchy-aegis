@@ -204,15 +204,15 @@ TestCase {
     verify(Math.sqrt(dx * dx + dy * dy) > map.dotPitch / 2,
       "the projection has to be visibly off the dot for this to prove anything")
 
-    // The list cursor's highlight...
+    // The list cursor's highlight: the dot is tinted, so the ring alone —
+    // a bright centre dot would paint over the very tier colour it rings.
     map.hover = { lat: 0, lon: 90 }
     var ctx = fakeContext()
     map.paintMarkers(ctx)
-    compare(ctx.record.arcs.length, 2, "a ring and a bright centre dot")
-    for (var i = 0; i < 2; i++) {
-      fuzzyCompare(ctx.record.arcs[i].x, cell.x, 1e-6)
-      fuzzyCompare(ctx.record.arcs[i].y, cell.y, 1e-6)
-    }
+    compare(ctx.record.arcs.length, 1, "the ring alone around a tinted dot")
+    fuzzyCompare(ctx.record.arcs[0].x, cell.x, 1e-6)
+    fuzzyCompare(ctx.record.arcs[0].y, cell.y, 1e-6)
+    compare(ctx.record.fills, 0, "no centre dot over the tint")
     map.hover = null
 
     // ...and the pointer's, which is the same visual, plus its label.
@@ -220,19 +220,36 @@ TestCase {
     map.hoverCandidate = map.candidates[0]
     var ctx2 = fakeContext()
     map.paintMarkers(ctx2)
-    compare(ctx2.record.arcs.length, 2)
+    compare(ctx2.record.arcs.length, 1)
     fuzzyCompare(ctx2.record.arcs[0].x, cell.x, 1e-6)
     fuzzyCompare(ctx2.record.arcs[0].y, cell.y, 1e-6)
     compare(ctx2.record.texts.length, 1)
     compare(ctx2.record.texts[0].text, "Cellville")
     fuzzyCompare(ctx2.record.texts[0].y, cell.y, 1e-6, "the label hangs off the dot too")
 
-    // Snapping is about where the dots are, not about whether they are tinted.
+    // Snapping is about where the dots are, not about whether they are
+    // tinted; with the tints off there is nothing inside the ring to keep
+    // visible, so the centre dot comes back.
     map.tintDots = false
     var ctx3 = fakeContext()
     map.paintMarkers(ctx3)
-    fuzzyCompare(ctx3.record.arcs[0].x, cell.x, 1e-6)
-    fuzzyCompare(ctx3.record.arcs[0].y, cell.y, 1e-6)
+    compare(ctx3.record.arcs.length, 2, "ring and centre dot with tinting off")
+    for (var i = 0; i < 2; i++) {
+      fuzzyCompare(ctx3.record.arcs[i].x, cell.x, 1e-6)
+      fuzzyCompare(ctx3.record.arcs[i].y, cell.y, 1e-6)
+    }
+  }
+
+  function test_a_hovered_dot_without_a_tint_keeps_its_centre_dot() {
+    // Tinting on, but the hovered city has no ping tint on its dot (the only
+    // tint is for a city on the far side of the map — with one land cell it
+    // still claims it, so use no tints at all): ring and centre dot.
+    var map = tintMap([])
+    map.hover = { lat: 0, lon: 90 }
+    var ctx = fakeContext()
+    map.paintMarkers(ctx)
+    compare(ctx.record.arcs.length, 2, "nothing coloured under the ring, so the dot is drawn")
+    compare(ctx.record.fills, 1)
   }
 
   function test_a_highlight_with_no_land_to_snap_to_stays_on_the_projection() {

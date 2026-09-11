@@ -290,6 +290,7 @@ Item {
         tintY = new Float32Array(0)
         tintTier = new Uint8Array(0)
       }
+      if (cellTier.length > 0) cellTier = new Uint8Array(0)
       return
     }
     rebuildSlots()
@@ -321,6 +322,15 @@ Item {
     tintX = xs.slice(0, found)
     tintY = ys.slice(0, found)
     tintTier = tiers.slice(0, found)
+    cellTier = best
+  }
+
+  // Tier per land cell (0 = untinted), indexed like cellX: what paintMarkers
+  // asks to know whether the dot under a hover ring is already a coloured one.
+  property var cellTier: new Uint8Array(0)
+
+  function cellTinted(index) {
+    return tintDots && index >= 0 && index < cellTier.length && cellTier[index] !== 0
   }
 
   function nearestCell(x, y) {
@@ -364,10 +374,10 @@ Item {
   // not tinting is on; with no cells — no grid loaded yet — the projection is
   // all there is to point at.
   function snapToCell(x, y) {
-    if (cellX.length === 0) return { x: x, y: y }
+    if (cellX.length === 0) return { x: x, y: y, index: -1 }
     rebuildSlots()
     var hit = nearestCell(x, y)
-    return hit < 0 ? { x: x, y: y } : { x: cellX[hit], y: cellY[hit] }
+    return hit < 0 ? { x: x, y: y, index: -1 } : { x: cellX[hit], y: cellY[hit], index: hit }
   }
 
   // Over the land dots, on the same static layer, in the tier's colour and a
@@ -542,11 +552,14 @@ Item {
     }
 
     // Highlight: the candidate under the pointer wins over the list cursor.
-    // A ring around the city plus a bright dot, drawn over the land dots so it
-    // reads even where the link passes; a hovered candidate also gets a label.
-    // Ring, dot and label all sit on the snapped dot (snapToCell) — the exit
-    // and home markers keep their exact projections, because they mark a place
-    // rather than pick one of the dots out.
+    // A ring around the city, drawn over the land dots so it reads even where
+    // the link passes; a hovered candidate also gets a label. Ring, dot and
+    // label all sit on the snapped dot (snapToCell) — the exit and home
+    // markers keep their exact projections, because they mark a place rather
+    // than pick one of the dots out. When that dot already carries a ping tint
+    // the ring alone is the highlight, so the tier colour stays visible inside
+    // it; a bright centre dot is only painted where there is no tint to show
+    // (tinting off, or a city whose dot has no ping).
     // Number(null)/Number("") coerce to a finite 0, so this reuses
     // Link.finiteCoord rather than isFinite(Number(...)) directly — the
     // same trap that once put coordinate-less locations at 0,0 in
@@ -566,10 +579,13 @@ Item {
       ctx.strokeStyle = cssLinkCore
       ctx.lineWidth = 1.2
       ctx.stroke()
-      ctx.beginPath()
-      ctx.arc(vx, vy, Math.max(1.5, dotPitch * 0.45), 0, Math.PI * 2)
-      ctx.fillStyle = cssAccent
-      ctx.fill()
+      rebuildTints()
+      if (!cellTinted(spot.index)) {
+        ctx.beginPath()
+        ctx.arc(vx, vy, Math.max(1.5, dotPitch * 0.45), 0, Math.PI * 2)
+        ctx.fillStyle = cssAccent
+        ctx.fill()
+      }
     }
 
     var textHeight = Math.round(labelPixelSize) + 2
