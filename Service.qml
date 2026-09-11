@@ -494,7 +494,7 @@ Item {
     else if (verb === "config") applyConfig(obj)
     else if (verb === "update") applyUpdate(obj, _notifyUpdate)
     else if (verb === "procs") applyProcs(obj)
-    else if (verb === "connect" || verb === "disconnect") applySnapshot(obj, verb === "disconnect")
+    else if (verb === "connect" || verb === "disconnect") applySnapshot(obj, verb === "disconnect", verb)
     else if (verb === "logout") {
       // Logging out takes the tunnel down on request: an intentional
       // disconnect (kill switch only with killOnDisconnect), never a drop.
@@ -545,7 +545,9 @@ Item {
   }
 
   // `requested`: the status came back from a disconnect the user asked for.
-  function applySnapshot(obj, requested) {
+  // `verb`: the job this snapshot came from ("connect"/"disconnect"), left
+  // undefined for a plain status poll.
+  function applySnapshot(obj, requested, verb) {
     if (obj.ok === false) { noteError(obj); return }
     installed = true
     var snap = Model.normalizeSnapshot(obj)
@@ -554,7 +556,15 @@ Item {
     // or startup auto-connect on it. A standing action/sudo error is not
     // papered over by this generic message either (Model.errorProtected).
     if (snap.state === "unknown") {
-      if (!Model.errorProtected(errorSource)) { lastError = "Unrecognised adguardvpn-cli status output"; errorCode = "parse"; errorSource = ""; errorIntent = null }
+      // ...and an action that succeeded is not an error at all: agvpn.py
+      // answers a connect/disconnect whose own follow-up `status` failed
+      // with a snapshot-shaped state "unknown", so the tunnel did change,
+      // only the readback didn't. Keeping the last state is right; calling
+      // it unrecognised output would put a false error under a connect the
+      // user just watched work. delayedRefresh (Model.needsFollowUpRefresh
+      // keeps it for exactly this case) fetches the real state shortly.
+      var fromAction = verb === "connect" || verb === "disconnect"
+      if (!fromAction && !Model.errorProtected(errorSource)) { lastError = "Unrecognised adguardvpn-cli status output"; errorCode = "parse"; errorSource = ""; errorIntent = null }
       return
     }
     var prevLocation = location
@@ -956,7 +966,13 @@ Item {
       }
       if (isAction) {
         root.actionFinished(verb, ok)
-        delayedRefresh.restart()
+        // connect and disconnect answer with a whole snapshot of their own,
+        // so one that succeeded with a definite state has already put
+        // everything this poll would fetch on screen — see
+        // Model.needsFollowUpRefresh. Failures, an unreadable follow-up
+        // status and logout still get it.
+        if (Model.needsFollowUpRefresh(verb, ok, ok ? Model.normalizeSnapshot(obj).state : ""))
+          delayedRefresh.restart()
       }
       root.pump()
     }

@@ -598,6 +598,25 @@ function errorResolved(intent, snap) {
   return false
 }
 
+// Whether an action job still needs Service's 600 ms follow-up snapshot
+// (delayedRefresh). agvpn.py's verb_connect/verb_disconnect already run
+// `status` before answering and hand back a whole snapshot, so a connect or
+// disconnect that succeeded and came back with a definite state has told the
+// panel everything the follow-up poll would have fetched — running it anyway
+// is one more python + adguardvpn-cli spawn per action for an answer that is
+// already on screen. Everything else still needs it: a failure (the state
+// is whatever it was), a follow-up `status` the helper could not read (state
+// "unknown", where applySnapshot deliberately keeps the last state), and
+// logout, which reports no snapshot at all.
+//   verb: the job's verb; ok: whether it succeeded; state: the state its
+//   answer carried (normalizeSnapshot's), "" when it carried none.
+function needsFollowUpRefresh(verb, ok, state) {
+  if (ok !== true) return true
+  if (verb !== "connect" && verb !== "disconnect") return true
+  var s = str(state)
+  return !(s === "connected" || s === "disconnected")
+}
+
 function shouldAutoConnect(ctx) {
   if (!ctx || typeof ctx !== "object") return false
   return ctx.autoConnect === true && ctx.wasConnected === true && !ctx.attempted
@@ -1062,6 +1081,7 @@ if (typeof module !== "undefined") {
     settleStatus: settleStatus,
     errorProtected: errorProtected,
     errorResolved: errorResolved,
+    needsFollowUpRefresh: needsFollowUpRefresh,
     shouldAutoConnect: shouldAutoConnect,
     mayLocateHome: mayLocateHome,
     shouldApplyHomeJob: shouldApplyHomeJob,

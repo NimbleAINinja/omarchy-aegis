@@ -901,6 +901,48 @@ test("queueFront puts one snapshot first without reordering anything else", () =
   assert.deepEqual(Model.queueFront([write], { verb: "config" }), [{ verb: "config" }, write])
 })
 
+test("needsFollowUpRefresh drops the extra poll only after a connect/disconnect that settled", () => {
+  // The whole point: connect and disconnect now answer with a snapshot.
+  assert.equal(Model.needsFollowUpRefresh("connect", true, "connected"), false)
+  assert.equal(Model.needsFollowUpRefresh("disconnect", true, "disconnected"), false)
+  // Either verb can land on the other state (a disconnect racing an external
+  // connect) and still be definite.
+  assert.equal(Model.needsFollowUpRefresh("connect", true, "disconnected"), false)
+  assert.equal(Model.needsFollowUpRefresh("disconnect", true, "connected"), false)
+  // The helper's follow-up `status` failed: agvpn.py answers state "unknown"
+  // and the poll is what finds out where we ended up.
+  assert.equal(Model.needsFollowUpRefresh("connect", true, "unknown"), true)
+  assert.equal(Model.needsFollowUpRefresh("disconnect", true, "unknown"), true)
+  assert.equal(Model.needsFollowUpRefresh("connect", true, ""), true)
+  // Mid-flight and logged out are not settled answers either.
+  assert.equal(Model.needsFollowUpRefresh("connect", true, "connecting"), true)
+  assert.equal(Model.needsFollowUpRefresh("connect", true, "logged_out"), true)
+  // Failures always poll — the state is whatever it was before.
+  assert.equal(Model.needsFollowUpRefresh("connect", false, "connected"), true)
+  assert.equal(Model.needsFollowUpRefresh("disconnect", false, "disconnected"), true)
+  // Every other action verb keeps the poll; logout reports no snapshot.
+  assert.equal(Model.needsFollowUpRefresh("logout", true, "logged_out"), true)
+  assert.equal(Model.needsFollowUpRefresh("logout", true, "disconnected"), true)
+  assert.equal(Model.needsFollowUpRefresh(undefined, true, "connected"), true)
+  // A truthy-but-not-true ok is not a success.
+  assert.equal(Model.needsFollowUpRefresh("connect", 1, "connected"), true)
+})
+
+test("a connect whose follow-up status failed keeps the last state without claiming an error", () => {
+  const src = require("node:fs").readFileSync(require("node:path").join(__dirname, "..", "Service.qml"), "utf8")
+  assert.match(src, /function applySnapshot\(obj, requested, verb\)/)
+  assert.match(src, /applySnapshot\(obj, verb === "disconnect", verb\)/)
+  const unknown = /if \(snap\.state === "unknown"\) \{[\s\S]*?\n    \}/.exec(src)
+  assert.ok(unknown, "the unknown branch is there")
+  assert.match(unknown[0], /var fromAction = verb === "connect" \|\| verb === "disconnect"/)
+  assert.match(unknown[0], /if \(!fromAction && !Model\.errorProtected\(errorSource\)\)/)
+  // It still returns without touching vpnState, so the last state stands.
+  assert.doesNotMatch(unknown[0], /vpnState =/)
+  assert.match(src, /Model\.needsFollowUpRefresh\(verb, ok, ok \? Model\.normalizeSnapshot\(obj\)\.state : ""\)/)
+  // normalizeSnapshot is what maps agvpn.py's blank_snapshot("unknown").
+  assert.equal(Model.normalizeSnapshot({ ok: true, state: "unknown", location: null }).state, "unknown")
+})
+
 test("locationsFresh reuses a recent list and refetches an old, empty or never-loaded one", () => {
   const now = 1_700_000_000_000
   const ttl = Model.LOCATIONS_TTL_MS
