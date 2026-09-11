@@ -626,6 +626,86 @@ test("rateFrom computes bytes per second and guards resets", () => {
   assert.deepEqual(Model.rateFrom({ rx: 1, tx: 1 }, { rx: 5, tx: 5 }, 0), { down: 0, up: 0 })
 })
 
+test("pushSample keeps the newest samples and never hands back the same array", () => {
+  const first = Model.pushSample([], { down: 10, up: 20 }, 3)
+  assert.deepEqual(first, [{ down: 10, up: 20 }])
+  // Never in place: Service holds the history in a `var` property, and the
+  // graph only repaints when the reference changes.
+  const second = Model.pushSample(first, { down: 30, up: 40 }, 3)
+  assert.deepEqual(first, [{ down: 10, up: 20 }], "the input is left alone")
+  assert.deepEqual(second.map(s => s.down), [10, 30])
+  // Oldest first, and the cap drops from the front.
+  let history = []
+  for (let i = 1; i <= 5; i++) history = Model.pushSample(history, { down: i, up: i * 2 }, 3)
+  assert.equal(history.length, 3)
+  assert.deepEqual(history.map(s => s.down), [3, 4, 5])
+  assert.deepEqual(history.map(s => s.up), [6, 8, 10])
+  // Junk is a zero sample, not a hole the graph has to guard against.
+  assert.deepEqual(Model.pushSample(null, null, 3), [{ down: 0, up: 0 }])
+  assert.deepEqual(Model.pushSample([], { down: -5, up: NaN }, 3), [{ down: 0, up: 0 }])
+  // A cap of 0 or nonsense still keeps the newest sample.
+  assert.deepEqual(Model.pushSample([{ down: 1, up: 1 }], { down: 2, up: 2 }, 0), [{ down: 2, up: 2 }])
+  assert.equal(Model.pushSample([], { down: 1, up: 1 }, undefined).length, 1)
+  assert.equal(Model.TRAFFIC_CAP, 150)
+  assert.equal(Model.TRAFFIC_FLOOR, 1024)
+})
+
+test("trafficColumns puts the newest sample at the right edge and scales each half on its own", () => {
+  const floor = Model.TRAFFIC_FLOOR
+  const history = [{ down: 0, up: 0 }, { down: floor / 2, up: 0 }, { down: floor, up: 4 * floor }]
+  const cols = Model.trafficColumns(history, 5, 12, floor)
+  assert.equal(cols.down.length, 5)
+  assert.equal(cols.up.length, 5)
+  // Two empty columns on the left: the history doesn't fill the width yet.
+  assert.deepEqual(cols.down.slice(0, 2), [0, 0])
+  assert.deepEqual(cols.up.slice(0, 2), [0, 0])
+  // Down peaks at the floor, so its own column is full; up peaks at 4x the
+  // floor, and the down half is not rescaled by it.
+  assert.deepEqual(cols.down.slice(2), [0, 6, 12])
+  assert.deepEqual(cols.up.slice(2), [0, 0, 12])
+  assert.equal(cols.maxDown, floor)
+  assert.equal(cols.maxUp, 4 * floor)
+  assert.equal(cols.peakDown, floor)
+  assert.equal(cols.peakUp, 4 * floor)
+  // An idle tunnel stays near the centre line: the floor is the smallest
+  // scale, so 128 B/s is one dot of twelve and not a full column.
+  const idle = Model.trafficColumns([{ down: 128, up: 0 }], 1, 12, floor)
+  assert.deepEqual(idle.down, [2])
+  assert.equal(idle.maxDown, floor)
+  assert.equal(idle.peakDown, 128)
+  // More history than columns: the window is the newest `columns` samples.
+  const long = []
+  for (let i = 0; i < 10; i++) long.push({ down: i * floor, up: 0 })
+  const window = Model.trafficColumns(long, 3, 12, floor)
+  assert.deepEqual(window.down, [9, 11, 12], "scaled against the window's own peak")
+  assert.equal(window.peakDown, 9 * floor)
+  // Degenerate inputs answer with something the canvas can paint.
+  assert.deepEqual(Model.trafficColumns([], 3, 12, floor).down, [0, 0, 0])
+  assert.deepEqual(Model.trafficColumns(null, 0, 12, floor), { up: [], down: [], maxUp: floor, maxDown: floor, peakUp: 0, peakDown: 0 })
+  assert.deepEqual(Model.trafficColumns([null, { down: "x" }], 2, 12, floor).down, [0, 0])
+  // Never more dots than the half has rows, whatever the numbers do.
+  const spike = Model.trafficColumns([{ down: 1e12, up: 1e12 }], 1, 12, floor)
+  assert.deepEqual(spike.down, [12])
+  assert.deepEqual(spike.up, [12])
+})
+
+test("Service.qml samples the counters into the traffic history, faster while the tab is up", () => {
+  const src = require("node:fs").readFileSync(require("node:path").join(__dirname, "..", "Service.qml"), "utf8")
+  assert.match(src, /property bool trafficVisible: false/)
+  assert.match(src, /property var trafficHistory: \[\]/)
+  // A column per computed rate, inside the `_prev` branch: the first counter
+  // read of a sampling run has nothing to compare against.
+  const counters = /function applyCounters\(text\) \{[\s\S]*?\n  \}/.exec(src)
+  assert.ok(counters, "applyCounters present")
+  assert.match(counters[0], /if \(_prev\) \{\n\s*rates = Model\.rateFrom\(_prev, next, next\.at - _prev\.at\)\n\s*trafficHistory = Model\.pushSample\(trafficHistory, rates, Model\.TRAFFIC_CAP\)\n\s*\}/)
+  // Cleared with the rates when the tunnel leaves connected, and only when
+  // there is something to clear.
+  assert.match(src, /if \(snap\.state !== "connected" && trafficHistory\.length > 0\) trafficHistory = \[\]/)
+  const rateTimer = src.slice(src.lastIndexOf("Timer {", src.indexOf("id: rateTimer")), src.indexOf("\n  }", src.indexOf("id: rateTimer")))
+  assert.match(rateTimer, /interval: root\.trafficVisible \? 1000 : \(root\.panelOpen \? 2000 : 5000\)/)
+  assert.match(rateTimer, /running: root\.connected && root\.iface !== "" && \(root\.panelOpen \|\| root\.trafficVisible \|\| root\.barMode === "rate"\)/)
+})
+
 test("barLabel renders per mode only while connected", () => {
   const connected = { state: "connected", iso: "IL" }
   const off = { state: "disconnected", iso: "" }
@@ -1572,7 +1652,9 @@ test("Service.qml gates the situational timers on what they are waiting for", ()
   assert.match(timer("loginPoll"), /ticks >= Model\.LOGIN_POLL_MAX_TICKS/)
   // The ramp is a shell-startup catch-up; a missing CLI ends it.
   assert.match(timer("startupRamp"), /running: root\.installed/)
-  assert.match(timer("rateTimer"), /interval: root\.panelOpen \? 2000 : 5000/)
+  // 1 s for the traffic tab's graph, 2 s for the hero's live rate, 5 s for
+  // the bar label alone.
+  assert.match(timer("rateTimer"), /interval: root\.trafficVisible \? 1000 : \(root\.panelOpen \? 2000 : 5000\)/)
   assert.match(timer("refreshTimer"), /installed: root\.installed/)
   // Closing the panel while still logged out ends the login poll.
   assert.match(src, /if \(loginPoll\.running\) loginPoll\.stop\(\)/)

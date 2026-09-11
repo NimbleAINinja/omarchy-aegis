@@ -12,6 +12,10 @@ Item {
 
   property var settings: ({})
   property bool panelOpen: false
+  // The traffic tab is the view on screen. It is the only consumer that wants
+  // a rate per second rather than one every two, so it says so itself instead
+  // of making every open pay for the faster sampler (see rateTimer).
+  property bool trafficVisible: false
 
   // --- state ------------------------------------------------------------------
   property bool installed: true
@@ -26,6 +30,11 @@ Item {
   property real rx: 0
   property real tx: 0
   property var rates: ({ down: 0, up: 0 })
+  // One { down, up } per rate sample for the traffic tab's graph, oldest
+  // first, capped at Model.TRAFFIC_CAP. Emptied whenever the tunnel leaves
+  // connected — the columns describe one tunnel's traffic, so the next one
+  // starts from an empty graph rather than inheriting the old one's peaks.
+  property var trafficHistory: []
   property var locations: []
   property var account: ({ loggedIn: true, email: "", plan: "", devices: null, validUntil: null })
   property bool accountLoaded: false
@@ -656,6 +665,9 @@ Item {
     // Already zero: assigning a fresh { 0, 0 } would signal the bar's rate
     // label and every binding on it for no change at all.
     if (snap.state !== "connected" && (rates.down !== 0 || rates.up !== 0)) rates = { down: 0, up: 0 }
+    // The graph's history goes the same way, and for the same reason: an
+    // empty array assigned over an empty one would still signal the canvas.
+    if (snap.state !== "connected" && trafficHistory.length > 0) trafficHistory = []
     // An unexpected drop holds off any home lookup until the user acts
     // again (dropHold, cleared by connectTo/down/logout) — right after a
     // drop is exactly when the user expects to be protected, not queried.
@@ -766,7 +778,13 @@ Item {
     if (parts.length < 2) return
     var next = { rx: Number(parts[0]), tx: Number(parts[1]), at: Date.now() }
     if (!isFinite(next.rx) || !isFinite(next.tx)) return
-    if (_prev) rates = Model.rateFrom(_prev, next, next.at - _prev.at)
+    // Only a real pair of reads produces a rate, and only a rate is worth a
+    // column: the first read after the sampler starts has nothing to compare
+    // against and would push a flat zero the graph would have to draw.
+    if (_prev) {
+      rates = Model.rateFrom(_prev, next, next.at - _prev.at)
+      trafficHistory = Model.pushSample(trafficHistory, rates, Model.TRAFFIC_CAP)
+    }
     _prev = next
     rx = next.rx
     tx = next.tx
@@ -869,13 +887,15 @@ Item {
 
   Timer {
     id: rateTimer
-    // 2 s while the panel is open, where the hero shows a live rate; 5 s when
-    // only the bar's "rate" label needs it, which is the round-the-clock
-    // case. Changing the interval restarts the countdown, but panelOpen is
-    // the only input, so that happens on an open or a close and nowhere else.
-    interval: root.panelOpen ? 2000 : 5000
+    // 1 s while the traffic tab is on screen, where every sample is a column
+    // of the graph; 2 s while the panel is merely open, where the hero shows a
+    // live rate; 5 s when only the bar's "rate" label needs it, which is the
+    // round-the-clock case. Changing the interval restarts the countdown, but
+    // both inputs are a panel open/close or a tab switch, so that happens on a
+    // user action and nowhere else.
+    interval: root.trafficVisible ? 1000 : (root.panelOpen ? 2000 : 5000)
     repeat: true
-    running: root.connected && root.iface !== "" && (root.panelOpen || root.barMode === "rate")
+    running: root.connected && root.iface !== "" && (root.panelOpen || root.trafficVisible || root.barMode === "rate")
     triggeredOnStart: true
     onTriggered: {
       if (countersProcess.running) return

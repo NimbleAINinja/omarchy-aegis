@@ -516,6 +516,72 @@ function rateFrom(prev, next, dtMs) {
   return { down: down > 0 ? down : 0, up: up > 0 ? up : 0 }
 }
 
+// --- traffic history ----------------------------------------------------------
+// How many rate samples the traffic tab keeps. At the one-second cadence the
+// tab asks for that is two and a half minutes, comfortably more columns than
+// a 520 px panel has room for, so the graph is never short of history while
+// the memory stays a few kilobytes.
+var TRAFFIC_CAP = 150
+// The smallest scale a half of the graph is drawn at. Without it an idle
+// tunnel's stray 200 B/s keepalive would fill the column to the top and read
+// as a burst.
+var TRAFFIC_FLOOR = 1024
+
+// Appends one { down, up } sample and drops the oldest ones over the cap.
+// Always a new array: Service holds the history in a `var` property, and
+// assigning the same reference back would not signal the graph to repaint.
+function pushSample(history, sample, cap) {
+  var limit = Math.max(1, Math.floor(num(cap, TRAFFIC_CAP)))
+  var list = toList(history)
+  var next = list.slice(Math.max(0, list.length + 1 - limit))
+  var s = sample && typeof sample === "object" ? sample : {}
+  var down = num(s.down, 0), up = num(s.up, 0)
+  next.push({ down: down > 0 ? down : 0, up: up > 0 ? up : 0 })
+  return next
+}
+
+// A dot count per column for the graph: `columns` entries left to right with
+// the NEWEST sample at the right edge, so a history that doesn't fill the
+// width yet leaves the left end empty and the graph grows leftward as btop's
+// does. Each half scales to its own peak over the visible window, never below
+// `floor`, which is what keeps the two halves readable against each other
+// without one rescaling the other. maxUp/maxDown are the scales actually
+// used; peakUp/peakDown are what was seen, which is what the legend prints.
+function trafficColumns(history, columns, dotsPerHalf, floor) {
+  var cols = Math.max(0, Math.floor(num(columns, 0)))
+  var dots = Math.max(1, Math.floor(num(dotsPerHalf, 1)))
+  var base = Math.max(1, num(floor, TRAFFIC_FLOOR))
+  var list = toList(history)
+  var window = list.slice(Math.max(0, list.length - cols))
+  var peakUp = 0, peakDown = 0
+  var i, sample, up, down
+  for (i = 0; i < window.length; i++) {
+    sample = window[i] && typeof window[i] === "object" ? window[i] : {}
+    up = num(sample.up, 0)
+    down = num(sample.down, 0)
+    if (up > peakUp) peakUp = up
+    if (down > peakDown) peakDown = down
+  }
+  var maxUp = Math.max(base, peakUp)
+  var maxDown = Math.max(base, peakDown)
+  var upDots = [], downDots = []
+  // The empty stretch on the left: one column per sample we don't have yet.
+  var pad = cols - window.length
+  for (i = 0; i < cols; i++) {
+    if (i < pad) { upDots.push(0); downDots.push(0); continue }
+    sample = window[i - pad] && typeof window[i - pad] === "object" ? window[i - pad] : {}
+    upDots.push(dotsFor(num(sample.up, 0), maxUp, dots))
+    downDots.push(dotsFor(num(sample.down, 0), maxDown, dots))
+  }
+  return { up: upDots, down: downDots, maxUp: maxUp, maxDown: maxDown, peakUp: peakUp, peakDown: peakDown }
+}
+
+function dotsFor(value, max, dots) {
+  if (!(value > 0) || !(max > 0)) return 0
+  var n = Math.round(value / max * dots)
+  return n > dots ? dots : n
+}
+
 function barLabel(mode, snap, rates) {
   var connected = snap && snap.state === "connected"
   if (!connected) return ""
@@ -1455,6 +1521,10 @@ if (typeof module !== "undefined") {
     formatRate: formatRate,
     formatUptime: formatUptime,
     rateFrom: rateFrom,
+    TRAFFIC_CAP: TRAFFIC_CAP,
+    TRAFFIC_FLOOR: TRAFFIC_FLOOR,
+    pushSample: pushSample,
+    trafficColumns: trafficColumns,
     barLabel: barLabel,
     nextBarMode: nextBarMode,
     heroMeta: heroMeta,
