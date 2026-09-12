@@ -477,22 +477,13 @@ function linkState(vpnState, pendingLocation) {
 
 // The one thing standing between the user and a tunnel, for the panel's
 // setup prompt: "install" (no adguardvpn-cli), "login" (the CLI is signed
-// out), "sudo" (sudo would ask for a password, so a TUN connect runs in a
-// terminal where the user can type it — SOCKS mode never goes through
-// sudo, so it is not affected), or "" when nothing is in the way. sudoRule
-// is Service's verdict: "ok", "missing", or "unknown" while unchecked. The
-// first two block the panel (setupBlocks) and sit in the setup plan; the
-// third is a notice, and its button opens the README (README_URL).
+// out), or "" when nothing is in the way. Both block the panel
+// (setupBlocks) and sit in the setup plan.
 // Where the panel sends the user to install the CLI: AdGuard's own
 // instructions. The plugin never fetches or runs an installer itself — the
 // button opens this page in the browser, the user follows it in a terminal
 // of their own, and the setup poll notices the CLI once it exists.
 var CLI_INSTALL_URL = "https://github.com/AdguardTeam/AdGuardVPNCLI#installation"
-
-// Where the sudo notice sends the user: the README's own account of the
-// rule that makes TUN connects passwordless. The plugin never writes that
-// rule (nothing in it runs as root); whoever wants it installs it by hand.
-var README_URL = "https://github.com/NimbleAINinja/omarchy-aegis#requirements"
 
 // A command for one of those terminals: the binary's own path once the
 // cli-path verb has answered with it, the bare name until then and for
@@ -515,7 +506,7 @@ function shellQuote(text) {
 }
 
 // Verbs that answer by running adguardvpn-cli. "home"/"homeCache" (a web
-// lookup and its cache file), "procs" and "sudoCheck" never touch the
+// lookup and its cache file), "procs" and "cliPath" never touch the
 // binary, so what they return says nothing about whether it is installed.
 var CLI_VERBS = ["snapshot", "locations", "account", "exclusions", "config",
                  "update", "connect", "disconnect", "logout"]
@@ -560,9 +551,7 @@ var SETUP_INTRO = "First, some setup: I'll walk you through these steps. Come ba
 // The two prerequisites in the order setupStep walks them, named as
 // briefly as they can be: the hero's own prompt explains each one when the
 // user reaches it, so the banner is a map of the route, not a second set of
-// instructions. The sudo rule is not a step: without it a TUN connect still
-// works, in a terminal that asks for the password, so it is a notice under
-// the hero (setupPrompt("sudo")) and never part of the plan.
+// instructions.
 var SETUP_PLAN = [
   { step: "install", label: "Install adguardvpn-cli" },
   { step: "login", label: "Sign in \u2014 opens a terminal" }
@@ -586,7 +575,6 @@ function setupPlan(step) {
 function setupPrompt(step) {
   if (step === "install") return { text: "Install adguardvpn-cli to get started", button: "Guide", icon: "\uDB80\uDDDA" }
   if (step === "login") return { text: "Sign in to your AdGuard VPN account", button: "Log in", icon: "\uDB80\uDF42" }
-  if (step === "sudo") return { text: "No sudo rule: connecting asks for your password in a terminal", button: "README", icon: "\uDB80\uDF06" }
   return { text: "", button: "", icon: "" }
 }
 
@@ -622,8 +610,7 @@ function showsStatus(actionStatus, errorCode, step) {
 // The steps that leave the whole panel with nothing to do: without a binary
 // or a login there are no locations, no exclusions, no account and no
 // settings the CLI can answer for. The card shows the hero and its one
-// button until one of them is dealt with. The sudo rule is not one of these
-// — it blocks connecting through the tunnel, not reading anything.
+// button until one of them is dealt with.
 function setupBlocks(step) {
   var s = str(step)
   return s === "install" || s === "login"
@@ -649,32 +636,18 @@ function accountAction(state, step) {
   return ""
 }
 
-function setupStep(installed, vpnState, sudoRule, mode) {
+function setupStep(installed, vpnState) {
   if (!installed) return "install"
   if (str(vpnState) === "logged_out") return "login"
-  // The notice is about the next connect, so it goes with the terminal:
-  // while the tunnel is up a city switch needs none, and it comes back once
-  // the tunnel is down.
-  if (connectNeedsTerminal(sudoRule, mode, vpnState)) return "sudo"
   return ""
 }
 
-// Whether a connect has to run in a terminal the user can type a sudo
-// password into: the CLI starts its TUN service through sudo, and without
-// the README's rule sudo asks. The helper has no terminal to offer, so the
-// connect goes to a floating one instead (Service.connectInTerminal). SOCKS
-// mode never touches sudo, and neither does a switch of city while the
-// tunnel is up: the service sudo started is already running as root, and
-// the CLI only hands it the new location. "unknown" (the probe has not
-// answered) counts as fine: a connect that then runs into the prompt is
-// handed to a terminal by the job's exit handler, and the verdict is
-// remembered as "missing".
-function connectNeedsTerminal(sudoRule, mode, vpnState) {
-  return str(sudoRule) === "missing" && str(mode) !== "socks" && str(vpnState) !== "connected"
-}
-
-// The connect that terminal runs: the same call agvpn.py makes (-y answers
-// the CLI's own questions), minus --no-progress so the user sees it work.
+// The connect a terminal runs when the helper's own was turned away for a
+// password: the CLI starts its TUN service through sudo, and the helper has
+// no terminal to offer sudo's prompt, so the same connect runs again in a
+// floating one (Service.connectInTerminal) where the user can type it. The
+// same call agvpn.py makes (-y answers the CLI's own questions), minus
+// --no-progress so the user sees it work.
 function connectCommand(path, cliName) {
   return cliCommand(path, "connect -l " + shellQuote(str(cliName)) + " -y")
 }
@@ -1158,13 +1131,10 @@ function needsFollowUpRefresh(verb, ok, state) {
   return !(s === "connected" || s === "disconnected")
 }
 
-// needsTerminal (Model.connectNeedsTerminal): a connect that would open a
-// terminal for a sudo password never fires on its own at login.
 function shouldAutoConnect(ctx) {
   if (!ctx || typeof ctx !== "object") return false
   return ctx.autoConnect === true && ctx.wasConnected === true && !ctx.attempted
     && ctx.installed === true && ctx.loggedIn !== false && ctx.state === "disconnected"
-    && ctx.needsTerminal !== true
 }
 
 // Whether a home-location lookup (ipinfo.io, run by agvpn.py's `home` verb)
@@ -1330,28 +1300,6 @@ var LOGIN_POLL_FAST_MS = 3000
 var LOGIN_POLL_SLOW_MS = 10000
 var LOGIN_POLL_FAST_TICKS = 10
 var LOGIN_POLL_MAX_TICKS = 40
-
-// How often Service re-asks `sudo-check` while the CLI is installed, so a
-// rule the user installs (or removes) by hand is noticed without a shell
-// restart: every SUDO_RECHECK_MS, and every SUDO_RECHECK_FAST_MS for the
-// SUDO_HELP_WINDOW_MS after the README button was clicked, when the user
-// is most likely at a terminal writing the rule. A `sudo -n -k -l` is the
-// whole cost of a check.
-var SUDO_RECHECK_MS = 300000
-var SUDO_RECHECK_FAST_MS = 10000
-var SUDO_HELP_WINDOW_MS = 1800000
-
-// Whether `now` still falls inside the fast window that opened at `helpAt`
-// (a Date.now() value; 0 or anything non-numeric means never clicked).
-function sudoHelpRecent(helpAt, now) {
-  var at = num(helpAt, 0)
-  return at > 0 && num(now, 0) - at < SUDO_HELP_WINDOW_MS
-}
-
-// The recheck interval for that state.
-function sudoRecheckIntervalMs(helpAt, now) {
-  return sudoHelpRecent(helpAt, now) ? SUDO_RECHECK_FAST_MS : SUDO_RECHECK_MS
-}
 
 // The interval to use after `tick` ticks have run (0 before the first).
 function loginPollIntervalMs(tick) {
@@ -1698,7 +1646,7 @@ function findExclusionDomain(domains, needle) {
 // against agvpn.py, so change both together.
 var HELPER_BUDGET_SEC = {
   "snapshot": 24, "locations": 24, "connect": 84, "disconnect": 36, "account": 24, "logout": 24,
-  "exclusions": 48, "home": 35, "config": 39, "update-check": 36, "procs": 17, "sudo-check": 17,
+  "exclusions": 48, "home": 35, "config": 39, "update-check": 36, "procs": 17,
   "cli-path": 12
 }
 // On top of a budget: python start-up, reaping a timed-out CLI, the answer.
@@ -1749,7 +1697,6 @@ if (typeof module !== "undefined") {
     dotTints: dotTints,
     linkState: linkState,
     provesInstalled: provesInstalled,
-    connectNeedsTerminal: connectNeedsTerminal,
     connectCommand: connectCommand,
     accountStale: accountStale,
     accountState: accountState,
@@ -1762,7 +1709,6 @@ if (typeof module !== "undefined") {
     setupStep: setupStep,
     setupPrompt: setupPrompt,
     CLI_INSTALL_URL: CLI_INSTALL_URL,
-    README_URL: README_URL,
     cliCommand: cliCommand,
     shellQuote: shellQuote,
     formatRate: formatRate,
@@ -1816,11 +1762,6 @@ if (typeof module !== "undefined") {
     LOGIN_POLL_SLOW_MS: LOGIN_POLL_SLOW_MS,
     LOGIN_POLL_FAST_TICKS: LOGIN_POLL_FAST_TICKS,
     LOGIN_POLL_MAX_TICKS: LOGIN_POLL_MAX_TICKS,
-    SUDO_RECHECK_MS: SUDO_RECHECK_MS,
-    SUDO_RECHECK_FAST_MS: SUDO_RECHECK_FAST_MS,
-    SUDO_HELP_WINDOW_MS: SUDO_HELP_WINDOW_MS,
-    sudoHelpRecent: sudoHelpRecent,
-    sudoRecheckIntervalMs: sudoRecheckIntervalMs,
     loginPollIntervalMs: loginPollIntervalMs,
     tunnelLogPath: tunnelLogPath,
     TUNNEL_TAIL_BYTES: TUNNEL_TAIL_BYTES,

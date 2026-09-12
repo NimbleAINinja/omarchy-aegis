@@ -30,8 +30,8 @@ connected. No terminal, no separate app.
 - **Your bar, your way.** Icon, country code, or live down/up rates.
 - **Entirely keyboard driven.** Every action has a key, and `Esc` always
   closes.
-- **Sets itself up.** No CLI, not signed in, or sudo asking for a password:
-  the panel says which, and one button fixes it.
+- **Sets itself up.** No CLI or not signed in: the panel says which, and one
+  button fixes it.
 
 ## Install
 
@@ -44,32 +44,20 @@ then `omarchy plugin enable io.github.nimbleaininja.aegis --section right`.
 
 ## Requirements
 
-`python3` (standard library only), `curl`, and three things the panel checks
+`python3` (standard library only), `curl`, and two things the panel checks
 for you. Whichever is missing first shows up under the hero with a button,
-and all three have a row under Settings › Setup:
+and both have a row under Settings › Setup:
 
 - `adguardvpn-cli`, the official AdGuard VPN CLI. **Guide** opens AdGuard's
   installation instructions in your browser; follow them in a terminal of
   your own. The plugin never downloads or runs an installer.
 - An AdGuard VPN account. **Log in** opens a terminal running
   `adguardvpn-cli login`.
-- A sudoers rule, optional: it saves you the password prompt on every TUN
-  connection. The CLI starts its VPN service through `sudo`, so without a
-  rule each TUN connect opens a floating terminal where sudo asks for your
-  password (SOCKS mode never goes through sudo). The panel probes for the
-  rule with `sudo -l` (no password, nothing run) and says so while it is
-  missing; **README** brings you here. The plugin never installs the rule
-  and nothing in it runs as root. To set it up yourself (needs sudo 1.9.10
-  or newer), use the rule below: it allows exactly the one command the CLI
-  runs as root to connect, for any location, and nothing else. Keep it on
-  one line, replace every `youruser` and the `1000` with your user name and
-  `id -u`, and check the file with `visudo -cf` before it goes into
-  `/etc/sudoers.d`:
 
-  ```
-  # /etc/sudoers.d/adguardvpn-cli  (mode 0440, check with: visudo -cf <file>)
-  youruser ALL=(root) NOPASSWD: /usr/bin/env ^HOME=/home/youruser XDG_DATA_HOME=/home/youruser/\.local/share DISPLAY=:[0-9]+(\.[0-9]+)? DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus /opt/adguardvpn_cli/adguardvpn-cli connect --no-fork -l [^-[:space:]][^[:space:]]*( [^-[:space:]][^[:space:]]*)* (-v )?--log-to-file --wait-for-parent --ppid-file /home/youruser/\.local/share/adguardvpn-cli/vpn\.pid$
-  ```
+The CLI starts its TUN service through `sudo`. When sudo wants your password
+for that, the connect runs in a floating terminal that asks for it; a switch
+of city while the tunnel is up needs none, and SOCKS mode never goes through
+sudo. Nothing in the plugin runs as root.
 
 
 ## Uninstall
@@ -81,7 +69,6 @@ omarchy plugin remove io.github.nimbleaininja.aegis
 That disables the widget and deletes the plugin folder. Nothing of Aegis
 keeps running afterwards. What it leaves behind, and how to clear it:
 
-- The sudoers rule, if you set one up: `sudo rm /etc/sudoers.d/adguardvpn-cli`.
 - The cached home location and CLI version check:
   `rm -r ~/.cache/io.github.nimbleaininja.aegis`.
 - The widget's entry in `~/.config/omarchy/shell.json` (favourites, last

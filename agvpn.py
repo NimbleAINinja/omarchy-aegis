@@ -14,7 +14,6 @@
     python3 agvpn.py config show | set <key> <value>
     python3 agvpn.py config set socksPassword -   # the password is one line on stdin
     python3 agvpn.py update-check
-    python3 agvpn.py sudo-check           # would sudo start the VPN service without a password?
     python3 agvpn.py cli-path             # where the binary is; no CLI call, no lock
     python3 agvpn.py kill <name> [name...]
 
@@ -71,7 +70,6 @@ CLI_TIMEOUT = 12.0
 CONNECT_TIMEOUT = 60.0
 PS_TIMEOUT = 3.0       # read_since's ps fallback
 PROCS_TIMEOUT = 5.0    # verb_procs's ps
-SUDO_CHECK_TIMEOUT = 5.0  # verb_sudo_check's sudo -l
 ROUTE_TIMEOUT = 3.0    # default_gateway's ip route
 CURL_TIMEOUT = 8.0     # fetch_home's curl
 STDIN_TIMEOUT = 3.0    # read_stdin_secret's wait for the line
@@ -608,7 +606,6 @@ def verb_budgets():
         "config": STDIN_TIMEOUT + 2 * cli,                # stdin (socksPassword), set, then show
         "update-check": 2 * cli,                          # check-update, --version (cached per binary)
         "procs": PROCS_TIMEOUT,
-        "sudo-check": SUDO_CHECK_TIMEOUT,
         "cli-path": 0,  # a which() and a stat; nothing to wait for but the lock
     }
     return {verb: lock_wait + seconds for verb, seconds in calls.items()}
@@ -1429,59 +1426,6 @@ def verb_kill(names):
     return {"ok": True, "killed": killed, "missing": missing, "rejected": rejected, "skipped": skipped}
 
 
-def sudo_probe_argv():
-    """The argv adguardvpn-cli hands to `sudo -b` to start its VPN service
-    (tests/sudoers.test.sh pins the same shape against the README rule),
-    filled in for this user and session: the home and data directories, the
-    display and session bus the CLI exports, and its own resolved path."""
-    home = os.environ.get("HOME") or os.path.expanduser("~")
-    data = os.environ.get("XDG_DATA_HOME") or os.path.join(home, ".local", "share")
-    display = os.environ.get("DISPLAY") or ":0"
-    bus = os.environ.get("DBUS_SESSION_BUS_ADDRESS") or "unix:path=/run/user/%d/bus" % os.getuid()
-    return ["/usr/bin/env", "HOME=" + home, "XDG_DATA_HOME=" + data, "DISPLAY=" + display,
-            "DBUS_SESSION_BUS_ADDRESS=" + bus, os.path.realpath(cli_path()),
-            "connect", "--no-fork", "-l", "Probe", "--log-to-file", "--wait-for-parent",
-            "--ppid-file", os.path.join(data, "adguardvpn-cli", "vpn.pid")]
-
-
-def sudo_nopasswd_for(listing, binary):
-    """Whether a `sudo -l` listing carries a NOPASSWD entry for `binary`.
-    sudo prints one entry per line, so each line is read on its own: a
-    NOPASSWD line naming the CLI is the rule README.md documents, and
-    the blanket `(ALL : ALL) ALL` line that sits above it on most machines
-    is not (it is exactly the one that costs a password)."""
-    for line in strip_ansi(listing or "").splitlines():
-        if "NOPASSWD:" in line and binary in line:
-            return True
-    return False
-
-
-def verb_sudo_check():
-    """Whether sudo would run the CLI's connect command as root without a
-    password right now — the question a connect will ask a moment later.
-
-    Asked as a plain `sudo -l` listing rather than `sudo -l <command>`:
-    passing the command answers "may this user run it", and on any ordinary
-    machine the blanket `(ALL : ALL) ALL` rule says yes to everything, so
-    the probe read as "rule installed" on a machine that had none and the
-    setup step it should have offered never appeared. The listing is what
-    distinguishes a passwordless rule from a passworded one. -n never
-    prompts, and -k ignores a credential cached by a recent terminal sudo,
-    so a sudo that wants a password even to list reads as no rule rather
-    than as fine for the next few minutes. No CLI call, no lock: the side
-    channel's job."""
-    sudo = os.environ.get("AEGIS_SUDO") or shutil.which("sudo") or "sudo"
-    try:
-        p = subprocess.run([sudo, "-n", "-k", "-l"], capture_output=True, text=True,
-                           stdin=subprocess.DEVNULL, timeout=time_left(SUDO_CHECK_TIMEOUT))
-    except (OSError, subprocess.SubprocessError) as exc:
-        raise CliError("unknown", "sudo failed: %s" % exc)
-    if p.returncode != 0:
-        return {"ok": True, "allowed": False}
-    return {"ok": True, "allowed": sudo_nopasswd_for(p.stdout, os.path.realpath(cli_path()))}
-
-
-
 def verb_cli_path():
     """Where the adguardvpn-cli binary is, resolved exactly as every CLI call
     in here resolves it (cli_path) — for the commands Service.qml hands to a
@@ -1580,8 +1524,6 @@ def dispatch(argv):
         return verb_kill(rest)
     if verb == "procs":
         return verb_procs()
-    if verb == "sudo-check":
-        return verb_sudo_check()
     if verb == "cli-path":
         return verb_cli_path()
     raise CliError("unknown", "unknown verb: %s" % (verb or "(none)"))

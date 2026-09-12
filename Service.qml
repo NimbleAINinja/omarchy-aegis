@@ -54,19 +54,6 @@ Item {
   //   { verb: "connect", target } | { verb: "disconnect" } | null
   property var errorIntent: null
   property string pendingLocation: ""    // city currently being connected
-  // Whether sudo would start the VPN service without a password: "ok",
-  // "missing", or "unknown" until the side channel's `sudo-check` has
-  // answered (checkSudoRule). A sudo_password error settles it as missing,
-  // a connect that went through settles it as ok. Model.setupStep turns it
-  // into the hero's notice, and Model.connectNeedsTerminal sends a TUN
-  // connect to a terminal while it is missing.
-  property string sudoRule: "unknown"
-  // Date.now() of the last README-button click (openSudoHelp), 0 for none:
-  // for Model.SUDO_HELP_WINDOW_MS after it, sudoRecheck runs every
-  // SUDO_RECHECK_FAST_MS instead of SUDO_RECHECK_MS, so a rule written by
-  // hand from those instructions is noticed within seconds. Cleared by the
-  // recheck itself once the window has passed.
-  property double sudoHelpAt: 0
   // Where the adguardvpn-cli binary is, from the side channel's `cli-path`
   // (checkCliPath), or "" until it has answered. Only the commands that go
   // to a terminal need it: everything in here reaches the CLI through the
@@ -98,12 +85,6 @@ Item {
   readonly property var exclusionRows: Model.mergeExclusions(exclusions.domains, pausedExclusions[exclusions.mode] || [])
   property var config: Model.normalizeConfig(null)
   property bool configLoaded: false
-  // The mode the next connect will use: the CLI's configured one once
-  // `config show` has answered, the status's until then. A disconnected
-  // status names no mode (it reads "tun"), so the configured one is what
-  // decides whether a connect needs a terminal for sudo — and whether the
-  // hero's notice about that applies at all. See Model.connectNeedsTerminal.
-  readonly property string nextMode: configLoaded ? config.mode : mode
   property var update: Model.normalizeUpdate(null)
   // Epoch ms after which a failed background update check may retry; 0 means
   // no failure is pending. Not persisted — a fresh shell start always gets
@@ -241,20 +222,9 @@ Item {
     // — the cache read can only help and never leaks anything, so it always
     // runs rather than waiting on that.
     if (locateHome && home === null) refreshHomeCache()
-    if (sudoRule === "unknown") checkSudoRule()
-    // Once: the configured mode is what nextMode reads, and it changes only
+    // Once: the Settings tab reads the configured mode, and it changes only
     // through setConfig, which refreshes it itself.
     if (!configLoaded) refreshConfig()
-  }
-
-  // --- the sudo rule ------------------------------------------------------------
-  // A read-only `sudo -l` on the side channel (no CLI, no lock): the answer
-  // is what the next TUN connect will run into, and it lands as sudoRule
-  // through applyJob. Never asked while the CLI is missing — there is
-  // nothing to start its service for yet.
-  function checkSudoRule() {
-    if (!installed) return
-    sideEnqueue(["sudo-check"], "sudoCheck", false)
   }
 
   // Asked once, when the CLI first turns up: the answer cannot change while
@@ -262,14 +232,6 @@ Item {
   function checkCliPath() {
     if (!installed) return
     sideEnqueue(["cli-path"], "cliPath", false)
-  }
-
-  // Where the hero's sudo notice sends the user: the README's own account
-  // of the rule, for whoever wants passwordless connects. Nothing in this
-  // plugin runs as root, so the rule is the user's to install.
-  function openSudoHelp() {
-    Qt.openUrlExternally(Model.README_URL)
-    sudoHelpAt = Date.now()
   }
 
   // A snapshot that runs next: ahead of every queued job (a `locations`
@@ -472,9 +434,10 @@ Item {
   }
 
   // --- actions ------------------------------------------------------------------
-  // `inTerminal`: run it in a terminal whatever the state says — for a
-  // connect the helper just ran that sudo turned away (retryInTerminal),
-  // where the state that said "no terminal needed" was the one that lied.
+  // `inTerminal`: run it in a floating terminal instead of through the
+  // helper — for a connect the helper just ran that sudo turned away for a
+  // password (retryInTerminal). Every other connect goes through the
+  // helper first: nothing here guesses whether sudo will ask.
   function connectTo(cliName, city, inTerminal) {
     var target = String(cliName || "")
     if (target === "" || !installed) return
@@ -485,13 +448,13 @@ Item {
     // home lookup held since an earlier unexpected drop no longer needs to
     // wait; see dropHold / Model.mayLocateHome.
     dropHold = false
-    if (inTerminal === true || Model.connectNeedsTerminal(sudoRule, nextMode, vpnState)) { connectInTerminal(target); return }
+    if (inTerminal === true) { connectInTerminal(target); return }
     enqueue(["connect", target], "connect")
   }
 
-  // A TUN connect without the sudo rule: the CLI's own `connect`, in a
-  // floating terminal where sudo can ask for the password (the helper has
-  // no terminal to offer it). The same poll as login's watches the tunnel
+  // A TUN connect sudo wants a password for: the CLI's own `connect`, in a
+  // floating terminal where sudo can ask for it (the helper has no terminal
+  // to offer). The same poll as login's watches the tunnel
   // come up — the terminal takes focus and closes the panel, so nothing
   // else would notice — and the snapshot that sees it connected clears
   // pendingLocation, as after any connect.
@@ -503,10 +466,11 @@ Item {
     loginPoll.start()
   }
 
-  // A connect the helper ran that sudo turned away for a password (the
-  // probe had not answered yet, or was wrong): the same connect again, by
-  // city, which now goes to a terminal because noteError has just settled
-  // sudoRule as missing.
+  // A connect the helper ran that sudo turned away for a password: the
+  // same connect again, by city, in a terminal this time. A switch of city
+  // while the tunnel is up never gets here — the service sudo started is
+  // already running, and the CLI only hands it the new location — and
+  // neither does SOCKS mode, which never goes through sudo.
   function retryInTerminal(city) {
     var loc = Model.findLocation(locations, city)
     if (loc) connectTo(loc.cliName, loc.city, true)
@@ -559,8 +523,7 @@ Item {
   // when it died without a clean disconnect (the flag outlives crashes).
   function maybeAutoConnect(state) {
     var ok = Model.shouldAutoConnect({ autoConnect: autoConnect, wasConnected: wasConnected, state: state,
-      installed: installed, loggedIn: accountLoaded ? account.loggedIn : true, attempted: autoConnectAttempted,
-      needsTerminal: Model.connectNeedsTerminal(sudoRule, nextMode, state) })
+      installed: installed, loggedIn: accountLoaded ? account.loggedIn : true, attempted: autoConnectAttempted })
     if (!ok) return
     autoConnectAttempted = true
     if (lastLocation === "") return
@@ -665,7 +628,6 @@ Item {
     else if (verb === "config") applyConfig(obj)
     else if (verb === "update") applyUpdate(obj, _notifyUpdate)
     else if (verb === "procs") applyProcs(obj)
-    else if (verb === "sudoCheck") sudoRule = obj.allowed === true ? "ok" : "missing"
     else if (verb === "cliPath") cliPath = typeof obj.path === "string" ? obj.path : ""
     else if (verb === "connect" || verb === "disconnect") applySnapshot(obj, verb === "disconnect", verb)
     else if (verb === "logout") {
@@ -702,7 +664,7 @@ Item {
   // config call, left "" for a routine background outcome (see errorSource).
   // `intent`: what a connect/disconnect action wanted (see errorIntent);
   // only kept when the error actually ends up "action"-sourced, so a sudo
-  // warning raised mid-connect never carries one (sudo keeps the old rule).
+  // warning raised mid-connect never carries one (it keeps the old error).
   function noteError(obj, source, intent) {
     lastError = Model.elideStatus(obj.error || "AdGuard VPN helper failed")
     errorCode = String(obj.code || "unknown")
@@ -714,10 +676,7 @@ Item {
       account = Model.loggedOutAccount()
       accountLoaded = true
     }
-    if (errorCode === "sudo_password") {
-      lastError = "sudo needs a password to start the VPN service"
-      sudoRule = "missing"
-    }
+    if (errorCode === "sudo_password") lastError = "sudo needs a password to start the VPN service"
   }
 
   // `requested`: the status came back from a disconnect the user asked for.
@@ -993,23 +952,6 @@ Item {
   }
 
   Timer {
-    id: sudoRecheck
-    // The rule is the user's to install or remove by hand, and the first
-    // check (refreshAll, onInstalledChanged) would otherwise stand until the
-    // next shell restart: re-asked every SUDO_RECHECK_MS while the CLI is
-    // there, and every SUDO_RECHECK_FAST_MS inside the README window. The
-    // interval binding restarts the timer when the window opens; the
-    // trigger closes it, dropping back to the slow cadence.
-    interval: root.sudoHelpAt > 0 ? Model.SUDO_RECHECK_FAST_MS : Model.SUDO_RECHECK_MS
-    repeat: true
-    running: root.installed
-    onTriggered: {
-      if (root.sudoHelpAt > 0 && !Model.sudoHelpRecent(root.sudoHelpAt, Date.now())) root.sudoHelpAt = 0
-      root.checkSudoRule()
-    }
-  }
-
-  Timer {
     id: rateTimer
     // A sample a second for as long as the tunnel is up, whether or not
     // anything is looking: every sample is a column of the traffic graph,
@@ -1079,9 +1021,8 @@ Item {
     // by LOGIN_POLL_MAX_TICKS on its own.
   }
   // A CLI that has just appeared (the install the setup prompt points to, a
-  // package manager) gets the sudo probe the missing one was spared.
+  // package manager) gets asked where it is.
   onInstalledChanged: {
-    if (installed && sudoRule === "unknown") checkSudoRule()
     if (installed && cliPath === "") checkCliPath()
   }
   // Every path that sets vpnState (snapshots, logout, noteError, account)
@@ -1256,9 +1197,6 @@ Item {
       // autoConnectPending is free to run again on the next snapshot.
       var wasAuto = root.autoConnectPending
       if (verb === "connect") root.autoConnectPending = false
-      // A tunnel that came up went through sudo without a prompt: whatever
-      // the probe said (or has not said yet), the rule is in place.
-      if (verb === "connect" && ok && Model.normalizeSnapshot(obj).state === "connected") root.sudoRule = "ok"
       if (!ok) {
         // Captured before the pendingLocation reset below, so a later
         // snapshot can tell whether connect/disconnect got there anyway.
@@ -1271,8 +1209,8 @@ Item {
             (isAction || mutate) ? "action" : "", intent)
         if (isAction) { root._desired = -1; root.pendingLocation = "" }
         // A connect that sudo turned away for a password goes to a terminal
-        // that can answer it (Model.connectNeedsTerminal) — unless it was
-        // startup auto-connect, which never opens anything on its own.
+        // that can answer it (retryInTerminal) — unless it was startup
+        // auto-connect, which never opens anything on its own.
         if (verb === "connect" && obj.code === "sudo_password" && !wasAuto) root.retryInTerminal(intent.target)
         if (verb === "config" && mutate) root._configHintPending = false
         // A failed/indeterminate background update check stays quiet (no

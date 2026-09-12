@@ -1114,68 +1114,6 @@ class ConfigVerbs(unittest.TestCase):
         self.assertEqual(j["skipped"], ["gnome-keyring-d"])
         self.assertNotIn("gnome-keyring", argv)
 
-    def test_sudo_probe_argv_is_the_exact_connect_command_the_rule_allows(self):
-        # Not what sudo-check asks any more (see the NOPASSWD test below),
-        # but still the shape tests/sudoers.test.sh pins the README rule
-        # against.
-        env = {"HOME": "/home/youruser", "XDG_DATA_HOME": "/home/youruser/.local/share",
-               "DISPLAY": ":1", "DBUS_SESSION_BUS_ADDRESS": "unix:path=/run/user/1000/bus"}
-        with mock.patch.dict(os.environ, env), mock.patch.object(agvpn, "cli_path", return_value=FAKE):
-            argv = agvpn.sudo_probe_argv()
-        self.assertEqual(argv, [
-            "/usr/bin/env", "HOME=/home/youruser",
-            "XDG_DATA_HOME=/home/youruser/.local/share", "DISPLAY=:1",
-            "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus", os.path.realpath(FAKE),
-            "connect", "--no-fork", "-l", "Probe", "--log-to-file", "--wait-for-parent",
-            "--ppid-file", "/home/youruser/.local/share/adguardvpn-cli/vpn.pid"])
-
-    def test_sudo_check_says_no_when_sudo_will_not_even_list(self):
-        # A sudo that wants a password just to list is a sudo that will want
-        # one to connect: a plain "no", not an error.
-        with tempfile.TemporaryDirectory() as d:
-            env = {"AEGIS_SUDO": str(ROOT / "tests" / "fake-sudo.sh"),
-                   "FAKE_LOG": str(Path(d, "sudo.log")), "FAKE_SUDO_RC": "1"}
-            rc, out, _ = run_verb("sudo-check", env_extra=env)
-            self.assertEqual(rc, 0)
-            self.assertEqual(self.check_json(out), {"ok": True, "allowed": False})
-
-    def test_sudo_check_wants_a_nopasswd_entry_not_mere_permission(self):
-        # `sudo -l <command>` answers "may this user run it", which on any
-        # ordinary machine the blanket `(ALL : ALL) ALL` rule says yes to
-        # while a connect still stops dead on a password prompt. Only the
-        # listing carries the distinction.
-        blanket = ("User u may run the following commands on host:\n"
-                   "    (ALL : ALL) ALL\n"
-                   "    (root) NOPASSWD: /usr/bin/pacman\n")
-        rule = blanket + ("    (root) NOPASSWD: /usr/bin/env HOME=/home/u "
-                          + os.path.realpath(FAKE) + " connect --no-fork -l Probe\n")
-        for listing, allowed in ((blanket, False), (rule, True)):
-            with tempfile.TemporaryDirectory() as d:
-                env = {"AEGIS_SUDO": str(ROOT / "tests" / "fake-sudo.sh"),
-                       "FAKE_LOG": str(Path(d, "sudo.log")), "FAKE_SUDO_LIST": listing,
-                       "HOME": "/home/u"}
-                rc, out, _ = run_verb("sudo-check", env_extra=env)
-                self.assertEqual(rc, 0)
-                self.assertEqual(self.check_json(out), {"ok": True, "allowed": allowed}, listing)
-
-    def test_sudo_probe_argv_defaults_the_session_values_it_cannot_see(self):
-        # an empty value is how the test runner's own session is hidden
-        env = {"HOME": "/home/u", "XDG_DATA_HOME": "", "DISPLAY": "", "DBUS_SESSION_BUS_ADDRESS": ""}
-        with mock.patch.dict(os.environ, env), mock.patch.object(agvpn, "cli_path", return_value=FAKE):
-            argv = agvpn.sudo_probe_argv()
-        self.assertIn("XDG_DATA_HOME=/home/u/.local/share", argv)
-        self.assertIn("DISPLAY=:0", argv)
-        self.assertIn("DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/%d/bus" % os.getuid(), argv)
-        self.assertIn("/home/u/.local/share/adguardvpn-cli/vpn.pid", argv)
-
-    def test_sudo_check_without_sudo_is_an_error_not_a_verdict(self):
-        rc, out, _ = run_verb("sudo-check", env_extra={"AEGIS_SUDO": "/nonexistent/sudo"})
-        self.assertEqual(rc, 0)
-        data = self.check_json(out)
-        self.assertFalse(data["ok"])
-        self.assertEqual(data["code"], "unknown")
-        self.assertNotIn("allowed", data)
-
     def test_cli_path_reports_the_binary_it_would_run(self):
         # What the panel hands to a terminal the user types in: the real
         # path, not the bare name that a no-symlink install leaves unresolvable.
@@ -1339,7 +1277,7 @@ class Budgets(unittest.TestCase):
 
     def test_queued_verbs_have_budgets_kill_and_unknown_do_not(self):
         for verb in ("snapshot", "locations", "connect", "disconnect", "account", "logout",
-                     "exclusions", "home", "config", "update-check", "procs", "sudo-check"):
+                     "exclusions", "home", "config", "update-check", "procs"):
             self.assertIsNotNone(agvpn.verb_budget(verb), verb)
         self.assertIsNone(agvpn.verb_budget("kill"))
         self.assertIsNone(agvpn.verb_budget("frobnicate"))

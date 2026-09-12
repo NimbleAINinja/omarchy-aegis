@@ -8,6 +8,42 @@ function loc(iso, country, city, ping, extra) {
   return o
 }
 
+test("Service.qml never elevates and never guesses: a connect goes through the helper, a sudo prompt to a terminal", () => {
+  const src = require("node:fs").readFileSync(require("node:path").join(__dirname, "..", "Service.qml"), "utf8")
+  // Nothing in the plugin runs as root, writes sudoers, or probes sudo.
+  assert.doesNotMatch(src, /pkexec|sudoRuleProcess|installSudoRule|aegis-sudo-rule|sudoers|sudo-check|sudoRule|openSudoHelp|README_URL/)
+  // connectTo queues the helper's connect unless told to use a terminal.
+  const connect = src.slice(src.indexOf("function connectTo("), src.indexOf("function connectInTerminal("))
+  assert.match(connect, /function connectTo\(cliName, city, inTerminal\)/)
+  assert.match(connect, /if \(inTerminal === true\) \{ connectInTerminal\(target\); return \}/)
+  assert.doesNotMatch(connect, /connectNeedsTerminal|nextMode/)
+  assert.ok(connect.indexOf("inTerminal === true") < connect.indexOf("enqueue("))
+  assert.match(src, /function connectInTerminal\(cliName\) \{\s*\n\s*Quickshell\.execDetached\(\["omarchy-launch-floating-terminal-with-presentation", Model\.connectCommand\(root\.cliPath, cliName\)\]\)/)
+  assert.match(src, /function retryInTerminal\(city\) \{\s*\n\s*var loc = Model\.findLocation\(locations, city\)\s*\n\s*if \(loc\) connectTo\(loc\.cliName, loc\.city, true\)/)
+  // Auto-connect asks nothing about terminals: the helper's answer decides.
+  assert.doesNotMatch(src, /needsTerminal/)
+  const panel = require("node:fs").readFileSync(require("node:path").join(__dirname, "..", "Panel.qml"), "utf8")
+  assert.match(panel, /Model\.setupStep\(vpn\.installed, vpn\.vpnState\)/)
+  assert.doesNotMatch(panel, /sudo/i)
+  const settings = require("node:fs").readFileSync(require("node:path").join(__dirname, "..", "SettingsView.qml"), "utf8")
+  assert.doesNotMatch(settings, /sudo/i)
+  // A connect the helper ran that sudo turned away goes to a terminal, by
+  // city, after the action state has been reset — never for auto-connect.
+  const exited = src.slice(src.indexOf("id: jobProcess"))
+  const reset = exited.indexOf('if (isAction) { root._desired = -1; root.pendingLocation = "" }')
+  const retry = exited.indexOf('if (verb === "connect" && obj.code === "sudo_password" && !wasAuto) root.retryInTerminal(intent.target)')
+  assert.ok(reset !== -1 && retry !== -1 && reset < retry)
+  assert.match(exited, /var wasAuto = root\.autoConnectPending\s*\n\s*if \(verb === "connect"\) root\.autoConnectPending = false/)
+})
+
+test("connectCommand is the CLI's own connect, quoted for a shell", () => {
+  assert.equal(Model.connectCommand("", "Tokyo"), "adguardvpn-cli connect -l Tokyo -y")
+  assert.equal(Model.connectCommand("/opt/adguardvpn_cli/adguardvpn-cli", "New York"), "/opt/adguardvpn_cli/adguardvpn-cli connect -l 'New York' -y")
+  assert.equal(Model.connectCommand("/opt/x/cli", "a;rm -rf ~"), "/opt/x/cli connect -l 'a;rm -rf ~' -y")
+  assert.equal(Model.connectNeedsTerminal, undefined)
+  assert.equal(Model.README_URL, undefined)
+})
+
 test("toList handles null, arrays and array-likes", () => {
   assert.deepEqual(Model.toList(null), [])
   assert.deepEqual(Model.toList(undefined), [])
@@ -1104,10 +1140,6 @@ test("shouldAutoConnect requires every precondition", () => {
   assert.equal(Model.shouldAutoConnect(Object.assign({}, base, { loggedIn: undefined })), true)
   assert.equal(Model.shouldAutoConnect(Object.assign({}, base, { state: "connected" })), false)
   assert.equal(Model.shouldAutoConnect(Object.assign({}, base, { state: "unknown" })), false)
-  // A connect that would open a terminal for a sudo password never fires
-  // by itself at login (Model.connectNeedsTerminal).
-  assert.equal(Model.shouldAutoConnect(Object.assign({}, base, { needsTerminal: true })), false)
-  assert.equal(Model.shouldAutoConnect(Object.assign({}, base, { needsTerminal: false })), true)
   assert.equal(Model.shouldAutoConnect(null), false)
 })
 
@@ -1603,16 +1635,15 @@ test("procsFresh reuses a process list for ten seconds and always fetches the fi
 
 test("Service.qml runs the lock-free verbs off the CLI queue without reordering home.json", () => {
   const src = require("node:fs").readFileSync(require("node:path").join(__dirname, "..", "Service.qml"), "utf8")
-  // The five verbs agvpn.py answers without ever calling run_cli.
+  // The four verbs agvpn.py answers without ever calling run_cli.
   assert.match(src, /sideEnqueue\(\["procs"\], "procs", false\)/)
   assert.match(src, /sideEnqueue\(\["home", "cached"\], "homeCache", false\)/)
   assert.match(src, /sideEnqueue\(\["home", "forget"\], "home", true\)/)
-  assert.match(src, /sideEnqueue\(\["sudo-check"\], "sudoCheck", false\)/)
   assert.match(src, /sideEnqueue\(\["cli-path"\], "cliPath", false\)/)
   // ...and nothing else: every CLI-backed verb keeps the serialized queue.
   const side = src.match(/sideEnqueue\(\[[^\]]*\]/g) || []
-  assert.equal(side.length, 5)
-  assert.equal(new Set(side).size, 5)
+  assert.equal(side.length, 4)
+  assert.equal(new Set(side).size, 4)
   assert.doesNotMatch(src, /sideEnqueue\(\["(snapshot|locations|account|connect|disconnect|logout|config|exclusions|update-check)"/)
   // The TTL gate sits in front of the procs job.
   assert.match(src, /if \(Model\.procsFresh\(_procsAt, Date\.now\(\), Model\.PROCS_TTL_MS\)\) return/)
@@ -1886,24 +1917,19 @@ test("Service.qml uses tunnel.log's FileView as a trigger only, and urgent snaps
   assert.match(src, /prevState: _lossBase/)
 })
 
-test("setupStep names the first missing prerequisite, and only a TUN connect needs the sudo rule", () => {
-  assert.equal(Model.setupStep(false, "disconnected", "ok", "tun"), "install")
-  assert.equal(Model.setupStep(false, "logged_out", "missing", "tun"), "install")
-  assert.equal(Model.setupStep(true, "logged_out", "missing", "tun"), "login")
-  assert.equal(Model.setupStep(true, "disconnected", "missing", "tun"), "sudo")
-  // The terminal is what the notice warns about, so it shows while one may
-  // still open; a tunnel that is up has no use for it.
-  assert.equal(Model.setupStep(true, "connecting", "missing", "tun"), "sudo")
-  assert.equal(Model.setupStep(true, "connected", "missing", "tun"), "")
-  assert.equal(Model.setupStep(true, "disconnected", "missing", "socks"), "")
-  assert.equal(Model.setupStep(true, "disconnected", "unknown", "tun"), "")
-  assert.equal(Model.setupStep(true, "disconnected", "ok", "tun"), "")
-  assert.equal(Model.setupStep(true, "unknown", "ok", "tun"), "")
-  assert.equal(Model.setupStep(true, undefined, undefined, undefined), "")
+test("setupStep names the first missing prerequisite, and nothing once the CLI is signed in", () => {
+  assert.equal(Model.setupStep(false, "disconnected"), "install")
+  assert.equal(Model.setupStep(false, "logged_out"), "install")
+  assert.equal(Model.setupStep(true, "logged_out"), "login")
+  // A sudo prompt is not a prerequisite: the connect runs in a terminal
+  // that asks for the password, and nothing is set up for it.
+  for (const state of ["disconnected", "connecting", "connected", "unknown", undefined])
+    assert.equal(Model.setupStep(true, state), "", String(state))
+  assert.equal(Model.setupPrompt("sudo").text, "")
 })
 
 test("setupPrompt has a line, a button and an icon for every step and nothing for none", () => {
-  for (const step of ["install", "login", "sudo"]) {
+  for (const step of ["install", "login"]) {
     const p = Model.setupPrompt(step)
     assert.ok(p.text.length > 10, step)
     assert.ok(p.button.length >= 5 && p.button.length <= 8, step)
@@ -1946,7 +1972,7 @@ test("provesInstalled reads the CLI's presence off any answer it gave, not just 
   assert.equal(Model.provesInstalled("snapshot", { ok: false, code: "cli_missing" }), false)
   assert.equal(Model.provesInstalled("account", { ok: false, code: "cli_missing" }), false)
   // These verbs never run the binary, so they prove nothing either way.
-  for (const verb of ["home", "homeCache", "procs", "sudoCheck"])
+  for (const verb of ["home", "homeCache", "procs", "cliPath"])
     assert.equal(Model.provesInstalled(verb, { ok: true }), false, verb)
   assert.equal(Model.provesInstalled("snapshot", null), false)
 })
@@ -2016,63 +2042,6 @@ test("accountStale catches the cached log-out a snapshot has just disproved", ()
   assert.equal(Model.accountStale("disconnected", false, false), false)
 })
 
-test("Service.qml never elevates: a connect without the sudo rule goes to a terminal", () => {
-  const src = require("node:fs").readFileSync(require("node:path").join(__dirname, "..", "Service.qml"), "utf8")
-  // Nothing in the plugin runs as root, and nothing writes sudoers.
-  assert.doesNotMatch(src, /pkexec|sudoRuleProcess|installSudoRule|aegis-sudo-rule|sudoers/)
-  // connectTo routes on Model.connectNeedsTerminal before anything is queued.
-  const connect = /function connectTo\(cliName, city, inTerminal\) \{[\s\S]*?\n  \}/.exec(src)[0]
-  assert.match(connect, /if \(inTerminal === true \|\| Model\.connectNeedsTerminal\(sudoRule, nextMode, vpnState\)\) \{ connectInTerminal\(target\); return \}/)
-  // The retry after a sudo_password answer forces the terminal: the state
-  // that said none was needed is the one that was wrong, so asking it again
-  // would loop through the helper.
-  assert.match(src, /function retryInTerminal\(city\) \{[\s\S]*?connectTo\(loc\.cliName, loc\.city, true\)/)
-  assert.ok(connect.indexOf("connectNeedsTerminal") < connect.indexOf("enqueue("))
-  // The terminal runs the CLI's own connect; the login poll watches it land.
-  assert.match(src, /function connectInTerminal\(cliName\) \{\s*\n\s*Quickshell\.execDetached\(\["omarchy-launch-floating-terminal-with-presentation", Model\.connectCommand\(root\.cliPath, cliName\)\]\)/)
-  assert.match(src, /if \(waitFor === "connect"\) \{\s*\n\s*root\.refresh\(\)/)
-  // Startup auto-connect never opens a terminal on its own.
-  assert.match(src, /needsTerminal: Model\.connectNeedsTerminal\(sudoRule, nextMode, state\)/)
-  // The mode that decides is the configured one: a disconnected status
-  // names no mode, so reading it would call SOCKS users' connects TUN. The
-  // config is fetched once, with everything else, so the answer is there.
-  assert.match(src, /readonly property string nextMode: configLoaded \? config\.mode : mode/)
-  assert.match(src, /function refreshAll\(force\) \{[\s\S]*?if \(!configLoaded\) refreshConfig\(\)/)
-  const panel = require("node:fs").readFileSync(require("node:path").join(__dirname, "..", "Panel.qml"), "utf8")
-  assert.match(panel, /Model\.setupStep\(vpn\.installed, vpn\.vpnState, vpn\.sudoRule, vpn\.nextMode\)/)
-  // A connect the helper ran that sudo turned away goes to a terminal, by
-  // city, after the exit handler has reset the pending state it will set again.
-  const exited = src.slice(src.indexOf("id: jobProcess"))
-  const reset = exited.indexOf('if (isAction) { root._desired = -1; root.pendingLocation = "" }')
-  const retry = exited.indexOf('if (verb === "connect" && obj.code === "sudo_password" && !wasAuto) root.retryInTerminal(intent.target)')
-  assert.ok(reset !== -1 && retry !== -1 && reset < retry)
-  assert.match(exited, /var wasAuto = root\.autoConnectPending\s*\n\s*if \(verb === "connect"\) root\.autoConnectPending = false/)
-  // The notice's button opens the README; nothing is written.
-  assert.match(src, /function openSudoHelp\(\) \{\s*\n\s*Qt\.openUrlExternally\(Model\.README_URL\)/)
-})
-
-test("connectNeedsTerminal and connectCommand cover the passwordless-less connect", () => {
-  assert.equal(Model.connectNeedsTerminal("missing", "tun", "disconnected"), true)
-  assert.equal(Model.connectNeedsTerminal("missing", "tun", "unknown"), true)
-  // SOCKS mode never goes through sudo.
-  assert.equal(Model.connectNeedsTerminal("missing", "socks", "disconnected"), false)
-  // Nor does a switch of city while the tunnel is up: the root service is
-  // already running and only takes the new location.
-  assert.equal(Model.connectNeedsTerminal("missing", "tun", "connected"), false)
-  // Mid-connect the service may not be up yet (the password not typed): the
-  // helper would only be turned away and retried in a terminal, so ask now.
-  assert.equal(Model.connectNeedsTerminal("missing", "tun", "connecting"), true)
-  // The rule is there, or the probe has not answered: try the helper first;
-  // a sudo_password answer is handed to a terminal by the exit handler.
-  assert.equal(Model.connectNeedsTerminal("ok", "tun", "disconnected"), false)
-  assert.equal(Model.connectNeedsTerminal("unknown", "tun", "disconnected"), false)
-  assert.equal(Model.connectNeedsTerminal(undefined, undefined, undefined), false)
-  // The CLI's own connect, quoted for the shell, -y for the CLI's questions.
-  assert.equal(Model.connectCommand("", "Tokyo"), "adguardvpn-cli connect -l Tokyo -y")
-  assert.equal(Model.connectCommand("/opt/adguardvpn_cli/adguardvpn-cli", "New York"), "/opt/adguardvpn_cli/adguardvpn-cli connect -l 'New York' -y")
-  assert.equal(Model.connectCommand("/opt/x/cli", "a;rm -rf ~"), "/opt/x/cli connect -l 'a;rm -rf ~' -y")
-  assert.match(Model.README_URL, /^https:\/\/github\.com\/NimbleAINinja\/omarchy-aegis#/)
-})
 
 test("Service.qml proves the CLI from answers that failed, not only from good ones", () => {
   const src = require("node:fs").readFileSync(require("node:path").join(__dirname, "..", "Service.qml"), "utf8")
@@ -2104,8 +2073,6 @@ test("setupPlan walks the two prerequisites and says where the user is", () => {
   const at = step => Model.setupPlan(step).map(r => r.state)
   assert.deepEqual(at("install"), ["current", "todo"])
   assert.deepEqual(at("login"), ["done", "current"])
-  // The sudo notice is not a step: there is nothing to set up in the
-  // plugin, so no banner either.
   assert.deepEqual(at("sudo"), [])
   const rows = Model.setupPlan("install")
   assert.deepEqual(rows.map(r => r.n), ["1", "2"])
@@ -2156,30 +2123,4 @@ test("Service.qml runs the login and update terminals through Model.cliCommand, 
   assert.ok(src.includes('sideEnqueue(["cli-path"], "cliPath"'))
   const installed = src.slice(src.indexOf("onInstalledChanged:"))
   assert.ok(installed.slice(0, 200).includes("checkCliPath()"), "the new CLI gets asked where it is")
-})
-
-test("the sudo rule is rechecked: every 5 minutes, every 10 s for 30 minutes after the README button", () => {
-  assert.equal(Model.SUDO_RECHECK_MS, 300000)
-  assert.equal(Model.SUDO_RECHECK_FAST_MS, 10000)
-  assert.equal(Model.SUDO_HELP_WINDOW_MS, 1800000)
-  const t = 1700000000000
-  assert.equal(Model.sudoHelpRecent(0, t), false)
-  assert.equal(Model.sudoHelpRecent(undefined, t), false)
-  assert.equal(Model.sudoHelpRecent(t, t), true)
-  assert.equal(Model.sudoHelpRecent(t, t + 1800000 - 1), true)
-  assert.equal(Model.sudoHelpRecent(t, t + 1800000), false)
-  assert.equal(Model.sudoRecheckIntervalMs(t, t + 60000), 10000)
-  assert.equal(Model.sudoRecheckIntervalMs(t, t + 3600000), 300000)
-  assert.equal(Model.sudoRecheckIntervalMs(0, t), 300000)
-
-  const src = require("node:fs").readFileSync(require("node:path").join(__dirname, "..", "Service.qml"), "utf8")
-  const timer = src.slice(src.indexOf("id: sudoRecheck"), src.indexOf("id: rateTimer"))
-  assert.match(timer, /interval: root\.sudoHelpAt > 0 \? Model\.SUDO_RECHECK_FAST_MS : Model\.SUDO_RECHECK_MS/)
-  assert.match(timer, /repeat: true/)
-  assert.match(timer, /running: root\.installed/)
-  assert.match(timer, /if \(root\.sudoHelpAt > 0 && !Model\.sudoHelpRecent\(root\.sudoHelpAt, Date\.now\(\)\)\) root\.sudoHelpAt = 0/)
-  assert.match(timer, /root\.checkSudoRule\(\)/)
-  // The README button opens the window; nothing else does.
-  assert.match(src, /function openSudoHelp\(\) \{\s*\n\s*Qt\.openUrlExternally\(Model\.README_URL\)\s*\n\s*sudoHelpAt = Date\.now\(\)/)
-  assert.equal((src.match(/sudoHelpAt = Date\.now\(\)/g) || []).length, 1)
 })

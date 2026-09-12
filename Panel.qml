@@ -120,7 +120,7 @@ Panel {
   }
   // The first prerequisite still missing (Model.setupStep) and the one-line
   // way to fix it, shown under the status line until nothing is in the way.
-  readonly property string setupStep: Model.setupStep(vpn.installed, vpn.vpnState, vpn.sudoRule, vpn.nextMode)
+  readonly property string setupStep: Model.setupStep(vpn.installed, vpn.vpnState)
   readonly property var setupPrompt: Model.setupPrompt(setupStep)
   // The three steps and where the user is in them, for the banner over the
   // map. Empty once nothing is in the way, which takes the banner away.
@@ -133,7 +133,6 @@ Panel {
   function runSetup() {
     if (setupStep === "install") vpn.openInstallGuide()
     else if (setupStep === "login") vpn.login()
-    else if (setupStep === "sudo") vpn.openSudoHelp()
   }
   readonly property string statusLine: vpn.actionStatus !== "" ? vpn.actionStatus : vpn.lastError
   readonly property color statusColor: vpn.lastError !== "" && vpn.actionStatus === "" ? urgent : dim
@@ -567,9 +566,8 @@ Panel {
         animate: root.opened
 
         // First run, over the map it has nothing to show on yet: what the
-        // three steps are, which one is live, and that each one hands the
-        // panel back. No MouseArea, so a map with cities on it (the sudo
-        // step, where the list is already loaded) stays clickable around it.
+        // steps are, which one is live, and that each one hands the panel
+        // back. No MouseArea, so the map stays clickable around it.
         Rectangle {
           id: setupBanner
           visible: root.setupPlan.length > 0

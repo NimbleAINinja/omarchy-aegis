@@ -4,8 +4,8 @@ import qs.Commons
 import qs.Ui
 import "Model.js" as Model
 
-// Settings: the three things a tunnel needs (the CLI, an account, the sudo
-// rule) with a button for each that is missing, then connection mode and
+// Settings: the two things a tunnel needs (the CLI and an account) with a
+// button for each that is missing, then connection mode and
 // protocol, SOCKS, DNS, and Aegis's own switches. Toggles and chips apply
 // immediately; text fields apply on Enter.
 Column {
@@ -17,7 +17,7 @@ Column {
   readonly property bool socks: config.mode === "socks"
   // Keyboard cursor targets, top to bottom. Text fields are reached by mouse
   // or Tab; the cursor walks the toggles and chip rows.
-  readonly property var targets: ["cli", "account", "sudoRule", "mode", "protocol", "postQuantum", "changeSystemDns", "autoConnect", "locateHome", "pingDots"]
+  readonly property var targets: ["cli", "account", "mode", "protocol", "postQuantum", "changeSystemDns", "autoConnect", "locateHome", "pingDots"]
   readonly property int count: targets.length
   readonly property bool editing: dnsField.activeFocus || hostField.activeFocus || userField.activeFocus
     || passField.activeFocus || portField.activeFocus
@@ -27,10 +27,6 @@ Column {
   // "in" / "out" / "unknown" — not a bool, because with no CLI the account
   // call never lands and the placeholder would read as signed in.
   readonly property string accountState: Model.accountState(vpn ? vpn.account : null, vpn ? vpn.accountLoaded : false)
-  // Missing is not a fault: connects still work, in a terminal that asks
-  // for the password. The README says how to do without that.
-  readonly property string sudoText: !vpn ? ""
-    : (vpn.sudoRule === "ok" ? "Set up" : (vpn.sudoRule === "missing" ? "None, TUN connects ask for a password" : "Not checked"))
 
   spacing: Style.space(8)
 
@@ -49,7 +45,6 @@ Column {
     else if (name === "pingDots") panel.persistSettings({ pingDots: !vpn.pingDots })
     else if (name === "cli") { if (!vpn.installed) vpn.openInstallGuide(); else if (updateReady) vpn.runUpdate(); else vpn.checkUpdate(false) }
     else if (name === "account") { if (root.accountState === "out") vpn.login() }
-    else if (name === "sudoRule") { if (vpn.sudoRule !== "ok") vpn.openSudoHelp() }
   }
 
   function moveHorizontal(dx) {
@@ -94,16 +89,6 @@ Column {
     buttonVisible: root.accountState === "out"
     buttonText: "Log in"
     buttonIcon: Model.setupPrompt("login").icon
-  }
-
-  SetupRow {
-    name: "sudoRule"
-    label: "Sudo rule"
-    status: root.sudoText
-    statusHot: vpn ? vpn.sudoRule === "missing" : false
-    buttonText: "README"
-    buttonIcon: Model.setupPrompt("sudo").icon
-    buttonVisible: vpn ? vpn.sudoRule !== "ok" : true
   }
 
   PanelSectionHeader {
