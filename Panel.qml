@@ -556,6 +556,7 @@ Panel {
         okColor: Util.alpha(root.foreground, 0.6)
         poorColor: root.urgent
         textColor: root.foreground
+        dimTextColor: root.dim
         haloColor: Util.alpha(Color.popups.background, 0.92)
         fontFamily: root.fontFamily
         labelPixelSize: Style.font.caption
