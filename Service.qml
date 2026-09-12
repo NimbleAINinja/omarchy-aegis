@@ -64,6 +64,11 @@ Item {
   // a connect that went through settles it as ok. Model.setupStep turns it
   // into the panel's setup prompt.
   property string sudoRule: "unknown"
+  // Where the adguardvpn-cli binary is, from the side channel's `cli-path`
+  // (checkCliPath), or "" until it has answered. Only the commands that go
+  // to a terminal need it: everything in here reaches the CLI through the
+  // helper, which resolves the path itself. See Model.cliCommand.
+  property string cliPath: ""
   // True from installSudoRule() until its pkexec run has exited.
   property bool sudoRuleBusy: false
   // The city a connect was after when sudo asked for a password, so the
@@ -246,6 +251,13 @@ Item {
     sideEnqueue(["sudo-check"], "sudoCheck", false)
   }
 
+  // Asked once, when the CLI first turns up: the answer cannot change while
+  // the binary stays put, and a missing one has no path to report.
+  function checkCliPath() {
+    if (!installed) return
+    sideEnqueue(["cli-path"], "cliPath", false)
+  }
+
   // Writes the README's rule for this user through pkexec (the shell's own
   // polkit agent puts up the prompt). aegis-sudo-rule reads the user from
   // PKEXEC_UID, checks the file with visudo and only then moves it into
@@ -380,9 +392,11 @@ Item {
     // not answer with a location a lookup has already replaced, and a forget
     // must not be overtaken by a lookup that writes the file back. So a home
     // job here waits for any `home` job on the main queue (jobProcess.onExited
-    // pumps this channel again). `procs` and `sudoCheck` touch nothing
-    // shared and never wait.
-    if (next.verb !== "procs" && next.verb !== "sudoCheck" && ((jobProcess.running && jobProcess.verb === "home") || queued("home"))) return
+    // pumps this channel again). Named the other way round — the jobs that
+    // wait, not the ones that don't — so that a side verb added later, which
+    // by definition touches nothing the CLI queue writes, cannot be forgotten
+    // into waiting on a lookup it has nothing to do with.
+    if ((next.verb === "home" || next.verb === "homeCache") && ((jobProcess.running && jobProcess.verb === "home") || queued("home"))) return
     _sideQueue = _sideQueue.slice(1)
     sideProcess.verb = next.verb
     sideProcess.mutate = next.mutate === true
@@ -432,7 +446,7 @@ Item {
   }
 
   function runUpdate() {
-    Quickshell.execDetached(["omarchy-launch-floating-terminal-with-presentation", "adguardvpn-cli update"])
+    Quickshell.execDetached(["omarchy-launch-floating-terminal-with-presentation", Model.cliCommand(root.cliPath, "update")])
     actionStatus = "Updating from the terminal"
   }
 
@@ -546,7 +560,7 @@ Item {
   }
 
   function login() {
-    Quickshell.execDetached(["omarchy-launch-floating-terminal-with-presentation", "adguardvpn-cli login"])
+    Quickshell.execDetached(["omarchy-launch-floating-terminal-with-presentation", Model.cliCommand(root.cliPath, "login")])
     actionStatus = "Log in from the terminal"
     loginPoll.waitFor = "login"
     loginPoll.ticks = 0
@@ -625,6 +639,7 @@ Item {
     else if (verb === "update") applyUpdate(obj, _notifyUpdate)
     else if (verb === "procs") applyProcs(obj)
     else if (verb === "sudoCheck") sudoRule = obj.allowed === true ? "ok" : "missing"
+    else if (verb === "cliPath") cliPath = typeof obj.path === "string" ? obj.path : ""
     else if (verb === "connect" || verb === "disconnect") applySnapshot(obj, verb === "disconnect", verb)
     else if (verb === "logout") {
       // Logging out takes the tunnel down on request: an intentional
@@ -1009,7 +1024,10 @@ Item {
   }
   // A CLI that has just appeared (the setup prompt's installer, a package
   // manager) gets the sudo probe the missing one was spared.
-  onInstalledChanged: if (installed && sudoRule === "unknown") checkSudoRule()
+  onInstalledChanged: {
+    if (installed && sudoRule === "unknown") checkSudoRule()
+    if (installed && cliPath === "") checkCliPath()
+  }
   // Every path that sets vpnState (snapshots, logout, noteError, account)
   // moves the loss base with it.
   onVpnStateChanged: _lossBase = Model.lossBase(_lossBase, vpnState)

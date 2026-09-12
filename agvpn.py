@@ -15,6 +15,7 @@
     python3 agvpn.py config set socksPassword -   # the password is one line on stdin
     python3 agvpn.py update-check
     python3 agvpn.py sudo-check           # would sudo start the VPN service without a password?
+    python3 agvpn.py cli-path             # where the binary is; no CLI call, no lock
     python3 agvpn.py kill <name> [name...]
 
 Always exits 0. Success is {"ok": true, ...}; failure is
@@ -608,6 +609,7 @@ def verb_budgets():
         "update-check": 2 * cli,                          # check-update, --version (cached per binary)
         "procs": PROCS_TIMEOUT,
         "sudo-check": SUDO_CHECK_TIMEOUT,
+        "cli-path": 0,  # a which() and a stat; nothing to wait for but the lock
     }
     return {verb: lock_wait + seconds for verb, seconds in calls.items()}
 
@@ -1479,6 +1481,27 @@ def verb_sudo_check():
     return {"ok": True, "allowed": sudo_nopasswd_for(p.stdout, os.path.realpath(cli_path()))}
 
 
+
+def verb_cli_path():
+    """Where the adguardvpn-cli binary is, resolved exactly as every CLI call
+    in here resolves it (cli_path) — for the commands Service.qml hands to a
+    terminal the user watches.
+
+    AdGuard's installer asks "Would you like to create a link in
+    /usr/local/bin to the executable? [y/N]" and the default answer is no,
+    which leaves the binary in /opt/adguardvpn_cli, writes a .nosymlink
+    marker beside it and prints the full path as the way to run it. Every
+    call in this helper survives that, because cli_path falls back to that
+    directory — but `adguardvpn-cli login` typed into the user's own shell
+    does not, and that is the panel's step 2. So the panel asks where the
+    binary is instead of assuming the name resolves. No CLI call, no lock:
+    the side channel's job."""
+    binary = cli_path()
+    if not (os.path.isfile(binary) and os.access(binary, os.X_OK)):
+        raise CliError("cli_missing", "adguardvpn-cli not found")
+    return {"ok": True, "path": os.path.realpath(binary)}
+
+
 def verb_procs():
     """Unique process names owned by the current user, for the kill-switch autosuggest.
 
@@ -1559,6 +1582,8 @@ def dispatch(argv):
         return verb_procs()
     if verb == "sudo-check":
         return verb_sudo_check()
+    if verb == "cli-path":
+        return verb_cli_path()
     raise CliError("unknown", "unknown verb: %s" % (verb or "(none)"))
 
 

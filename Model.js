@@ -486,6 +486,26 @@ function linkState(vpnState, pendingLocation) {
 // /usr/local/bin link. -v so the terminal shows what it does.
 var CLI_INSTALL_COMMAND = "curl -fsSL https://raw.githubusercontent.com/AdguardTeam/AdGuardVPNCLI/master/scripts/release/install.sh | sh -s -- -v"
 
+// A command for one of those terminals: the binary's own path once the
+// cli-path verb has answered with it, the bare name until then and for
+// anyone whose install did make the /usr/local/bin link. The installer's
+// link question defaults to no, and the name alone resolves to nothing in
+// the user's shell after that — while the panel itself carries on fine,
+// because agvpn.cli_path() falls back to /opt/adguardvpn_cli. The result is
+// a shell command string, so the path is quoted.
+function cliCommand(path, args) {
+  var binary = shellQuote(str(path) !== "" ? path : "adguardvpn-cli")
+  var rest = str(args)
+  return rest === "" ? binary : binary + " " + rest
+}
+
+// Bare when the shell would read it as one word, single-quoted when not.
+function shellQuote(text) {
+  var value = str(text)
+  if (/^[A-Za-z0-9_@%+=:,.\/-]+$/.test(value)) return value
+  return "'" + value.replace(/'/g, "'\\''") + "'"
+}
+
 // Verbs that answer by running adguardvpn-cli. "home"/"homeCache" (a web
 // lookup and its cache file), "procs" and "sudoCheck" never touch the
 // binary, so what they return says nothing about whether it is installed.
@@ -1633,7 +1653,8 @@ function findExclusionDomain(domains, needle) {
 // against agvpn.py, so change both together.
 var HELPER_BUDGET_SEC = {
   "snapshot": 24, "locations": 24, "connect": 84, "disconnect": 36, "account": 24, "logout": 24,
-  "exclusions": 48, "home": 35, "config": 39, "update-check": 36, "procs": 17, "sudo-check": 17
+  "exclusions": 48, "home": 35, "config": 39, "update-check": 36, "procs": 17, "sudo-check": 17,
+  "cli-path": 12
 }
 // On top of a budget: python start-up, reaping a timed-out CLI, the answer.
 var WATCHDOG_SLACK_MS = 5000
@@ -1695,6 +1716,8 @@ if (typeof module !== "undefined") {
     setupStep: setupStep,
     setupPrompt: setupPrompt,
     CLI_INSTALL_COMMAND: CLI_INSTALL_COMMAND,
+    cliCommand: cliCommand,
+    shellQuote: shellQuote,
     formatRate: formatRate,
     formatUptime: formatUptime,
     rateFrom: rateFrom,

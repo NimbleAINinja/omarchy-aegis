@@ -1176,6 +1176,31 @@ class ConfigVerbs(unittest.TestCase):
         self.assertEqual(data["code"], "unknown")
         self.assertNotIn("allowed", data)
 
+    def test_cli_path_reports_the_binary_it_would_run(self):
+        # What the panel hands to a terminal the user types in: the real
+        # path, not the bare name that a no-symlink install leaves unresolvable.
+        rc, out, _ = run_verb("cli-path")
+        self.assertEqual(rc, 0)
+        self.assertEqual(self.check_json(out), {"ok": True, "path": os.path.realpath(FAKE)})
+
+    def test_cli_path_is_cli_missing_when_nothing_is_installed(self):
+        with tempfile.TemporaryDirectory() as d:
+            rc, out, _ = run_verb("cli-path", cli=str(Path(d, "nope")))
+            self.assertEqual(rc, 0)
+            data = self.check_json(out)
+            self.assertFalse(data["ok"])
+            self.assertEqual(data["code"], "cli_missing")
+            self.assertNotIn("path", data)
+
+    def test_cli_path_never_runs_the_binary(self):
+        # The side channel's rule: this verb answers without starting a CLI.
+        with tempfile.TemporaryDirectory() as d:
+            log = Path(d, "cli.log")
+            rc, out, _ = run_verb("cli-path", env_extra={"FAKE_LOG": str(log)})
+            self.assertEqual(rc, 0)
+            self.assertTrue(self.check_json(out)["ok"])
+            self.assertFalse(log.exists(), "cli-path started adguardvpn-cli")
+
     def test_procs_lists_unique_sorted_user_process_names(self):
         with tempfile.TemporaryDirectory() as proc:
             os.makedirs(os.path.join(proc, "42"))

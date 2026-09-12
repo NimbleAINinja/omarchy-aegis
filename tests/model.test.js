@@ -1600,22 +1600,24 @@ test("procsFresh reuses a process list for ten seconds and always fetches the fi
 
 test("Service.qml runs the lock-free verbs off the CLI queue without reordering home.json", () => {
   const src = require("node:fs").readFileSync(require("node:path").join(__dirname, "..", "Service.qml"), "utf8")
-  // The four verbs agvpn.py answers without ever calling run_cli.
+  // The five verbs agvpn.py answers without ever calling run_cli.
   assert.match(src, /sideEnqueue\(\["procs"\], "procs", false\)/)
   assert.match(src, /sideEnqueue\(\["home", "cached"\], "homeCache", false\)/)
   assert.match(src, /sideEnqueue\(\["home", "forget"\], "home", true\)/)
   assert.match(src, /sideEnqueue\(\["sudo-check"\], "sudoCheck", false\)/)
+  assert.match(src, /sideEnqueue\(\["cli-path"\], "cliPath", false\)/)
   // ...and nothing else: every CLI-backed verb keeps the serialized queue.
   const side = src.match(/sideEnqueue\(\[[^\]]*\]/g) || []
-  assert.equal(side.length, 4)
-  assert.equal(new Set(side).size, 4)
+  assert.equal(side.length, 5)
+  assert.equal(new Set(side).size, 5)
   assert.doesNotMatch(src, /sideEnqueue\(\["(snapshot|locations|account|connect|disconnect|logout|config|exclusions|update-check)"/)
   // The TTL gate sits in front of the procs job.
   assert.match(src, /if \(Model\.procsFresh\(_procsAt, Date\.now\(\), Model\.PROCS_TTL_MS\)\) return/)
   assert.match(src, /_procsAt = Date\.now\(\)/)
   // A home job on the side channel still orders against the `home` lookup,
   // which writes the same file from the CLI-serialized queue.
-  assert.match(src, /next\.verb !== "procs" && next\.verb !== "sudoCheck" && \(\(jobProcess\.running && jobProcess\.verb === "home"\) \|\| queued\("home"\)\)/)
+  // Only the two verbs that read or write home.json order against the lookup.
+  assert.match(src, /\(next\.verb === "home" \|\| next\.verb === "homeCache"\) && \(\(jobProcess\.running && jobProcess\.verb === "home"\) \|\| queued\("home"\)\)/)
   assert.match(src, /root\.pump\(\)\n\s*\/\/[\s\S]*?\n\s*root\.sidePump\(\)/)
   // The write still reports its failures; the reads still stay quiet.
   assert.match(src, /else if \(mutate\) root\.noteError\(/)
@@ -2082,4 +2084,38 @@ test("setupPlan walks the three prerequisites and says where the user is", () =>
 test("SETUP_INTRO says what is coming and that each step hands you back", () => {
   assert.match(Model.SETUP_INTRO, /^First, some setup: /)
   assert.match(Model.SETUP_INTRO, /Come back here after each to continue\.$/)
+})
+
+// --- the command a terminal gets -----------------------------------------------
+
+test("cliCommand uses the resolved binary, falls back to the bare name, and quotes", () => {
+  assert.equal(Model.cliCommand("/opt/adguardvpn_cli/adguardvpn-cli", "login"),
+    "/opt/adguardvpn_cli/adguardvpn-cli login")
+  // Before the cli-path answer lands, and for anyone whose install did make
+  // the /usr/local/bin link: unchanged from what the panel always ran.
+  assert.equal(Model.cliCommand("", "login"), "adguardvpn-cli login")
+  assert.equal(Model.cliCommand(null, "update"), "adguardvpn-cli update")
+  assert.equal(Model.cliCommand("/opt/x/cli", ""), "/opt/x/cli")
+  // It is a shell command string, so a path the shell would take apart is quoted.
+  assert.equal(Model.cliCommand("/home/a b/cli", "login"), "'/home/a b/cli' login")
+  assert.equal(Model.cliCommand("/tmp/it's/cli", "login"), "'/tmp/it'\\''s/cli' login")
+  assert.equal(Model.cliCommand("/opt/a;rm -rf ~/cli", "login"), "'/opt/a;rm -rf ~/cli' login")
+})
+
+test("Service.qml runs the login and update terminals through Model.cliCommand, never a bare name", () => {
+  const fs = require("node:fs")
+  const path = require("node:path")
+  const src = fs.readFileSync(path.join(__dirname, "..", "Service.qml"), "utf8")
+  const terminals = [...src.matchAll(/execDetached\(\["omarchy-launch-floating-terminal-with-presentation",\s*([^\]]+)\]/g)]
+    .map(m => m[1].trim())
+  assert.equal(terminals.length, 3, "login, update and the installer")
+  // The installer is AdGuard's own curl | sh line and knows no binary yet.
+  const cli = terminals.filter(t => t !== "Model.CLI_INSTALL_COMMAND")
+  assert.equal(cli.length, 2)
+  for (const t of cli) assert.match(t, /^Model\.cliCommand\(root\.cliPath, "(login|update)"\)$/)
+  // The side channel fills cliPath in as soon as the CLI turns up.
+  assert.ok(src.includes('property string cliPath: ""'))
+  assert.ok(src.includes('sideEnqueue(["cli-path"], "cliPath"'))
+  const installed = src.slice(src.indexOf("onInstalledChanged:"))
+  assert.ok(installed.slice(0, 200).includes("checkCliPath()"), "the new CLI gets asked where it is")
 })
