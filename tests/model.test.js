@@ -2023,13 +2023,20 @@ test("Service.qml never elevates: a connect without the sudo rule goes to a term
   assert.doesNotMatch(src, /pkexec|sudoRuleProcess|installSudoRule|aegis-sudo-rule|sudoers/)
   // connectTo routes on Model.connectNeedsTerminal before anything is queued.
   const connect = /function connectTo\(cliName, city\) \{[\s\S]*?\n  \}/.exec(src)[0]
-  assert.match(connect, /if \(Model\.connectNeedsTerminal\(sudoRule, mode\)\) \{ connectInTerminal\(target\); return \}/)
+  assert.match(connect, /if \(Model\.connectNeedsTerminal\(sudoRule, nextMode\)\) \{ connectInTerminal\(target\); return \}/)
   assert.ok(connect.indexOf("connectNeedsTerminal") < connect.indexOf("enqueue("))
   // The terminal runs the CLI's own connect; the login poll watches it land.
   assert.match(src, /function connectInTerminal\(cliName\) \{\s*\n\s*Quickshell\.execDetached\(\["omarchy-launch-floating-terminal-with-presentation", Model\.connectCommand\(root\.cliPath, cliName\)\]\)/)
   assert.match(src, /if \(waitFor === "connect"\) \{\s*\n\s*root\.refresh\(\)/)
   // Startup auto-connect never opens a terminal on its own.
-  assert.match(src, /needsTerminal: Model\.connectNeedsTerminal\(sudoRule, mode\)/)
+  assert.match(src, /needsTerminal: Model\.connectNeedsTerminal\(sudoRule, nextMode\)/)
+  // The mode that decides is the configured one: a disconnected status
+  // names no mode, so reading it would call SOCKS users' connects TUN. The
+  // config is fetched once, with everything else, so the answer is there.
+  assert.match(src, /readonly property string nextMode: configLoaded \? config\.mode : mode/)
+  assert.match(src, /function refreshAll\(force\) \{[\s\S]*?if \(!configLoaded\) refreshConfig\(\)/)
+  const panel = require("node:fs").readFileSync(require("node:path").join(__dirname, "..", "Panel.qml"), "utf8")
+  assert.match(panel, /Model\.setupStep\(vpn\.installed, vpn\.vpnState, vpn\.sudoRule, vpn\.nextMode\)/)
   // A connect the helper ran that sudo turned away goes to a terminal, by
   // city, after the exit handler has reset the pending state it will set again.
   const exited = src.slice(src.indexOf("id: jobProcess"))

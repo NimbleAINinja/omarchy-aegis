@@ -96,6 +96,12 @@ Item {
   readonly property var exclusionRows: Model.mergeExclusions(exclusions.domains, pausedExclusions[exclusions.mode] || [])
   property var config: Model.normalizeConfig(null)
   property bool configLoaded: false
+  // The mode the next connect will use: the CLI's configured one once
+  // `config show` has answered, the status's until then. A disconnected
+  // status names no mode (it reads "tun"), so the configured one is what
+  // decides whether a connect needs a terminal for sudo — and whether the
+  // hero's notice about that applies at all. See Model.connectNeedsTerminal.
+  readonly property string nextMode: configLoaded ? config.mode : mode
   property var update: Model.normalizeUpdate(null)
   // Epoch ms after which a failed background update check may retry; 0 means
   // no failure is pending. Not persisted — a fresh shell start always gets
@@ -234,6 +240,9 @@ Item {
     // runs rather than waiting on that.
     if (locateHome && home === null) refreshHomeCache()
     if (sudoRule === "unknown") checkSudoRule()
+    // Once: the configured mode is what nextMode reads, and it changes only
+    // through setConfig, which refreshes it itself.
+    if (!configLoaded) refreshConfig()
   }
 
   // --- the sudo rule ------------------------------------------------------------
@@ -470,7 +479,7 @@ Item {
     // home lookup held since an earlier unexpected drop no longer needs to
     // wait; see dropHold / Model.mayLocateHome.
     dropHold = false
-    if (Model.connectNeedsTerminal(sudoRule, mode)) { connectInTerminal(target); return }
+    if (Model.connectNeedsTerminal(sudoRule, nextMode)) { connectInTerminal(target); return }
     enqueue(["connect", target], "connect")
   }
 
@@ -545,7 +554,7 @@ Item {
   function maybeAutoConnect(state) {
     var ok = Model.shouldAutoConnect({ autoConnect: autoConnect, wasConnected: wasConnected, state: state,
       installed: installed, loggedIn: accountLoaded ? account.loggedIn : true, attempted: autoConnectAttempted,
-      needsTerminal: Model.connectNeedsTerminal(sudoRule, mode) })
+      needsTerminal: Model.connectNeedsTerminal(sudoRule, nextMode) })
     if (!ok) return
     autoConnectAttempted = true
     if (lastLocation === "") return

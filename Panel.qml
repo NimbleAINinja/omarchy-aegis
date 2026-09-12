@@ -120,7 +120,7 @@ Panel {
   }
   // The first prerequisite still missing (Model.setupStep) and the one-line
   // way to fix it, shown under the status line until nothing is in the way.
-  readonly property string setupStep: Model.setupStep(vpn.installed, vpn.vpnState, vpn.sudoRule, vpn.mode)
+  readonly property string setupStep: Model.setupStep(vpn.installed, vpn.vpnState, vpn.sudoRule, vpn.nextMode)
   readonly property var setupPrompt: Model.setupPrompt(setupStep)
   // The three steps and where the user is in them, for the banner over the
   // map. Empty once nothing is in the way, which takes the banner away.
