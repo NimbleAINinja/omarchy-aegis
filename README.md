@@ -53,17 +53,18 @@ and all three have a row under Settings › Setup:
   your own. The plugin never downloads or runs an installer.
 - An AdGuard VPN account. **Log in** opens a terminal running
   `adguardvpn-cli login`.
-- A sudoers rule, optional. The CLI starts its VPN service through `sudo`,
-  and without a rule every TUN connect opens a floating terminal where sudo
-  asks for your password (SOCKS mode never goes through sudo). The panel
-  probes for the rule with `sudo -l` (no password, nothing run) and says so
-  while it is missing; **README** brings you here. The plugin never writes
-  the rule, nothing in it runs as root. To skip the prompt, install the rule
-  below by hand (needs sudo 1.9.10 or newer): it allows exactly the one
-  command the CLI runs as root to connect, for any location, and nothing
-  else. Keep it on one line, replace every `youruser` and the `1000` with
-  your user name and `id -u`, and check the file with `visudo -cf` before
-  it goes into `/etc/sudoers.d`:
+- A sudoers rule, optional: it saves you the password prompt on every TUN
+  connection. The CLI starts its VPN service through `sudo`, so without a
+  rule each TUN connect opens a floating terminal where sudo asks for your
+  password (SOCKS mode never goes through sudo). The panel probes for the
+  rule with `sudo -l` (no password, nothing run) and says so while it is
+  missing; **README** brings you here. The plugin never installs the rule
+  and nothing in it runs as root. To set it up yourself (needs sudo 1.9.10
+  or newer), use the rule below: it allows exactly the one command the CLI
+  runs as root to connect, for any location, and nothing else. Keep it on
+  one line, replace every `youruser` and the `1000` with your user name and
+  `id -u`, and check the file with `visudo -cf` before it goes into
+  `/etc/sudoers.d`:
 
   ```
   # /etc/sudoers.d/adguardvpn-cli  (mode 0440, check with: visudo -cf <file>)
