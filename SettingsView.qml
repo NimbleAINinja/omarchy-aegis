@@ -27,8 +27,10 @@ Column {
   // "in" / "out" / "unknown" — not a bool, because with no CLI the account
   // call never lands and the placeholder would read as signed in.
   readonly property string accountState: Model.accountState(vpn ? vpn.account : null, vpn ? vpn.accountLoaded : false)
-  readonly property string sudoText: !vpn ? "" : (vpn.sudoRuleBusy ? "Authenticating"
-    : (vpn.sudoRule === "ok" ? "Installed" : (vpn.sudoRule === "missing" ? "Missing" : "Not checked")))
+  // Missing is not a fault: connects still work, in a terminal that asks
+  // for the password. The README says how to do without that.
+  readonly property string sudoText: !vpn ? ""
+    : (vpn.sudoRule === "ok" ? "Set up" : (vpn.sudoRule === "missing" ? "None, connects ask for a password" : "Not checked"))
 
   spacing: Style.space(8)
 
@@ -47,7 +49,7 @@ Column {
     else if (name === "pingDots") panel.persistSettings({ pingDots: !vpn.pingDots })
     else if (name === "cli") { if (!vpn.installed) vpn.openInstallGuide(); else if (updateReady) vpn.runUpdate(); else vpn.checkUpdate(false) }
     else if (name === "account") { if (root.accountState === "out") vpn.login() }
-    else if (name === "sudoRule") vpn.installSudoRule()
+    else if (name === "sudoRule") { if (vpn.sudoRule !== "ok") vpn.openSudoHelp() }
   }
 
   function moveHorizontal(dx) {
@@ -99,9 +101,9 @@ Column {
     label: "Sudo rule"
     status: root.sudoText
     statusHot: vpn ? vpn.sudoRule === "missing" : false
-    buttonText: vpn && vpn.sudoRule === "ok" ? "Reinstall" : "Install"
+    buttonText: "README"
     buttonIcon: Model.setupPrompt("sudo").icon
-    spinning: vpn ? vpn.sudoRuleBusy : false
+    buttonVisible: vpn ? vpn.sudoRule !== "ok" : true
   }
 
   PanelSectionHeader {

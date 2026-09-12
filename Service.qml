@@ -62,18 +62,14 @@ Item {
   // "missing", or "unknown" until the side channel's `sudo-check` has
   // answered (checkSudoRule). A sudo_password error settles it as missing,
   // a connect that went through settles it as ok. Model.setupStep turns it
-  // into the panel's setup prompt.
+  // into the hero's notice, and Model.connectNeedsTerminal sends a TUN
+  // connect to a terminal while it is missing.
   property string sudoRule: "unknown"
   // Where the adguardvpn-cli binary is, from the side channel's `cli-path`
   // (checkCliPath), or "" until it has answered. Only the commands that go
   // to a terminal need it: everything in here reaches the CLI through the
   // helper, which resolves the path itself. See Model.cliCommand.
   property string cliPath: ""
-  // True from installSudoRule() until its pkexec run has exited.
-  property bool sudoRuleBusy: false
-  // The city a connect was after when sudo asked for a password, so the
-  // connect can be repeated the moment the rule is in place.
-  property string _sudoRetry: ""
 
   // Optimistic switch state: -1 follows reality, 0/1 while an action is in flight.
   property int _desired: -1
@@ -162,7 +158,6 @@ Item {
   // First run just finished and the tunnel is on its way up by itself:
   // Panel jumps to the traffic tab once so the user watches it fill. The
   // only connect that moves anyone — see Panel's Connections block.
-  signal setupConnected()
 
   function setting(name, fallback) {
     var value = settings ? settings[name] : undefined
@@ -258,18 +253,11 @@ Item {
     sideEnqueue(["cli-path"], "cliPath", false)
   }
 
-  // Writes the README's rule for this user through pkexec (the shell's own
-  // polkit agent puts up the prompt). aegis-sudo-rule reads the user from
-  // PKEXEC_UID, checks the file with visudo and only then moves it into
-  // /etc/sudoers.d — see the script. Run through sh so a checkout that lost
-  // the executable bit still works.
-  function installSudoRule() {
-    if (sudoRuleBusy) return
-    sudoRuleBusy = true
-    actionStatus = "Authenticate to install the sudo rule"
-    sudoRuleProcess.errors = ""
-    sudoRuleProcess.command = ["pkexec", "/bin/sh", pluginFile("aegis-sudo-rule")]
-    sudoRuleProcess.running = true
+  // Where the hero's sudo notice sends the user: the README's own account
+  // of the rule, for whoever wants passwordless connects. Nothing in this
+  // plugin runs as root, so the rule is the user's to install.
+  function openSudoHelp() {
+    Qt.openUrlExternally(Model.README_URL)
   }
 
   // A snapshot that runs next: ahead of every queued job (a `locations`
@@ -482,7 +470,31 @@ Item {
     // home lookup held since an earlier unexpected drop no longer needs to
     // wait; see dropHold / Model.mayLocateHome.
     dropHold = false
+    if (Model.connectNeedsTerminal(sudoRule, mode)) { connectInTerminal(target); return }
     enqueue(["connect", target], "connect")
+  }
+
+  // A TUN connect without the sudo rule: the CLI's own `connect`, in a
+  // floating terminal where sudo can ask for the password (the helper has
+  // no terminal to offer it). The same poll as login's watches the tunnel
+  // come up — the terminal takes focus and closes the panel, so nothing
+  // else would notice — and the snapshot that sees it connected clears
+  // pendingLocation, as after any connect.
+  function connectInTerminal(cliName) {
+    Quickshell.execDetached(["omarchy-launch-floating-terminal-with-presentation", Model.connectCommand(root.cliPath, cliName)])
+    actionStatus = "Enter your password in the terminal"
+    loginPoll.waitFor = "connect"
+    loginPoll.ticks = 0
+    loginPoll.start()
+  }
+
+  // A connect the helper ran that sudo turned away for a password (the
+  // probe had not answered yet, or was wrong): the same connect again, by
+  // city, which now goes to a terminal because noteError has just settled
+  // sudoRule as missing.
+  function retryInTerminal(city) {
+    var loc = Model.findLocation(locations, city)
+    if (loc) connectTo(loc.cliName, loc.city)
   }
 
   function down() {
@@ -491,9 +503,6 @@ Item {
     pendingLocation = ""
     clearError()
     dropHold = false
-    // A disconnect asked for by hand is the user changing their mind: a
-    // connect that sudo turned away is not repeated once the rule lands.
-    _sudoRetry = ""
     if (wasConnected) persist({ wasConnected: false })
     enqueue(["disconnect"], "disconnect")
   }
@@ -535,7 +544,8 @@ Item {
   // when it died without a clean disconnect (the flag outlives crashes).
   function maybeAutoConnect(state) {
     var ok = Model.shouldAutoConnect({ autoConnect: autoConnect, wasConnected: wasConnected, state: state,
-      installed: installed, loggedIn: accountLoaded ? account.loggedIn : true, attempted: autoConnectAttempted })
+      installed: installed, loggedIn: accountLoaded ? account.loggedIn : true, attempted: autoConnectAttempted,
+      needsTerminal: Model.connectNeedsTerminal(sudoRule, mode) })
     if (!ok) return
     autoConnectAttempted = true
     if (lastLocation === "") return
@@ -692,7 +702,6 @@ Item {
     if (errorCode === "sudo_password") {
       lastError = "sudo needs a password to start the VPN service"
       sudoRule = "missing"
-      _sudoRetry = intent && intent.verb === "connect" ? String(intent.target || "") : ""
     }
   }
 
@@ -993,7 +1002,8 @@ Item {
     id: loginPoll
     property int ticks: 0
     // "login": waiting for the account (refreshAccount); "install": waiting
-    // for the CLI itself (a plain snapshot, which is what says cli_missing).
+    // for the CLI itself (a plain snapshot, which is what says cli_missing);
+    // "connect": waiting for the tunnel a terminal connect is bringing up.
     property string waitFor: "login"
     // Fast while the user is plausibly still typing in the login terminal,
     // then slower (Model.loginPollIntervalMs). The interval change restarts
@@ -1008,6 +1018,15 @@ Item {
         if (root.installed || ticks >= Model.LOGIN_POLL_MAX_TICKS) { loginPoll.stop(); if (root.installed) root.refreshAll(true) }
         return
       }
+      if (waitFor === "connect") {
+        root.refresh()
+        if (root.connected || ticks >= Model.LOGIN_POLL_MAX_TICKS) {
+          loginPoll.stop()
+          // Gave up: the terminal was closed or the password never came.
+          if (!root.connected) { root._desired = -1; root.pendingLocation = "" }
+        }
+        return
+      }
       root.refreshAccount()
       if (root.account.loggedIn || ticks >= Model.LOGIN_POLL_MAX_TICKS) { loginPoll.stop(); root.refresh() }
     }
@@ -1015,10 +1034,11 @@ Item {
 
   onPanelOpenChanged: {
     if (panelOpen) { refreshAll(); return }
-    // The poll stays. Both things it waits for — the install the user does
-    // from AdGuard's guide and `adguardvpn-cli login` — happen in a window
-    // that takes focus (a browser, a terminal), so the panel closes the
-    // moment either one starts, and neither is noticed by
+    // The poll stays. Everything it waits for — the install the user does
+    // from AdGuard's guide, `adguardvpn-cli login`, a connect typing its
+    // sudo password — happens in a window that takes focus (a browser, a
+    // terminal), so the panel closes the moment it starts, and none is
+    // noticed by
     // the ordinary poll: a missing CLI slows that to POLL_MISSING_MS, and a
     // finished login never reaches it at all, because it only ever fetches
     // a snapshot. Stopping here left the panel offering Install ten minutes
@@ -1083,41 +1103,6 @@ Item {
 
   Process {
     id: killProcess
-  }
-
-  // pkexec answers 126 when the prompt is dismissed and 127 when the user is
-  // not authorised (or pkexec itself failed); anything else is the script's
-  // own exit, explained on its stderr.
-  Process {
-    id: sudoRuleProcess
-    property string errors: ""
-    stderr: StdioCollector { waitForEnd: true; onStreamFinished: sudoRuleProcess.errors = text }
-    onExited: function(exitCode) {
-      root.sudoRuleBusy = false
-      var errors = String(sudoRuleProcess.errors || "").trim()
-      sudoRuleProcess.errors = ""
-      if (exitCode === 0) {
-        root.sudoRule = "ok"
-        if (root.errorCode === "sudo_password") root.clearError()
-        root.actionStatus = "sudo rule installed"
-        var retry = root._sudoRetry
-        root._sudoRetry = ""
-        var again = retry !== "" ? Model.findLocation(root.locations, retry) : null
-        if (again) { root.connectTo(again.cliName, again.city); return }
-        // Nothing was waiting on the rule, so this was the setup prompt
-        // finishing the last of the three prerequisites: bring the tunnel up
-        // the way the hero switch would — the last location if there is one,
-        // the fastest otherwise. See Model.connectAfterSudoRule.
-        if (Model.connectAfterSudoRule(retry !== "", root.active, root.locations.length)) {
-          root.toggleVpn()
-          root.setupConnected()
-        }
-        return
-      }
-      if (exitCode === 126) { root.actionStatus = "Authentication cancelled"; return }
-      if (exitCode === 127) { root.actionStatus = "Not authorised to install the sudo rule"; return }
-      root.noteError({ error: errors !== "" ? errors.split("\n").pop() : "aegis-sudo-rule exited " + exitCode, code: "sudo_rule" }, "action", null)
-    }
   }
 
   // A change trigger only. With preload: false, FileView reads a file only
@@ -1236,6 +1221,7 @@ Item {
       // queued behind it — the queue never runs two at once), it has now
       // finished or failed either way: a home lookup held for
       // autoConnectPending is free to run again on the next snapshot.
+      var wasAuto = root.autoConnectPending
       if (verb === "connect") root.autoConnectPending = false
       // A tunnel that came up went through sudo without a prompt: whatever
       // the probe said (or has not said yet), the rule is in place.
@@ -1251,6 +1237,10 @@ Item {
           root.noteError(obj.ok === false ? obj : { error: "AdGuard VPN helper exited " + exitCode, code: "unknown" },
             (isAction || mutate) ? "action" : "", intent)
         if (isAction) { root._desired = -1; root.pendingLocation = "" }
+        // A connect that sudo turned away for a password goes to a terminal
+        // that can answer it (Model.connectNeedsTerminal) — unless it was
+        // startup auto-connect, which never opens anything on its own.
+        if (verb === "connect" && obj.code === "sudo_password" && !wasAuto) root.retryInTerminal(intent.target)
         if (verb === "config" && mutate) root._configHintPending = false
         // A failed/indeterminate background update check stays quiet (no
         // noteError above, no lastUpdateCheck persisted in applyUpdate,

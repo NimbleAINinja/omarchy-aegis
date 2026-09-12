@@ -53,21 +53,23 @@ and all three have a row under Settings › Setup:
   your own. The plugin never downloads or runs an installer.
 - An AdGuard VPN account. **Log in** opens a terminal running
   `adguardvpn-cli login`.
-- A sudoers rule, so the CLI can start its VPN service without a password
-  prompt (needs sudo 1.9.10 or newer). **Set up** writes it after a polkit
-  prompt. What it writes is the rule below (`aegis-sudo-rule` in this
-  folder, checked with `visudo -cf` before it is installed), which allows
-  exactly the one command the CLI runs as root to connect, for any location,
-  and nothing else. To install it by hand instead, keep it on one line and
-  replace every `youruser` and the `1000` with your user name and `id -u`:
+- A sudoers rule, optional. The CLI starts its VPN service through `sudo`,
+  and without a rule every TUN connect opens a floating terminal where sudo
+  asks for your password (SOCKS mode never goes through sudo). The panel
+  probes for the rule with `sudo -l` (no password, nothing run) and says so
+  while it is missing; **README** brings you here. The plugin never writes
+  the rule, nothing in it runs as root. To skip the prompt, install the rule
+  below by hand (needs sudo 1.9.10 or newer): it allows exactly the one
+  command the CLI runs as root to connect, for any location, and nothing
+  else. Keep it on one line, replace every `youruser` and the `1000` with
+  your user name and `id -u`, and check the file with `visudo -cf` before
+  it goes into `/etc/sudoers.d`:
 
   ```
   # /etc/sudoers.d/adguardvpn-cli  (mode 0440, check with: visudo -cf <file>)
   youruser ALL=(root) NOPASSWD: /usr/bin/env ^HOME=/home/youruser XDG_DATA_HOME=/home/youruser/\.local/share DISPLAY=:[0-9]+(\.[0-9]+)? DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus /opt/adguardvpn_cli/adguardvpn-cli connect --no-fork -l [^-[:space:]][^[:space:]]*( [^-[:space:]][^[:space:]]*)* (-v )?--log-to-file --wait-for-parent --ppid-file /home/youruser/\.local/share/adguardvpn-cli/vpn\.pid$
   ```
 
-  The panel probes the rule with `sudo -l` (no password, nothing run) and
-  says so when it is missing; SOCKS mode never needs it.
 
 ## Uninstall
 

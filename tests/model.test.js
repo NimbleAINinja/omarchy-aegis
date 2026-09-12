@@ -1105,6 +1105,10 @@ test("shouldAutoConnect requires every precondition", () => {
   assert.equal(Model.shouldAutoConnect(Object.assign({}, base, { loggedIn: undefined })), true)
   assert.equal(Model.shouldAutoConnect(Object.assign({}, base, { state: "connected" })), false)
   assert.equal(Model.shouldAutoConnect(Object.assign({}, base, { state: "unknown" })), false)
+  // A connect that would open a terminal for a sudo password never fires
+  // by itself at login (Model.connectNeedsTerminal).
+  assert.equal(Model.shouldAutoConnect(Object.assign({}, base, { needsTerminal: true })), false)
+  assert.equal(Model.shouldAutoConnect(Object.assign({}, base, { needsTerminal: false })), true)
   assert.equal(Model.shouldAutoConnect(null), false)
 })
 
@@ -2010,16 +2014,44 @@ test("accountStale catches the cached log-out a snapshot has just disproved", ()
   assert.equal(Model.accountStale("disconnected", false, false), false)
 })
 
-test("Service.qml brings the tunnel up when the rule was the last thing missing", () => {
+test("Service.qml never elevates: a connect without the sudo rule goes to a terminal", () => {
   const src = require("node:fs").readFileSync(require("node:path").join(__dirname, "..", "Service.qml"), "utf8")
-  const at = src.indexOf("id: sudoRuleProcess")
-  assert.notEqual(at, -1)
-  const handler = src.slice(at, src.indexOf("\n  }", at))
-  // A connect that failed on the password prompt still wins, by name.
-  assert.match(handler, /if \(again\) \{ root\.connectTo\(again\.cliName, again\.city\); return \}/)
-  // Otherwise the setup prompt just finished, and toggleVpn picks the
-  // location: the last one if known, the fastest otherwise.
-  assert.match(handler, /Model\.connectAfterSudoRule\(retry !== "", root\.active, root\.locations\.length\)\) \{\s*\n\s*root\.toggleVpn\(\)/)
+  // Nothing in the plugin runs as root, and nothing writes sudoers.
+  assert.doesNotMatch(src, /pkexec|sudoRuleProcess|installSudoRule|aegis-sudo-rule|sudoers/)
+  // connectTo routes on Model.connectNeedsTerminal before anything is queued.
+  const connect = /function connectTo\(cliName, city\) \{[\s\S]*?\n  \}/.exec(src)[0]
+  assert.match(connect, /if \(Model\.connectNeedsTerminal\(sudoRule, mode\)\) \{ connectInTerminal\(target\); return \}/)
+  assert.ok(connect.indexOf("connectNeedsTerminal") < connect.indexOf("enqueue("))
+  // The terminal runs the CLI's own connect; the login poll watches it land.
+  assert.match(src, /function connectInTerminal\(cliName\) \{\s*\n\s*Quickshell\.execDetached\(\["omarchy-launch-floating-terminal-with-presentation", Model\.connectCommand\(root\.cliPath, cliName\)\]\)/)
+  assert.match(src, /if \(waitFor === "connect"\) \{\s*\n\s*root\.refresh\(\)/)
+  // Startup auto-connect never opens a terminal on its own.
+  assert.match(src, /needsTerminal: Model\.connectNeedsTerminal\(sudoRule, mode\)/)
+  // A connect the helper ran that sudo turned away goes to a terminal, by
+  // city, after the exit handler has reset the pending state it will set again.
+  const exited = src.slice(src.indexOf("id: jobProcess"))
+  const reset = exited.indexOf('if (isAction) { root._desired = -1; root.pendingLocation = "" }')
+  const retry = exited.indexOf('if (verb === "connect" && obj.code === "sudo_password" && !wasAuto) root.retryInTerminal(intent.target)')
+  assert.ok(reset !== -1 && retry !== -1 && reset < retry)
+  assert.match(exited, /var wasAuto = root\.autoConnectPending\s*\n\s*if \(verb === "connect"\) root\.autoConnectPending = false/)
+  // The notice's button opens the README; nothing is written.
+  assert.match(src, /function openSudoHelp\(\) \{\s*\n\s*Qt\.openUrlExternally\(Model\.README_URL\)/)
+})
+
+test("connectNeedsTerminal and connectCommand cover the passwordless-less connect", () => {
+  assert.equal(Model.connectNeedsTerminal("missing", "tun"), true)
+  // SOCKS mode never goes through sudo.
+  assert.equal(Model.connectNeedsTerminal("missing", "socks"), false)
+  // The rule is there, or the probe has not answered: try the helper first;
+  // a sudo_password answer is handed to a terminal by the exit handler.
+  assert.equal(Model.connectNeedsTerminal("ok", "tun"), false)
+  assert.equal(Model.connectNeedsTerminal("unknown", "tun"), false)
+  assert.equal(Model.connectNeedsTerminal(undefined, undefined), false)
+  // The CLI's own connect, quoted for the shell, -y for the CLI's questions.
+  assert.equal(Model.connectCommand("", "Tokyo"), "adguardvpn-cli connect -l Tokyo -y")
+  assert.equal(Model.connectCommand("/opt/adguardvpn_cli/adguardvpn-cli", "New York"), "/opt/adguardvpn_cli/adguardvpn-cli connect -l 'New York' -y")
+  assert.equal(Model.connectCommand("/opt/x/cli", "a;rm -rf ~"), "/opt/x/cli connect -l 'a;rm -rf ~' -y")
+  assert.match(Model.README_URL, /^https:\/\/github\.com\/NimbleAINinja\/omarchy-aegis#/)
 })
 
 test("Service.qml proves the CLI from answers that failed, not only from good ones", () => {
@@ -2038,51 +2070,30 @@ test("Service.qml proves the CLI from answers that failed, not only from good on
   assert.doesNotMatch(apply[0], /provesInstalled/)
 })
 
-test("the setup auto-connect is the one connect that moves the user to a tab", () => {
+test("no connect moves the user to another tab", () => {
   const fs = require("node:fs"), path = require("node:path")
-  const src = fs.readFileSync(path.join(__dirname, "..", "Service.qml"), "utf8")
   const panel = fs.readFileSync(path.join(__dirname, "..", "Panel.qml"), "utf8")
-  assert.match(src, /signal setupConnected\(\)/)
-  // Emitted where the auto-connect is issued, not where it completes: the
-  // point is to watch the graph fill, not to arrive after it has.
-  assert.match(src, /root\.toggleVpn\(\)\s*\n\s*root\.setupConnected\(\)/)
-  // Set directly, not through switchView: that toggles, so asking for the
-  // tab you are already on would send you to the list instead.
-  assert.match(panel, /function onSetupConnected\(\) \{ root\.view = "traffic" \}/)
-  // Every other connect still leaves the user where they were.
-  assert.doesNotMatch(panel, /function onConnectedChanged/)
+  // Being signed out is the one state change that forces a view.
+  assert.match(panel, /function onVpnStateChanged\(\) \{ if \(vpn\.vpnState === "logged_out"\) root\.view = "account" \}/)
+  assert.doesNotMatch(panel, /function onConnectedChanged|onSetupConnected/)
 })
 
-test("connectAfterSudoRule finishes the setup the user just completed", () => {
-  // Nothing was waiting on the rule, the VPN is off, locations are loaded:
-  // the last thing standing between the user and a tunnel is gone, so bring
-  // it up the way the hero switch would.
-  assert.equal(Model.connectAfterSudoRule(false, false, 90), true)
-  // A connect that failed on the password prompt is retried by name instead.
-  assert.equal(Model.connectAfterSudoRule(true, false, 90), false)
-  // Already up: nothing to do.
-  assert.equal(Model.connectAfterSudoRule(false, true, 90), false)
-  // toggleVpn() with an empty list raises "No locations loaded yet", which
-  // would land as a red error under a rule install that worked.
-  assert.equal(Model.connectAfterSudoRule(false, false, 0), false)
-  assert.equal(Model.connectAfterSudoRule(false, false, undefined), false)
-})
-
-test("setupPlan walks the three prerequisites and says where the user is", () => {
+test("setupPlan walks the two prerequisites and says where the user is", () => {
   // Nothing in the way: no banner.
   assert.deepEqual(Model.setupPlan(""), [])
   const at = step => Model.setupPlan(step).map(r => r.state)
-  assert.deepEqual(at("install"), ["current", "todo", "todo"])
-  assert.deepEqual(at("login"), ["done", "current", "todo"])
-  assert.deepEqual(at("sudo"), ["done", "done", "current"])
+  assert.deepEqual(at("install"), ["current", "todo"])
+  assert.deepEqual(at("login"), ["done", "current"])
+  // The sudo notice is not a step: there is nothing to set up in the
+  // plugin, so no banner either.
+  assert.deepEqual(at("sudo"), [])
   const rows = Model.setupPlan("install")
-  assert.deepEqual(rows.map(r => r.n), ["1", "2", "3"])
+  assert.deepEqual(rows.map(r => r.n), ["1", "2"])
   // Terse: the hero prompt under the map explains each step when you reach
   // it, so the banner names them and stops.
   for (const r of rows) assert.ok(r.label.length > 0 && r.label.length <= 32, r.label)
   assert.match(rows[0].label, /adguardvpn-cli/)
   assert.match(rows[1].label, /terminal/)
-  assert.match(rows[2].label, /sudo rule/)
 })
 
 test("SETUP_INTRO says what is coming and that each step hands you back", () => {
@@ -2112,8 +2123,10 @@ test("Service.qml runs the login and update terminals through Model.cliCommand, 
   const src = fs.readFileSync(path.join(__dirname, "..", "Service.qml"), "utf8")
   const terminals = [...src.matchAll(/execDetached\(\["omarchy-launch-floating-terminal-with-presentation",\s*([^\]]+)\]/g)]
     .map(m => m[1].trim())
-  assert.equal(terminals.length, 2, "login and update, nothing else")
-  for (const t of terminals) assert.match(t, /^Model\.cliCommand\(root\.cliPath, "(login|update)"\)$/)
+  assert.equal(terminals.length, 3, "login, update and the sudo-password connect, nothing else")
+  const cli = terminals.filter(t => t !== "Model.connectCommand(root.cliPath, cliName)")
+  assert.equal(cli.length, 2)
+  for (const t of cli) assert.match(t, /^Model\.cliCommand\(root\.cliPath, "(login|update)"\)$/)
   // Installing the CLI is the user's own job, from AdGuard's instructions:
   // the install step opens that page and runs nothing.
   assert.ok(src.includes("Qt.openUrlExternally(Model.CLI_INSTALL_URL)"))

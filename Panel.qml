@@ -125,7 +125,6 @@ Panel {
   // The three steps and where the user is in them, for the banner over the
   // map. Empty once nothing is in the way, which takes the banner away.
   readonly property var setupPlan: Model.setupPlan(setupStep)
-  readonly property bool setupBusy: setupStep === "sudo" && vpn.sudoRuleBusy
   // No CLI or no login: the card is the hero and its one button. Every tab
   // below it is a question only the CLI can answer, and the icon bar only
   // leads between them — so both stand down rather than offering a dead
@@ -134,7 +133,7 @@ Panel {
   function runSetup() {
     if (setupStep === "install") vpn.openInstallGuide()
     else if (setupStep === "login") vpn.login()
-    else if (setupStep === "sudo") vpn.installSudoRule()
+    else if (setupStep === "sudo") vpn.openSudoHelp()
   }
   readonly property string statusLine: vpn.actionStatus !== "" ? vpn.actionStatus : vpn.lastError
   readonly property color statusColor: vpn.lastError !== "" && vpn.actionStatus === "" ? urgent : dim
@@ -292,15 +291,11 @@ Panel {
   // on the map, or connecting from the settings tab, used to yank the panel
   // back to the location list the moment the tunnel came up, hiding the very
   // view the click came from. The only state change that still forces a view is
-  // being signed out, where nothing else is usable — and the one connect
-  // nobody asked for: the tunnel that comes up by itself when the sudo rule
-  // finishes first-run setup. That one has no view it came from to hide, so
-  // it lands on the traffic tab to show what was just set up working.
+  // being signed out, where nothing else is usable.
   Connections {
     target: vpn
     function onPersist(values) { root.persistSettings(values) }
     function onVpnStateChanged() { if (vpn.vpnState === "logged_out") root.view = "account" }
-    function onSetupConnected() { root.view = "traffic" }
   }
 
   // Views take the service through a differently named alias: a `vpn: vpn`
@@ -724,7 +719,6 @@ Panel {
           hasCursor: root.setupOnly && root.headerHasCursor
           text: root.setupPrompt.button
           iconText: root.setupPrompt.icon
-          iconSpinning: root.setupBusy
           bordered: true
           foreground: root.foreground
           fontFamily: root.fontFamily

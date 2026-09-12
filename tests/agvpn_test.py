@@ -1117,7 +1117,7 @@ class ConfigVerbs(unittest.TestCase):
     def test_sudo_probe_argv_is_the_exact_connect_command_the_rule_allows(self):
         # Not what sudo-check asks any more (see the NOPASSWD test below),
         # but still the shape tests/sudoers.test.sh pins the README rule
-        # against, and what the rule aegis-sudo-rule writes has to match.
+        # against.
         env = {"HOME": "/home/youruser", "XDG_DATA_HOME": "/home/youruser/.local/share",
                "DISPLAY": ":1", "DBUS_SESSION_BUS_ADDRESS": "unix:path=/run/user/1000/bus"}
         with mock.patch.dict(os.environ, env), mock.patch.object(agvpn, "cli_path", return_value=FAKE):

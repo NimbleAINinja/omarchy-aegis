@@ -1447,7 +1447,7 @@ def sudo_probe_argv():
 def sudo_nopasswd_for(listing, binary):
     """Whether a `sudo -l` listing carries a NOPASSWD entry for `binary`.
     sudo prints one entry per line, so each line is read on its own: a
-    NOPASSWD line naming the CLI is the rule aegis-sudo-rule installs, and
+    NOPASSWD line naming the CLI is the rule README.md documents, and
     the blanket `(ALL : ALL) ALL` line that sits above it on most machines
     is not (it is exactly the one that costs a password)."""
     for line in strip_ansi(listing or "").splitlines():

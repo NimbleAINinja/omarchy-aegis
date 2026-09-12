@@ -477,15 +477,22 @@ function linkState(vpnState, pendingLocation) {
 
 // The one thing standing between the user and a tunnel, for the panel's
 // setup prompt: "install" (no adguardvpn-cli), "login" (the CLI is signed
-// out), "sudo" (sudo would ask for a password, so a TUN connect cannot
-// start its service — SOCKS mode never goes through sudo, so it is not
-// held up by a missing rule), or "" when nothing is in the way. sudoRule is
-// Service's verdict: "ok", "missing", or "unknown" while unchecked.
+// out), "sudo" (sudo would ask for a password, so a TUN connect runs in a
+// terminal where the user can type it — SOCKS mode never goes through
+// sudo, so it is not affected), or "" when nothing is in the way. sudoRule
+// is Service's verdict: "ok", "missing", or "unknown" while unchecked. The
+// first two block the panel (setupBlocks) and sit in the setup plan; the
+// third is a notice, and its button opens the README (README_URL).
 // Where the panel sends the user to install the CLI: AdGuard's own
 // instructions. The plugin never fetches or runs an installer itself — the
 // button opens this page in the browser, the user follows it in a terminal
 // of their own, and the setup poll notices the CLI once it exists.
 var CLI_INSTALL_URL = "https://github.com/AdguardTeam/AdGuardVPNCLI#installation"
+
+// Where the sudo notice sends the user: the README's own account of the
+// rule that makes TUN connects passwordless. The plugin never writes that
+// rule (nothing in it runs as root); whoever wants it installs it by hand.
+var README_URL = "https://github.com/NimbleAINinja/omarchy-aegis#requirements"
 
 // A command for one of those terminals: the binary's own path once the
 // cli-path verb has answered with it, the bare name until then and for
@@ -550,14 +557,15 @@ function accountState(account, loaded) {
 // coming, is that they come back here between them.
 var SETUP_INTRO = "First, some setup: I'll walk you through these steps. Come back here after each to continue."
 
-// The three prerequisites in the order setupStep walks them, named as
+// The two prerequisites in the order setupStep walks them, named as
 // briefly as they can be: the hero's own prompt explains each one when the
 // user reaches it, so the banner is a map of the route, not a second set of
-// instructions.
+// instructions. The sudo rule is not a step: without it a TUN connect still
+// works, in a terminal that asks for the password, so it is a notice under
+// the hero (setupPrompt("sudo")) and never part of the plan.
 var SETUP_PLAN = [
   { step: "install", label: "Install adguardvpn-cli" },
-  { step: "login", label: "Sign in \u2014 opens a terminal" },
-  { step: "sudo", label: "Add a sudo rule" }
+  { step: "login", label: "Sign in \u2014 opens a terminal" }
 ]
 
 // SETUP_PLAN marked up for the step the user is on: everything before it is
@@ -578,20 +586,8 @@ function setupPlan(step) {
 function setupPrompt(step) {
   if (step === "install") return { text: "Install adguardvpn-cli to get started", button: "Guide", icon: "\uDB80\uDDDA" }
   if (step === "login") return { text: "Sign in to your AdGuard VPN account", button: "Log in", icon: "\uDB80\uDF42" }
-  if (step === "sudo") return { text: "Let the VPN start without a password prompt", button: "Set up", icon: "\uDB80\uDF06" }
+  if (step === "sudo") return { text: "No sudo rule: connecting asks for your password in a terminal", button: "README", icon: "\uDB80\uDF06" }
   return { text: "", button: "", icon: "" }
-}
-
-// Whether installing the sudo rule should bring the tunnel up by itself.
-// The rule is the last of the three prerequisites, so a user who just
-// finished it wants what they were setting up all along — but only when
-// nothing else already has the connect in hand: a connect that failed on
-// the password prompt is retried by name instead (Service's _sudoRetry),
-// and a tunnel already up needs nothing. The location count is the guard
-// on toggleVpn() itself, which raises "No locations loaded yet" on an empty
-// list — a red error under a rule install that had in fact worked.
-function connectAfterSudoRule(retrying, active, locationCount) {
-  return retrying !== true && active !== true && num(locationCount, 0) > 0
 }
 
 // Whether the cached account has been outlived by the snapshot beside it.
@@ -656,8 +652,25 @@ function accountAction(state, step) {
 function setupStep(installed, vpnState, sudoRule, mode) {
   if (!installed) return "install"
   if (str(vpnState) === "logged_out") return "login"
-  if (str(sudoRule) === "missing" && str(mode) !== "socks") return "sudo"
+  if (connectNeedsTerminal(sudoRule, mode)) return "sudo"
   return ""
+}
+
+// Whether a connect has to run in a terminal the user can type a sudo
+// password into: the CLI starts its TUN service through sudo, and without
+// the README's rule sudo asks. The helper has no terminal to offer, so the
+// connect goes to a floating one instead (Service.connectInTerminal). SOCKS
+// mode never touches sudo. "unknown" (the probe has not answered) counts as
+// fine: a connect that then runs into the prompt is handed to a terminal by
+// the job's exit handler, and the verdict is remembered as "missing".
+function connectNeedsTerminal(sudoRule, mode) {
+  return str(sudoRule) === "missing" && str(mode) !== "socks"
+}
+
+// The connect that terminal runs: the same call agvpn.py makes (-y answers
+// the CLI's own questions), minus --no-progress so the user sees it work.
+function connectCommand(path, cliName) {
+  return cliCommand(path, "connect -l " + shellQuote(str(cliName)) + " -y")
 }
 
 function formatRate(bytesPerSec) {
@@ -1139,10 +1152,13 @@ function needsFollowUpRefresh(verb, ok, state) {
   return !(s === "connected" || s === "disconnected")
 }
 
+// needsTerminal (Model.connectNeedsTerminal): a connect that would open a
+// terminal for a sudo password never fires on its own at login.
 function shouldAutoConnect(ctx) {
   if (!ctx || typeof ctx !== "object") return false
   return ctx.autoConnect === true && ctx.wasConnected === true && !ctx.attempted
     && ctx.installed === true && ctx.loggedIn !== false && ctx.state === "disconnected"
+    && ctx.needsTerminal !== true
 }
 
 // Whether a home-location lookup (ipinfo.io, run by agvpn.py's `home` verb)
@@ -1705,7 +1721,8 @@ if (typeof module !== "undefined") {
     dotTints: dotTints,
     linkState: linkState,
     provesInstalled: provesInstalled,
-    connectAfterSudoRule: connectAfterSudoRule,
+    connectNeedsTerminal: connectNeedsTerminal,
+    connectCommand: connectCommand,
     accountStale: accountStale,
     accountState: accountState,
     accountAction: accountAction,
@@ -1717,6 +1734,7 @@ if (typeof module !== "undefined") {
     setupStep: setupStep,
     setupPrompt: setupPrompt,
     CLI_INSTALL_URL: CLI_INSTALL_URL,
+    README_URL: README_URL,
     cliCommand: cliCommand,
     shellQuote: shellQuote,
     formatRate: formatRate,
