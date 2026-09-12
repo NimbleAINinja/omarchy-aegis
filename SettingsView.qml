@@ -30,7 +30,7 @@ Column {
   // Missing is not a fault: connects still work, in a terminal that asks
   // for the password. The README says how to do without that.
   readonly property string sudoText: !vpn ? ""
-    : (vpn.sudoRule === "ok" ? "Set up" : (vpn.sudoRule === "missing" ? "None, connects ask for a password" : "Not checked"))
+    : (vpn.sudoRule === "ok" ? "Set up" : (vpn.sudoRule === "missing" ? "None, TUN connects ask for a password" : "Not checked"))
 
   spacing: Style.space(8)
 
