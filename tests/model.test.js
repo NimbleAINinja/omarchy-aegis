@@ -1892,7 +1892,10 @@ test("setupStep names the first missing prerequisite, and only a TUN connect nee
   assert.equal(Model.setupStep(false, "logged_out", "missing", "tun"), "install")
   assert.equal(Model.setupStep(true, "logged_out", "missing", "tun"), "login")
   assert.equal(Model.setupStep(true, "disconnected", "missing", "tun"), "sudo")
-  assert.equal(Model.setupStep(true, "connected", "missing", "tun"), "sudo")
+  // The terminal is what the notice warns about, so it shows while one may
+  // still open; a tunnel that is up has no use for it.
+  assert.equal(Model.setupStep(true, "connecting", "missing", "tun"), "sudo")
+  assert.equal(Model.setupStep(true, "connected", "missing", "tun"), "")
   assert.equal(Model.setupStep(true, "disconnected", "missing", "socks"), "")
   assert.equal(Model.setupStep(true, "disconnected", "unknown", "tun"), "")
   assert.equal(Model.setupStep(true, "disconnected", "ok", "tun"), "")

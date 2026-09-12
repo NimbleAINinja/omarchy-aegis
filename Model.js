@@ -652,7 +652,9 @@ function accountAction(state, step) {
 function setupStep(installed, vpnState, sudoRule, mode) {
   if (!installed) return "install"
   if (str(vpnState) === "logged_out") return "login"
-  if (connectNeedsTerminal(sudoRule, mode)) return "sudo"
+  // The notice is about the next connect, so a tunnel that is up has no
+  // use for it; it comes back once the tunnel is down.
+  if (connectNeedsTerminal(sudoRule, mode) && str(vpnState) !== "connected") return "sudo"
   return ""
 }
 
