@@ -2022,7 +2022,7 @@ test("Service.qml never elevates: a connect without the sudo rule goes to a term
   // Nothing in the plugin runs as root, and nothing writes sudoers.
   assert.doesNotMatch(src, /pkexec|sudoRuleProcess|installSudoRule|aegis-sudo-rule|sudoers/)
   // connectTo routes on Model.connectNeedsTerminal before anything is queued.
-  const connect = /function connectTo\(cliName, city\) \{[\s\S]*?\n  \}/.exec(src)[0]
+  const connect = /function connectTo\(cliName, city, inTerminal\) \{[\s\S]*?\n  \}/.exec(src)[0]
   assert.match(connect, /if \(inTerminal === true \|\| Model\.connectNeedsTerminal\(sudoRule, nextMode, vpnState\)\) \{ connectInTerminal\(target\); return \}/)
   // The retry after a sudo_password answer forces the terminal: the state
   // that said none was needed is the one that was wrong, so asking it again
