@@ -68,6 +68,25 @@ and all three have a row under Settings › Setup:
   The panel probes the rule with `sudo -l` (no password, nothing run) and
   says so when it is missing; SOCKS mode never needs it.
 
+## Uninstall
+
+```bash
+omarchy plugin remove io.github.nimbleaininja.aegis
+```
+
+That disables the widget and deletes the plugin folder. Nothing of Aegis
+keeps running afterwards. What it leaves behind, and how to clear it:
+
+- The sudoers rule, if you set one up: `sudo rm /etc/sudoers.d/adguardvpn-cli`.
+- The cached home location and CLI version check:
+  `rm -r ~/.cache/io.github.nimbleaininja.aegis`.
+- The widget's entry in `~/.config/omarchy/shell.json` (favourites, last
+  location), left in place but disabled. Delete it if you want a clean slate.
+
+The AdGuard VPN CLI, its configuration and your account are not touched.
+Disconnect first if you want the VPN down when the widget goes
+(`adguardvpn-cli disconnect`).
+
 ## Keyboard
 
 | Key | Action |
