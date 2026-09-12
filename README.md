@@ -48,8 +48,9 @@ then `omarchy plugin enable io.github.nimbleaininja.aegis --section right`.
 for you. Whichever is missing first shows up under the hero with a button,
 and all three have a row under Settings › Setup:
 
-- `adguardvpn-cli`, the official AdGuard VPN CLI. **Install** opens a
-  terminal running AdGuard's own installer.
+- `adguardvpn-cli`, the official AdGuard VPN CLI. **Guide** opens AdGuard's
+  installation instructions in your browser; follow them in a terminal of
+  your own. The plugin never downloads or runs an installer.
 - An AdGuard VPN account. **Log in** opens a terminal running
   `adguardvpn-cli login`.
 - A sudoers rule, so the CLI can start its VPN service without a password

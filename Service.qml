@@ -567,12 +567,14 @@ Item {
     loginPoll.start()
   }
 
-  // AdGuard's installer in a terminal the user can watch and answer
-  // (Model.CLI_INSTALL_COMMAND). The same poll as login's watches for the
-  // CLI: the snapshot stops answering cli_missing once the binary is there.
-  function installCli() {
-    Quickshell.execDetached(["omarchy-launch-floating-terminal-with-presentation", Model.CLI_INSTALL_COMMAND])
-    actionStatus = "Install from the terminal"
+  // AdGuard's install instructions in the user's browser
+  // (Model.CLI_INSTALL_URL). The plugin runs no installer: the user follows
+  // the guide in a terminal of their own. The same poll as login's watches
+  // for the CLI: the snapshot stops answering cli_missing once the binary
+  // is there.
+  function openInstallGuide() {
+    Qt.openUrlExternally(Model.CLI_INSTALL_URL)
+    actionStatus = "Install guide opened in your browser"
     loginPoll.waitFor = "install"
     loginPoll.ticks = 0
     loginPoll.start()
@@ -1013,17 +1015,18 @@ Item {
 
   onPanelOpenChanged: {
     if (panelOpen) { refreshAll(); return }
-    // The poll stays. Both things it waits for — AdGuard's installer and
-    // `adguardvpn-cli login` — run in a terminal that takes focus, so the
-    // panel closes the moment either one starts, and neither is noticed by
+    // The poll stays. Both things it waits for — the install the user does
+    // from AdGuard's guide and `adguardvpn-cli login` — happen in a window
+    // that takes focus (a browser, a terminal), so the panel closes the
+    // moment either one starts, and neither is noticed by
     // the ordinary poll: a missing CLI slows that to POLL_MISSING_MS, and a
     // finished login never reaches it at all, because it only ever fetches
     // a snapshot. Stopping here left the panel offering Install ten minutes
     // after the install, and "Not signed in" after the login. It is bounded
     // by LOGIN_POLL_MAX_TICKS on its own.
   }
-  // A CLI that has just appeared (the setup prompt's installer, a package
-  // manager) gets the sudo probe the missing one was spared.
+  // A CLI that has just appeared (the install the setup prompt points to, a
+  // package manager) gets the sudo probe the missing one was spared.
   onInstalledChanged: {
     if (installed && sudoRule === "unknown") checkSudoRule()
     if (installed && cliPath === "") checkCliPath()

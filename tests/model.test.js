@@ -1737,8 +1737,8 @@ test("Service.qml gates the situational timers on what they are waiting for", ()
   assert.match(timer("rateTimer"), /interval: root\.trafficVisible \? 1000 : \(root\.panelOpen \? 2000 : 5000\)/)
   assert.match(timer("refreshTimer"), /installed: root\.installed/)
   // Closing the panel never stops this poll. Both things it waits for —
-  // AdGuard's installer, `adguardvpn-cli login` — run in a terminal that
-  // takes focus and so closes the panel the moment it opens, and neither
+  // the install done from AdGuard's guide, `adguardvpn-cli login` — happen
+  // in a window that takes focus and so closes the panel, and neither
   // one is noticed by the ordinary poll: that fetches a snapshot, which
   // says nothing about the account. It is bounded by LOGIN_POLL_MAX_TICKS.
   assert.doesNotMatch(src, /loginPoll\.stop\(\)\s*\n\s*\}\s*\n\s*\/\/ A CLI that has just appeared/)
@@ -1905,9 +1905,13 @@ test("setupPrompt has a line, a button and an icon for every step and nothing fo
   }
   assert.deepEqual(Model.setupPrompt(""), { text: "", button: "", icon: "" })
   assert.deepEqual(Model.setupPrompt(undefined), { text: "", button: "", icon: "" })
-  // The installer is AdGuard's, over TLS, verbose, and never sudo by itself.
-  assert.match(Model.CLI_INSTALL_COMMAND, /^curl -fsSL https:\/\/raw\.githubusercontent\.com\/AdguardTeam\/AdGuardVPNCLI\/.*install\.sh \| sh -s -- -v$/)
-  assert.doesNotMatch(Model.CLI_INSTALL_COMMAND, /sudo/)
+  // The plugin never runs an installer. The install step points at AdGuard's
+  // own instructions, over TLS, and nothing in the model spells out a
+  // download-to-shell command for anything to run.
+  assert.match(Model.CLI_INSTALL_URL, /^https:\/\/github\.com\/AdguardTeam\/AdGuardVPNCLI/)
+  assert.equal(Model.CLI_INSTALL_COMMAND, undefined)
+  const modelSrc = require("node:fs").readFileSync(require("node:path").join(__dirname, "..", "Model.js"), "utf8")
+  assert.doesNotMatch(modelSrc, /\b(?:curl|wget)\b[^\n]*\|\s*(?:ba|z|da)?sh\b/)
 })
 
 test("accountState keeps the unasked account out of the answer", () => {
@@ -2108,11 +2112,12 @@ test("Service.qml runs the login and update terminals through Model.cliCommand, 
   const src = fs.readFileSync(path.join(__dirname, "..", "Service.qml"), "utf8")
   const terminals = [...src.matchAll(/execDetached\(\["omarchy-launch-floating-terminal-with-presentation",\s*([^\]]+)\]/g)]
     .map(m => m[1].trim())
-  assert.equal(terminals.length, 3, "login, update and the installer")
-  // The installer is AdGuard's own curl | sh line and knows no binary yet.
-  const cli = terminals.filter(t => t !== "Model.CLI_INSTALL_COMMAND")
-  assert.equal(cli.length, 2)
-  for (const t of cli) assert.match(t, /^Model\.cliCommand\(root\.cliPath, "(login|update)"\)$/)
+  assert.equal(terminals.length, 2, "login and update, nothing else")
+  for (const t of terminals) assert.match(t, /^Model\.cliCommand\(root\.cliPath, "(login|update)"\)$/)
+  // Installing the CLI is the user's own job, from AdGuard's instructions:
+  // the install step opens that page and runs nothing.
+  assert.ok(src.includes("Qt.openUrlExternally(Model.CLI_INSTALL_URL)"))
+  assert.doesNotMatch(src, /CLI_INSTALL_COMMAND|\bcurl\b|\bwget\b|install\.sh/)
   // The side channel fills cliPath in as soon as the CLI turns up.
   assert.ok(src.includes('property string cliPath: ""'))
   assert.ok(src.includes('sideEnqueue(["cli-path"], "cliPath"'))

@@ -132,7 +132,7 @@ Panel {
   // search field over an empty list and six tabs that say the same thing.
   readonly property bool setupOnly: Model.setupBlocks(setupStep)
   function runSetup() {
-    if (setupStep === "install") vpn.installCli()
+    if (setupStep === "install") vpn.openInstallGuide()
     else if (setupStep === "login") vpn.login()
     else if (setupStep === "sudo") vpn.installSudoRule()
   }

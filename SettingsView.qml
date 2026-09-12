@@ -45,7 +45,7 @@ Column {
     else if (name === "autoConnect") panel.persistSettings({ autoConnect: !vpn.autoConnect })
     else if (name === "locateHome") vpn.setLocateHome(!vpn.locateHome)
     else if (name === "pingDots") panel.persistSettings({ pingDots: !vpn.pingDots })
-    else if (name === "cli") { if (!vpn.installed) vpn.installCli(); else if (updateReady) vpn.runUpdate(); else vpn.checkUpdate(false) }
+    else if (name === "cli") { if (!vpn.installed) vpn.openInstallGuide(); else if (updateReady) vpn.runUpdate(); else vpn.checkUpdate(false) }
     else if (name === "account") { if (root.accountState === "out") vpn.login() }
     else if (name === "sudoRule") vpn.installSudoRule()
   }
@@ -78,7 +78,7 @@ Column {
     label: "AdGuard VPN CLI" + (vpn && vpn.installed && vpn.update.current ? " " + vpn.update.current : "")
     status: vpn && !vpn.installed ? "Not installed" : root.updateText
     statusHot: vpn ? vpn.installed && root.updateReady && vpn.update.checkedAt !== 0 : false
-    buttonText: vpn && !vpn.installed ? "Install" : (root.updateReady ? "Update" : "Check")
+    buttonText: vpn && !vpn.installed ? "Guide" : (root.updateReady ? "Update" : "Check")
     buttonIcon: vpn && !vpn.installed ? Model.setupPrompt("install").icon : (root.updateReady ? "󰚰" : "󰑐")
     spinning: vpn ? vpn.updateChecking : false
   }
