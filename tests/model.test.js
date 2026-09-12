@@ -2023,13 +2023,17 @@ test("Service.qml never elevates: a connect without the sudo rule goes to a term
   assert.doesNotMatch(src, /pkexec|sudoRuleProcess|installSudoRule|aegis-sudo-rule|sudoers/)
   // connectTo routes on Model.connectNeedsTerminal before anything is queued.
   const connect = /function connectTo\(cliName, city\) \{[\s\S]*?\n  \}/.exec(src)[0]
-  assert.match(connect, /if \(Model\.connectNeedsTerminal\(sudoRule, nextMode\)\) \{ connectInTerminal\(target\); return \}/)
+  assert.match(connect, /if \(inTerminal === true \|\| Model\.connectNeedsTerminal\(sudoRule, nextMode, vpnState\)\) \{ connectInTerminal\(target\); return \}/)
+  // The retry after a sudo_password answer forces the terminal: the state
+  // that said none was needed is the one that was wrong, so asking it again
+  // would loop through the helper.
+  assert.match(src, /function retryInTerminal\(city\) \{[\s\S]*?connectTo\(loc\.cliName, loc\.city, true\)/)
   assert.ok(connect.indexOf("connectNeedsTerminal") < connect.indexOf("enqueue("))
   // The terminal runs the CLI's own connect; the login poll watches it land.
   assert.match(src, /function connectInTerminal\(cliName\) \{\s*\n\s*Quickshell\.execDetached\(\["omarchy-launch-floating-terminal-with-presentation", Model\.connectCommand\(root\.cliPath, cliName\)\]\)/)
   assert.match(src, /if \(waitFor === "connect"\) \{\s*\n\s*root\.refresh\(\)/)
   // Startup auto-connect never opens a terminal on its own.
-  assert.match(src, /needsTerminal: Model\.connectNeedsTerminal\(sudoRule, nextMode\)/)
+  assert.match(src, /needsTerminal: Model\.connectNeedsTerminal\(sudoRule, nextMode, state\)/)
   // The mode that decides is the configured one: a disconnected status
   // names no mode, so reading it would call SOCKS users' connects TUN. The
   // config is fetched once, with everything else, so the answer is there.
@@ -2049,14 +2053,21 @@ test("Service.qml never elevates: a connect without the sudo rule goes to a term
 })
 
 test("connectNeedsTerminal and connectCommand cover the passwordless-less connect", () => {
-  assert.equal(Model.connectNeedsTerminal("missing", "tun"), true)
+  assert.equal(Model.connectNeedsTerminal("missing", "tun", "disconnected"), true)
+  assert.equal(Model.connectNeedsTerminal("missing", "tun", "unknown"), true)
   // SOCKS mode never goes through sudo.
-  assert.equal(Model.connectNeedsTerminal("missing", "socks"), false)
+  assert.equal(Model.connectNeedsTerminal("missing", "socks", "disconnected"), false)
+  // Nor does a switch of city while the tunnel is up: the root service is
+  // already running and only takes the new location.
+  assert.equal(Model.connectNeedsTerminal("missing", "tun", "connected"), false)
+  // Mid-connect the service may not be up yet (the password not typed): the
+  // helper would only be turned away and retried in a terminal, so ask now.
+  assert.equal(Model.connectNeedsTerminal("missing", "tun", "connecting"), true)
   // The rule is there, or the probe has not answered: try the helper first;
   // a sudo_password answer is handed to a terminal by the exit handler.
-  assert.equal(Model.connectNeedsTerminal("ok", "tun"), false)
-  assert.equal(Model.connectNeedsTerminal("unknown", "tun"), false)
-  assert.equal(Model.connectNeedsTerminal(undefined, undefined), false)
+  assert.equal(Model.connectNeedsTerminal("ok", "tun", "disconnected"), false)
+  assert.equal(Model.connectNeedsTerminal("unknown", "tun", "disconnected"), false)
+  assert.equal(Model.connectNeedsTerminal(undefined, undefined, undefined), false)
   // The CLI's own connect, quoted for the shell, -y for the CLI's questions.
   assert.equal(Model.connectCommand("", "Tokyo"), "adguardvpn-cli connect -l Tokyo -y")
   assert.equal(Model.connectCommand("/opt/adguardvpn_cli/adguardvpn-cli", "New York"), "/opt/adguardvpn_cli/adguardvpn-cli connect -l 'New York' -y")

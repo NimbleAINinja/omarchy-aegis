@@ -469,7 +469,10 @@ Item {
   }
 
   // --- actions ------------------------------------------------------------------
-  function connectTo(cliName, city) {
+  // `inTerminal`: run it in a terminal whatever the state says — for a
+  // connect the helper just ran that sudo turned away (retryInTerminal),
+  // where the state that said "no terminal needed" was the one that lied.
+  function connectTo(cliName, city, inTerminal) {
     var target = String(cliName || "")
     if (target === "" || !installed) return
     _desired = 1
@@ -479,7 +482,7 @@ Item {
     // home lookup held since an earlier unexpected drop no longer needs to
     // wait; see dropHold / Model.mayLocateHome.
     dropHold = false
-    if (Model.connectNeedsTerminal(sudoRule, nextMode)) { connectInTerminal(target); return }
+    if (inTerminal === true || Model.connectNeedsTerminal(sudoRule, nextMode, vpnState)) { connectInTerminal(target); return }
     enqueue(["connect", target], "connect")
   }
 
@@ -503,7 +506,7 @@ Item {
   // sudoRule as missing.
   function retryInTerminal(city) {
     var loc = Model.findLocation(locations, city)
-    if (loc) connectTo(loc.cliName, loc.city)
+    if (loc) connectTo(loc.cliName, loc.city, true)
   }
 
   function down() {
@@ -554,7 +557,7 @@ Item {
   function maybeAutoConnect(state) {
     var ok = Model.shouldAutoConnect({ autoConnect: autoConnect, wasConnected: wasConnected, state: state,
       installed: installed, loggedIn: accountLoaded ? account.loggedIn : true, attempted: autoConnectAttempted,
-      needsTerminal: Model.connectNeedsTerminal(sudoRule, nextMode) })
+      needsTerminal: Model.connectNeedsTerminal(sudoRule, nextMode, state) })
     if (!ok) return
     autoConnectAttempted = true
     if (lastLocation === "") return

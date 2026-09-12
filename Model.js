@@ -652,9 +652,10 @@ function accountAction(state, step) {
 function setupStep(installed, vpnState, sudoRule, mode) {
   if (!installed) return "install"
   if (str(vpnState) === "logged_out") return "login"
-  // The notice is about the next connect, so a tunnel that is up has no
-  // use for it; it comes back once the tunnel is down.
-  if (connectNeedsTerminal(sudoRule, mode) && str(vpnState) !== "connected") return "sudo"
+  // The notice is about the next connect, so it goes with the terminal:
+  // while the tunnel is up a city switch needs none, and it comes back once
+  // the tunnel is down.
+  if (connectNeedsTerminal(sudoRule, mode, vpnState)) return "sudo"
   return ""
 }
 
@@ -662,11 +663,14 @@ function setupStep(installed, vpnState, sudoRule, mode) {
 // password into: the CLI starts its TUN service through sudo, and without
 // the README's rule sudo asks. The helper has no terminal to offer, so the
 // connect goes to a floating one instead (Service.connectInTerminal). SOCKS
-// mode never touches sudo. "unknown" (the probe has not answered) counts as
-// fine: a connect that then runs into the prompt is handed to a terminal by
-// the job's exit handler, and the verdict is remembered as "missing".
-function connectNeedsTerminal(sudoRule, mode) {
-  return str(sudoRule) === "missing" && str(mode) !== "socks"
+// mode never touches sudo, and neither does a switch of city while the
+// tunnel is up: the service sudo started is already running as root, and
+// the CLI only hands it the new location. "unknown" (the probe has not
+// answered) counts as fine: a connect that then runs into the prompt is
+// handed to a terminal by the job's exit handler, and the verdict is
+// remembered as "missing".
+function connectNeedsTerminal(sudoRule, mode, vpnState) {
+  return str(sudoRule) === "missing" && str(mode) !== "socks" && str(vpnState) !== "connected"
 }
 
 // The connect that terminal runs: the same call agvpn.py makes (-y answers
