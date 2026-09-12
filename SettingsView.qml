@@ -320,7 +320,9 @@ Column {
         font.family: panel.fontFamily
         font.pixelSize: Style.font.caption
         elide: Text.ElideMiddle
-        Layout.maximumWidth: setupRow.width * 0.45
+        // The labels are a word or two, so the status gets most of the row:
+        // "None, TUN connects ask for a password" was clipped at 45%.
+        Layout.maximumWidth: setupRow.width * 0.62
       }
 
       Button {
