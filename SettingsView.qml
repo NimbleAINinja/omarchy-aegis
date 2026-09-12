@@ -24,7 +24,9 @@ Column {
   readonly property string updateText: !vpn ? "" : (vpn.updateChecking ? "Checking"
     : (vpn.update.checkedAt === 0 ? "" : (vpn.update.upToDate ? "Up to date" : vpn.update.latest + " available")))
   readonly property bool updateReady: vpn ? !vpn.update.upToDate && !!vpn.update.latest : false
-  readonly property bool loggedIn: vpn ? vpn.account.loggedIn : true
+  // "in" / "out" / "unknown" — not a bool, because with no CLI the account
+  // call never lands and the placeholder would read as signed in.
+  readonly property string accountState: Model.accountState(vpn ? vpn.account : null, vpn ? vpn.accountLoaded : false)
   readonly property string sudoText: !vpn ? "" : (vpn.sudoRuleBusy ? "Authenticating"
     : (vpn.sudoRule === "ok" ? "Installed" : (vpn.sudoRule === "missing" ? "Missing" : "Not checked")))
 
@@ -44,7 +46,7 @@ Column {
     else if (name === "locateHome") vpn.setLocateHome(!vpn.locateHome)
     else if (name === "pingDots") panel.persistSettings({ pingDots: !vpn.pingDots })
     else if (name === "cli") { if (!vpn.installed) vpn.installCli(); else if (updateReady) vpn.runUpdate(); else vpn.checkUpdate(false) }
-    else if (name === "account") { if (!loggedIn) vpn.login() }
+    else if (name === "account") { if (root.accountState === "out") vpn.login() }
     else if (name === "sudoRule") vpn.installSudoRule()
   }
 
@@ -84,8 +86,10 @@ Column {
   SetupRow {
     name: "account"
     label: "Account"
-    status: root.loggedIn ? (vpn && vpn.account.email ? vpn.account.email : "Signed in") : "Signed out"
-    buttonVisible: !root.loggedIn
+    status: root.accountState === "unknown" ? "Not checked"
+      : (root.accountState === "out" ? "Signed out"
+      : (vpn && vpn.account.email ? vpn.account.email : "Signed in"))
+    buttonVisible: root.accountState === "out"
     buttonText: "Log in"
     buttonIcon: Model.setupPrompt("login").icon
   }

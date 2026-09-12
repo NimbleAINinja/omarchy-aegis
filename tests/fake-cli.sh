@@ -40,7 +40,9 @@ case "$1" in
       login) cat "$fixtures/status_login.txt" ;;
       *) cat "$fixtures/status_connected.txt" ;;
     esac ;;
-  list-locations) cat "$fixtures/list_locations.txt" ;;
+  list-locations)
+    if [[ $mode == login ]]; then cat "$fixtures/list_locations_logged_out.txt"; exit 0; fi
+    cat "$fixtures/list_locations.txt" ;;
   license)
     if [[ $mode == login ]]; then cat "$fixtures/license_logged_out.txt"; exit 1; fi
     cat "$fixtures/license.txt" ;;

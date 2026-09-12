@@ -293,12 +293,15 @@ test("Panel.qml builds the popup content on first open and never throws it away"
   assert.match(panel, /focusTarget: keyCatcher/)
   assert.match(panel, /PanelKeyCatcher \{\s*\n\s*id: keyCatcher/)
   assert.match(panel, /Flickable \{\s*\n\s*id: panelFlick/)
-  assert.match(panel, /Loader \{\s*\n\s*id: contentLoader\s*\n\s*width: panelFlick\.width\s*\n\s*active: root\.popupReady\s*\n\s*sourceComponent: popupContent\s*\n\s*\}/)
+  // The view and the footer carry one more condition: a setup-only card
+  // (no CLI, not signed in) is the hero and its button, with every tab and
+  // the icon bar between them stood down. See Model.setupBlocks.
+  assert.match(panel, /Loader \{\s*\n\s*id: contentLoader\s*\n\s*width: panelFlick\.width\s*\n\s*active: root\.popupReady && !root\.setupOnly\s*\n\s*sourceComponent: popupContent\s*\n\s*\}/)
   // The header and the footer are two more Loaders on the same latch: all
   // three are built inside the one `popupReady = true`, so the card is
   // measured with all of it there.
   assert.match(panel, /Loader \{\s*\n\s*id: headerLoader\s*\n\s*anchors\.left: parent\.left\s*\n\s*anchors\.right: parent\.right\s*\n\s*anchors\.top: parent\.top\s*\n\s*active: root\.popupReady\s*\n\s*sourceComponent: popupHeader\s*\n\s*\}/)
-  assert.match(panel, /Loader \{\s*\n\s*id: footerLoader\s*\n\s*anchors\.left: parent\.left\s*\n\s*anchors\.right: parent\.right\s*\n\s*anchors\.bottom: parent\.bottom\s*\n\s*active: root\.popupReady\s*\n\s*sourceComponent: popupFooter\s*\n\s*\}/)
+  assert.match(panel, /Loader \{\s*\n\s*id: footerLoader\s*\n\s*anchors\.left: parent\.left\s*\n\s*anchors\.right: parent\.right\s*\n\s*anchors\.bottom: parent\.bottom\s*\n\s*active: root\.popupReady && !root\.setupOnly\s*\n\s*sourceComponent: popupFooter\s*\n\s*\}/)
   // Latched inside the open branch, never cleared.
   assert.match(panel, /property bool popupReady: false/)
   const opened = /onOpenedChanged:\s*\{[\s\S]*?\n  \}/.exec(panel)
@@ -321,7 +324,7 @@ test("Panel.qml builds the popup content on first open and never throws it away"
   // the scrolling column holds the view Loader and nothing else.
   const header = /Component \{\s*\n\s*id: popupHeader[\s\S]*?\n  \}/.exec(panel)
   assert.ok(header, "popupHeader Component present")
-  for (const pinned of [/WorldMap \{/, /PanelHero \{/, /text: root\.statusLine/, /PanelSeparator \{ foreground: root\.foreground \}/])
+  for (const pinned of [/WorldMap \{/, /PanelHero \{/, /text: root\.statusLine/, /PanelSeparator \{ foreground: root\.foreground; visible: !root\.setupOnly \}/])
     assert.match(header[0], pinned)
   assert.doesNotMatch(header[0], /viewLoader/)
   const content = /Component \{\s*\n\s*id: popupContent[\s\S]*?\n  \}/.exec(panel)
@@ -333,7 +336,11 @@ test("Panel.qml builds the popup content on first open and never throws it away"
   assert.match(panel, /readonly property real popupColumnHeight: contentLoader\.item \? contentLoader\.item\.implicitHeight : 0/)
   assert.match(panel, /readonly property real popupHeaderHeight: headerLoader\.item \? headerLoader\.item\.implicitHeight : 0/)
   assert.match(panel, /readonly property real popupFooterHeight: footerLoader\.item \? footerLoader\.item\.implicitHeight : 0/)
-  assert.match(panel, /readonly property real popupContentHeight: popupColumnHeight > 0\s*\n\s*\? popupHeaderHeight \+ Style\.space\(10\) \+ popupColumnHeight \+ Style\.space\(10\) \+ popupFooterHeight : 0/)
+  // A setup-only card measures as the header and the gap under it: the view
+  // and footer are inactive, and 0 would mean "never opened" and draw nothing.
+  assert.match(panel, /readonly property real popupContentHeight: root\.setupOnly/)
+  assert.match(panel, /\? \(popupHeaderHeight > 0 \? popupHeaderHeight \+ Style\.space\(10\) : 0\)/)
+  assert.match(panel, /: \(popupColumnHeight > 0\s*\n\s*\? popupHeaderHeight \+ Style\.space\(10\) \+ popupColumnHeight \+ Style\.space\(10\) \+ popupFooterHeight : 0\)/)
   assert.match(panel, /contentHeight: panel\.fittedContentHeight\(root\.popupContentHeight, Style\.space\(760\)\)/)
   assert.match(panel, /contentHeight: root\.popupColumnHeight/)
   // Ids inside the deferred Components are not reachable from out here.
@@ -404,18 +411,21 @@ test("Panel.qml leaves the view alone when a connect finishes", () => {
 
 test("Panel.qml's footer model is constant and in footerAction's order", () => {
   const fs = require("node:fs"), path = require("node:path")
-  const panel = fs.readFileSync(path.join(__dirname, "..", "Panel.qml"), "utf8")
+  const whole = fs.readFileSync(path.join(__dirname, "..", "Panel.qml"), "utf8")
+  // Scoped to the footer Component: the setup banner over the map has a
+  // Repeater of its own, and it comes first in the file.
+  const panel = whole.slice(whole.indexOf("id: popupFooter"))
   // The map pin comes first: the way back to the locations is where the eye
   // lands, and it is the view every other one toggles back to.
   const ids = ["list", "exclusions", "account", "settings", "killswitch", "traffic", "barmode", "refresh"]
-  const model = /Repeater \{[\s\S]*?\n *model: (\[[^\]]*\])/.exec(panel)
+  const model = /Repeater \{[\s\S]*?\n *model: (\[[^\]]*\])/.exec(whole)
   assert.ok(model, "footer Repeater model present")
   assert.deepEqual(JSON.parse(model[1].replace(/"/g, '"')), ids)
   // Nothing that changes while the panel is open may appear in the model, or
   // the Repeater rebuilds every button whenever it does.
   assert.doesNotMatch(model[1], /vpn\.|root\./)
   // footerAction must keep mapping those indexes to those actions.
-  const action = /function footerAction\(index\) \{[\s\S]*?\n  \}/.exec(panel)
+  const action = /function footerAction\(index\) \{[\s\S]*?\n  \}/.exec(whole)
   assert.ok(action, "footerAction present")
   assert.match(action[0], /index === 0\) switchView\("list"\)/)
   assert.match(action[0], /index === 1\) switchView\("exclusions"\)/)
@@ -434,12 +444,12 @@ test("Panel.qml's footer model is constant and in footerAction's order", () => {
   assert.match(delegate[0], /if \(modelData === "traffic"\) return "Traffic \(T\)"/)
   // The cursor clamp is one number, and it has to be the last index of that
   // model — add a button and both move together.
-  assert.match(panel, new RegExp(`readonly property int footerLastIndex: ${ids.length - 1}\\b`))
-  assert.match(panel, /if \(footerIndex > footerLastIndex\) footerIndex = footerLastIndex/)
-  assert.match(panel, /Math\.max\(0, Math\.min\(footerLastIndex, footerIndex \+ dx\)\)/)
+  assert.match(whole, new RegExp(`readonly property int footerLastIndex: ${ids.length - 1}\\b`))
+  assert.match(whole, /if \(footerIndex > footerLastIndex\) footerIndex = footerLastIndex/)
+  assert.match(whole, /Math\.max\(0, Math\.min\(footerLastIndex, footerIndex \+ dx\)\)/)
   // Shift+L is the keyboard twin of the map pin; plain l is cursor-right in
   // PanelKeyCatcher, so it is tested before the text is lowercased.
-  const keys = /function handleTextKey\(t\) \{[\s\S]*?\n  \}/.exec(panel)
+  const keys = /function handleTextKey\(t\) \{[\s\S]*?\n  \}/.exec(whole)
   assert.ok(keys, "handleTextKey present")
   assert.match(keys[0], /if \(t === "L"\) \{ switchView\("list"\); return \}/)
   // Shift+T is the traffic tab and plain t toggles the VPN, so the capital
@@ -447,7 +457,7 @@ test("Panel.qml's footer model is constant and in footerAction's order", () => {
   assert.match(keys[0], /if \(t === "T"\) \{ switchView\("traffic"\); return \}[\s\S]*var k = t\.toLowerCase\(\)/)
   // switchView("list") must land on the list from the list, not toggle away:
   // "list" is the fallback of its own toggle.
-  assert.match(panel, /view = view === next \? "list" : next/)
+  assert.match(whole, /view = view === next \? "list" : next/)
 })
 
 test("the traffic tab is reachable from the footer, the keyboard and IPC, and only samples while shown", () => {
@@ -1724,8 +1734,13 @@ test("Service.qml gates the situational timers on what they are waiting for", ()
   // the bar label alone.
   assert.match(timer("rateTimer"), /interval: root\.trafficVisible \? 1000 : \(root\.panelOpen \? 2000 : 5000\)/)
   assert.match(timer("refreshTimer"), /installed: root\.installed/)
-  // Closing the panel while still logged out ends the login poll.
-  assert.match(src, /if \(loginPoll\.running\) loginPoll\.stop\(\)/)
+  // Closing the panel never stops this poll. Both things it waits for —
+  // AdGuard's installer, `adguardvpn-cli login` — run in a terminal that
+  // takes focus and so closes the panel the moment it opens, and neither
+  // one is noticed by the ordinary poll: that fetches a snapshot, which
+  // says nothing about the account. It is bounded by LOGIN_POLL_MAX_TICKS.
+  assert.doesNotMatch(src, /loginPoll\.stop\(\)\s*\n\s*\}\s*\n\s*\/\/ A CLI that has just appeared/)
+  assert.doesNotMatch(src, /if \(loginPoll\.running.*\) loginPoll\.stop\(\)/)
   assert.match(src, /onPanelOpenChanged: \{\n\s*if \(panelOpen\) \{ refreshAll\(\); return \}/)
 })
 
@@ -1891,4 +1906,180 @@ test("setupPrompt has a line, a button and an icon for every step and nothing fo
   // The installer is AdGuard's, over TLS, verbose, and never sudo by itself.
   assert.match(Model.CLI_INSTALL_COMMAND, /^curl -fsSL https:\/\/raw\.githubusercontent\.com\/AdguardTeam\/AdGuardVPNCLI\/.*install\.sh \| sh -s -- -v$/)
   assert.doesNotMatch(Model.CLI_INSTALL_COMMAND, /sudo/)
+})
+
+test("accountState keeps the unasked account out of the answer", () => {
+  // Service.account starts at loggedIn:true so nothing flickers "signed
+  // out" while the first account call is in flight; `loaded` is what turns
+  // that placeholder into an answer. Without the CLI the call never lands.
+  assert.equal(Model.accountState({ loggedIn: true, email: "" }, false), "unknown")
+  assert.equal(Model.accountState({ loggedIn: false }, false), "unknown")
+  assert.equal(Model.accountState(null, false), "unknown")
+  assert.equal(Model.accountState({ loggedIn: true, email: "a@b.c" }, true), "in")
+  assert.equal(Model.accountState({ loggedIn: false }, true), "out")
+  assert.equal(Model.accountState(null, true), "out")
+})
+
+test("provesInstalled reads the CLI's presence off any answer it gave, not just a good one", () => {
+  // The only thing a freshly installed CLI says until the user logs in.
+  assert.equal(Model.provesInstalled("snapshot", { ok: false, error: "Not logged in", code: "logged_out" }), true)
+  assert.equal(Model.provesInstalled("connect", { ok: false, code: "sudo_password" }), true)
+  // A parse failure can equally be the helper itself printing nothing
+  // usable, which says nothing about the binary; same for a timeout.
+  assert.equal(Model.provesInstalled("locations", { ok: false, code: "parse" }), false)
+  assert.equal(Model.provesInstalled("snapshot", { ok: false, code: "timeout" }), false)
+  assert.equal(Model.provesInstalled("account", { ok: true, loggedIn: false }), true)
+  assert.equal(Model.provesInstalled("snapshot", { ok: true, state: "connected" }), true)
+  // cli_missing is the one answer that says it isn't there.
+  assert.equal(Model.provesInstalled("snapshot", { ok: false, code: "cli_missing" }), false)
+  assert.equal(Model.provesInstalled("account", { ok: false, code: "cli_missing" }), false)
+  // These verbs never run the binary, so they prove nothing either way.
+  for (const verb of ["home", "homeCache", "procs", "sudoCheck"])
+    assert.equal(Model.provesInstalled(verb, { ok: true }), false, verb)
+  assert.equal(Model.provesInstalled("snapshot", null), false)
+})
+
+test("accountAction leaves the log-in to the hero when the hero is already offering it", () => {
+  // The setup prompt sits above every tab, so an account tab that draws its
+  // own Log in puts two identical buttons on one screen.
+  assert.equal(Model.accountAction("out", "login"), "")
+  // Nothing else offers a log out, so that button always stands.
+  assert.equal(Model.accountAction("in", ""), "logout")
+  assert.equal(Model.accountAction("in", "sudo"), "logout")
+  // Signed out with the hero on some other step: the tab is the only way in.
+  assert.equal(Model.accountAction("out", ""), "login")
+  assert.equal(Model.accountAction("out", "sudo"), "login")
+  // Nothing has answered for the account yet — see accountState.
+  assert.equal(Model.accountAction("unknown", "install"), "")
+})
+
+test("showsStatus drops the error that only restates the setup step", () => {
+  // First run says it three ways already: the hero's meta line names the
+  // state, the prompt under it names the fix. The red echo is the fourth.
+  assert.equal(Model.showsStatus("", "cli_missing", "install"), false)
+  assert.equal(Model.showsStatus("", "logged_out", "login"), false)
+  // A sudo prompt explains a connect that really did fail — nothing else
+  // on the hero says that, so it stands.
+  assert.equal(Model.showsStatus("", "sudo_password", "sudo"), true)
+  // Anything the hero isn't already saying stands too.
+  assert.equal(Model.showsStatus("", "network", "login"), true)
+  assert.equal(Model.showsStatus("", "cli_missing", ""), true)
+  // What an action is doing right now always shows.
+  assert.equal(Model.showsStatus("Install from the terminal", "cli_missing", "install"), true)
+})
+
+test("locationsEmptyText stays quiet while a prerequisite blocks the list", () => {
+  // No CLI and no login mean no locations, and the hero says so already.
+  assert.equal(Model.locationsEmptyText(false, "install"), "")
+  assert.equal(Model.locationsEmptyText(false, "login"), "")
+  // The sudo rule doesn't stop the CLI from listing locations.
+  assert.equal(Model.locationsEmptyText(false, "sudo"), "Loading locations")
+  assert.equal(Model.locationsEmptyText(false, ""), "Loading locations")
+  // Rows exist but the search filtered them all out.
+  assert.equal(Model.locationsEmptyText(true, ""), "No match")
+  assert.equal(Model.locationsEmptyText(true, "login"), "No match")
+})
+
+test("setupBlocks names the steps that leave the whole panel nothing to do", () => {
+  assert.equal(Model.setupBlocks("install"), true)
+  assert.equal(Model.setupBlocks("login"), true)
+  // The sudo rule blocks connecting through the tunnel, not reading anything.
+  assert.equal(Model.setupBlocks("sudo"), false)
+  assert.equal(Model.setupBlocks(""), false)
+})
+
+test("accountStale catches the cached log-out a snapshot has just disproved", () => {
+  // The login happens in a terminal, which takes focus and closes the panel.
+  // The ordinary poll only ever fetches a snapshot, so the account cached
+  // when the CLI last said "logged out" is what the account tab kept
+  // showing — signed out, over a location list the login had just filled.
+  assert.equal(Model.accountStale("disconnected", true, false), true)
+  assert.equal(Model.accountStale("connected", true, false), true)
+  // Both agree: nothing to do.
+  assert.equal(Model.accountStale("logged_out", true, false), false)
+  assert.equal(Model.accountStale("disconnected", true, true), false)
+  // A status the helper could not parse proves nothing either way.
+  assert.equal(Model.accountStale("unknown", true, false), false)
+  // Never asked yet: refreshAccount is already on its way (accountLoaded).
+  assert.equal(Model.accountStale("disconnected", false, false), false)
+})
+
+test("Service.qml brings the tunnel up when the rule was the last thing missing", () => {
+  const src = require("node:fs").readFileSync(require("node:path").join(__dirname, "..", "Service.qml"), "utf8")
+  const at = src.indexOf("id: sudoRuleProcess")
+  assert.notEqual(at, -1)
+  const handler = src.slice(at, src.indexOf("\n  }", at))
+  // A connect that failed on the password prompt still wins, by name.
+  assert.match(handler, /if \(again\) \{ root\.connectTo\(again\.cliName, again\.city\); return \}/)
+  // Otherwise the setup prompt just finished, and toggleVpn picks the
+  // location: the last one if known, the fastest otherwise.
+  assert.match(handler, /Model\.connectAfterSudoRule\(retry !== "", root\.active, root\.locations\.length\)\) \{\s*\n\s*root\.toggleVpn\(\)/)
+})
+
+test("Service.qml proves the CLI from answers that failed, not only from good ones", () => {
+  const src = require("node:fs").readFileSync(require("node:path").join(__dirname, "..", "Service.qml"), "utf8")
+  const at = src.indexOf("id: jobProcess")
+  assert.notEqual(at, -1)
+  const handler = src.slice(at, src.indexOf("\n  }", src.indexOf("onExited", at)))
+  // applyJob runs only on the `else` of `if (!ok)`, so a check living there
+  // never sees a failure — and "Not logged in" is the only thing a freshly
+  // installed CLI says. The proof has to sit before the split.
+  const proof = handler.indexOf("Model.provesInstalled")
+  const split = handler.indexOf("var ok =")
+  assert.notEqual(proof, -1, "provesInstalled is checked in jobProcess.onExited")
+  assert.ok(proof < split, "provesInstalled is checked before the ok/!ok split")
+  const apply = /function applyJob\(verb, obj, exitCode\) \{[\s\S]*?\n  \}/.exec(src)
+  assert.doesNotMatch(apply[0], /provesInstalled/)
+})
+
+test("the setup auto-connect is the one connect that moves the user to a tab", () => {
+  const fs = require("node:fs"), path = require("node:path")
+  const src = fs.readFileSync(path.join(__dirname, "..", "Service.qml"), "utf8")
+  const panel = fs.readFileSync(path.join(__dirname, "..", "Panel.qml"), "utf8")
+  assert.match(src, /signal setupConnected\(\)/)
+  // Emitted where the auto-connect is issued, not where it completes: the
+  // point is to watch the graph fill, not to arrive after it has.
+  assert.match(src, /root\.toggleVpn\(\)\s*\n\s*root\.setupConnected\(\)/)
+  // Set directly, not through switchView: that toggles, so asking for the
+  // tab you are already on would send you to the list instead.
+  assert.match(panel, /function onSetupConnected\(\) \{ root\.view = "traffic" \}/)
+  // Every other connect still leaves the user where they were.
+  assert.doesNotMatch(panel, /function onConnectedChanged/)
+})
+
+test("connectAfterSudoRule finishes the setup the user just completed", () => {
+  // Nothing was waiting on the rule, the VPN is off, locations are loaded:
+  // the last thing standing between the user and a tunnel is gone, so bring
+  // it up the way the hero switch would.
+  assert.equal(Model.connectAfterSudoRule(false, false, 90), true)
+  // A connect that failed on the password prompt is retried by name instead.
+  assert.equal(Model.connectAfterSudoRule(true, false, 90), false)
+  // Already up: nothing to do.
+  assert.equal(Model.connectAfterSudoRule(false, true, 90), false)
+  // toggleVpn() with an empty list raises "No locations loaded yet", which
+  // would land as a red error under a rule install that worked.
+  assert.equal(Model.connectAfterSudoRule(false, false, 0), false)
+  assert.equal(Model.connectAfterSudoRule(false, false, undefined), false)
+})
+
+test("setupPlan walks the three prerequisites and says where the user is", () => {
+  // Nothing in the way: no banner.
+  assert.deepEqual(Model.setupPlan(""), [])
+  const at = step => Model.setupPlan(step).map(r => r.state)
+  assert.deepEqual(at("install"), ["current", "todo", "todo"])
+  assert.deepEqual(at("login"), ["done", "current", "todo"])
+  assert.deepEqual(at("sudo"), ["done", "done", "current"])
+  const rows = Model.setupPlan("install")
+  assert.deepEqual(rows.map(r => r.n), ["1", "2", "3"])
+  // Terse: the hero prompt under the map explains each step when you reach
+  // it, so the banner names them and stops.
+  for (const r of rows) assert.ok(r.label.length > 0 && r.label.length <= 32, r.label)
+  assert.match(rows[0].label, /adguardvpn-cli/)
+  assert.match(rows[1].label, /terminal/)
+  assert.match(rows[2].label, /sudo rule/)
+})
+
+test("SETUP_INTRO says what is coming and that each step hands you back", () => {
+  assert.match(Model.SETUP_INTRO, /^First, some setup: /)
+  assert.match(Model.SETUP_INTRO, /Come back here after each to continue\.$/)
 })

@@ -154,6 +154,10 @@ Item {
   signal actionFinished(string verb, bool ok)
   // Ask the panel (which owns the shell.json entry) to persist inline settings.
   signal persist(var values)
+  // First run just finished and the tunnel is on its way up by itself:
+  // Panel jumps to the traffic tab once so the user watches it fill. The
+  // only connect that moves anyone — see Panel's Connections block.
+  signal setupConnected()
 
   function setting(name, fallback) {
     var value = settings ? settings[name] : undefined
@@ -719,6 +723,11 @@ Item {
       account = Model.loggedOutAccount()
       accountLoaded = true
     }
+    // The other direction: this snapshot proves a login the cached account
+    // predates, so go and get the real one. See Model.accountStale — the
+    // account tab read "Not signed in" over a full location list until the
+    // user happened to switch to it. `dedupe` keeps repeat polls to one call.
+    else if (Model.accountStale(snap.state, accountLoaded, account.loggedIn)) refreshAccount()
     // Already zero: assigning a fresh { 0, 0 } would signal the bar's rate
     // label and every binding on it for no change at all.
     if (snap.state !== "connected" && (rates.down !== 0 || rates.up !== 0)) rates = { down: 0, up: 0 }
@@ -989,10 +998,14 @@ Item {
 
   onPanelOpenChanged: {
     if (panelOpen) { refreshAll(); return }
-    // Waiting for a login nobody can be watching: the Log in button that
-    // started this poll lives in the panel, and the ordinary status poll
-    // notices a login on its own once the panel comes back.
-    if (loginPoll.running) loginPoll.stop()
+    // The poll stays. Both things it waits for — AdGuard's installer and
+    // `adguardvpn-cli login` — run in a terminal that takes focus, so the
+    // panel closes the moment either one starts, and neither is noticed by
+    // the ordinary poll: a missing CLI slows that to POLL_MISSING_MS, and a
+    // finished login never reaches it at all, because it only ever fetches
+    // a snapshot. Stopping here left the panel offering Install ten minutes
+    // after the install, and "Not signed in" after the login. It is bounded
+    // by LOGIN_POLL_MAX_TICKS on its own.
   }
   // A CLI that has just appeared (the setup prompt's installer, a package
   // manager) gets the sudo probe the missing one was spared.
@@ -1069,7 +1082,15 @@ Item {
         var retry = root._sudoRetry
         root._sudoRetry = ""
         var again = retry !== "" ? Model.findLocation(root.locations, retry) : null
-        if (again) root.connectTo(again.cliName, again.city)
+        if (again) { root.connectTo(again.cliName, again.city); return }
+        // Nothing was waiting on the rule, so this was the setup prompt
+        // finishing the last of the three prerequisites: bring the tunnel up
+        // the way the hero switch would — the last location if there is one,
+        // the fastest otherwise. See Model.connectAfterSudoRule.
+        if (Model.connectAfterSudoRule(retry !== "", root.active, root.locations.length)) {
+          root.toggleVpn()
+          root.setupConnected()
+        }
         return
       }
       if (exitCode === 126) { root.actionStatus = "Authentication cancelled"; return }
@@ -1182,6 +1203,12 @@ Item {
         obj = { ok: false, error: "Timed out waiting for adguardvpn-cli", code: "timeout" }
       jobWatchdog.stopping = false
       jobProcess.output = ""
+      // Before the split below, because a failure proves the CLI is there
+      // just as well as a success: "Not logged in" is the only thing a
+      // freshly installed CLI says, and everything that fails goes to
+      // noteError without ever reaching applyJob. See Model.provesInstalled.
+      // (sideProcess needs none of this: its verbs never run the binary.)
+      if (Model.provesInstalled(verb, obj)) root.installed = true
       var ok = obj.ok !== false && exitCode === 0
       var isAction = root._refreshVerbs.indexOf(verb) === -1
       // Whatever connect job this was (auto-connect's own or a manual one

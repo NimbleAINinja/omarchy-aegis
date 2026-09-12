@@ -815,7 +815,13 @@ def classify_failure(stdout, stderr, fallback="unknown"):
     blob = (stdout or "") + "\n" + (stderr or "")
     if "a password is required" in blob or "terminal is required to read the password" in blob:
         return "sudo_password", "sudo needs a password to start the VPN service"
-    if "must log in" in blob or "not logged in" in blob.lower():
+    # The CLI says this three ways: "you must log in" (connect), "You are
+    # not logged in" (status), and "Please log in to <do the thing>"
+    # (list-locations, license). All three carry the same hint line, which
+    # is the one marker every phrasing shares.
+    low = blob.lower()
+    if ("must log in" in low or "not logged in" in low or "please log in" in low
+            or "you can log in by running" in low):
         return "logged_out", "Not logged in"
     return fallback, elide(stderr.strip() or stdout.strip() or "adguardvpn-cli failed")
 
@@ -1436,20 +1442,41 @@ def sudo_probe_argv():
             "--ppid-file", os.path.join(data, "adguardvpn-cli", "vpn.pid")]
 
 
+def sudo_nopasswd_for(listing, binary):
+    """Whether a `sudo -l` listing carries a NOPASSWD entry for `binary`.
+    sudo prints one entry per line, so each line is read on its own: a
+    NOPASSWD line naming the CLI is the rule aegis-sudo-rule installs, and
+    the blanket `(ALL : ALL) ALL` line that sits above it on most machines
+    is not (it is exactly the one that costs a password)."""
+    for line in strip_ansi(listing or "").splitlines():
+        if "NOPASSWD:" in line and binary in line:
+            return True
+    return False
+
+
 def verb_sudo_check():
     """Whether sudo would run the CLI's connect command as root without a
     password right now — the question a connect will ask a moment later.
-    `sudo -l` with a command answers exactly that (exit 0: allowed) and runs
-    nothing; -n never prompts, and -k ignores a credential cached by a recent
-    terminal sudo, so a passworded rule reads as missing rather than as fine
-    for the next few minutes. No CLI call, no lock: the side channel's job."""
+
+    Asked as a plain `sudo -l` listing rather than `sudo -l <command>`:
+    passing the command answers "may this user run it", and on any ordinary
+    machine the blanket `(ALL : ALL) ALL` rule says yes to everything, so
+    the probe read as "rule installed" on a machine that had none and the
+    setup step it should have offered never appeared. The listing is what
+    distinguishes a passwordless rule from a passworded one. -n never
+    prompts, and -k ignores a credential cached by a recent terminal sudo,
+    so a sudo that wants a password even to list reads as no rule rather
+    than as fine for the next few minutes. No CLI call, no lock: the side
+    channel's job."""
     sudo = os.environ.get("AEGIS_SUDO") or shutil.which("sudo") or "sudo"
     try:
-        p = subprocess.run([sudo, "-n", "-k", "-l", "--"] + sudo_probe_argv(), capture_output=True, text=True,
+        p = subprocess.run([sudo, "-n", "-k", "-l"], capture_output=True, text=True,
                            stdin=subprocess.DEVNULL, timeout=time_left(SUDO_CHECK_TIMEOUT))
     except (OSError, subprocess.SubprocessError) as exc:
         raise CliError("unknown", "sudo failed: %s" % exc)
-    return {"ok": True, "allowed": p.returncode == 0}
+    if p.returncode != 0:
+        return {"ok": True, "allowed": False}
+    return {"ok": True, "allowed": sudo_nopasswd_for(p.stdout, os.path.realpath(cli_path()))}
 
 
 def verb_procs():

@@ -486,12 +486,150 @@ function linkState(vpnState, pendingLocation) {
 // /usr/local/bin link. -v so the terminal shows what it does.
 var CLI_INSTALL_COMMAND = "curl -fsSL https://raw.githubusercontent.com/AdguardTeam/AdGuardVPNCLI/master/scripts/release/install.sh | sh -s -- -v"
 
+// Verbs that answer by running adguardvpn-cli. "home"/"homeCache" (a web
+// lookup and its cache file), "procs" and "sudoCheck" never touch the
+// binary, so what they return says nothing about whether it is installed.
+var CLI_VERBS = ["snapshot", "locations", "account", "exclusions", "config",
+                 "update", "connect", "disconnect", "logout"]
+
+// Errors only adguardvpn-cli itself can raise: the CLI printed "not logged
+// in", or sudo refused to start its service. Both prove the binary ran. A
+// "parse" or "timeout" is not on this list — those are equally the helper
+// printing nothing usable or being killed, which prove nothing either way.
+var PROVING_CODES = ["logged_out", "sudo_password"]
+
+// Whether a helper answer proves adguardvpn-cli is on the machine. A real
+// answer does, and so does an error only the CLI could have produced —
+// "Not logged in" above all, which is the only thing a freshly installed
+// CLI says until the user signs in. `installed` was set from a *successful*
+// snapshot alone, and that snapshot cannot succeed before the login, so a
+// CLI the user had just installed left the panel still offering Install
+// with the login step it should have moved on to out of reach.
+function provesInstalled(verb, obj) {
+  if (CLI_VERBS.indexOf(str(verb)) === -1) return false
+  if (!obj || typeof obj !== "object") return false
+  if (obj.ok !== false) return true
+  return PROVING_CODES.indexOf(str(obj.code)) !== -1
+}
+
+// "in", "out", or "unknown" for an account nothing has answered for yet.
+// Service.account starts at loggedIn:true so the panel doesn't flicker
+// "signed out" while the first account call is in flight, and accountLoaded
+// is what turns that placeholder into an answer. A machine without the CLI
+// never gets one — the account call fails cli_missing — so a view that
+// reads the flag alone tells a fresh install it is already signed in.
+function accountState(account, loaded) {
+  if (!loaded) return "unknown"
+  return account && account.loggedIn === true ? "in" : "out"
+}
+
+// The banner over the map on a first run. Each step hands the user to a
+// terminal, a browser or a polkit prompt, which takes focus and closes the
+// panel behind them — so the one thing they need to know, beyond what is
+// coming, is that they come back here between them.
+var SETUP_INTRO = "First, some setup: I'll walk you through these steps. Come back here after each to continue."
+
+// The three prerequisites in the order setupStep walks them, named as
+// briefly as they can be: the hero's own prompt explains each one when the
+// user reaches it, so the banner is a map of the route, not a second set of
+// instructions.
+var SETUP_PLAN = [
+  { step: "install", label: "Install adguardvpn-cli" },
+  { step: "login", label: "Sign in \u2014 opens a terminal" },
+  { step: "sudo", label: "Add a sudo rule" }
+]
+
+// SETUP_PLAN marked up for the step the user is on: everything before it is
+// done, everything after is still to come. Empty once setupStep is "",
+// which is what takes the banner off the map.
+function setupPlan(step) {
+  var at = -1
+  for (var i = 0; i < SETUP_PLAN.length; i++) if (SETUP_PLAN[i].step === str(step)) at = i
+  if (at === -1) return []
+  var rows = []
+  for (var j = 0; j < SETUP_PLAN.length; j++)
+    rows.push({ n: String(j + 1), label: SETUP_PLAN[j].label,
+      state: j < at ? "done" : (j === at ? "current" : "todo") })
+  return rows
+}
+
 // The line and button the panel shows for a setupStep; "" for none.
 function setupPrompt(step) {
   if (step === "install") return { text: "Install adguardvpn-cli to get started", button: "Install", icon: "\uDB80\uDDDA" }
   if (step === "login") return { text: "Sign in to your AdGuard VPN account", button: "Log in", icon: "\uDB80\uDF42" }
   if (step === "sudo") return { text: "Let the VPN start without a password prompt", button: "Set up", icon: "\uDB80\uDF06" }
   return { text: "", button: "", icon: "" }
+}
+
+// Whether installing the sudo rule should bring the tunnel up by itself.
+// The rule is the last of the three prerequisites, so a user who just
+// finished it wants what they were setting up all along — but only when
+// nothing else already has the connect in hand: a connect that failed on
+// the password prompt is retried by name instead (Service's _sudoRetry),
+// and a tunnel already up needs nothing. The location count is the guard
+// on toggleVpn() itself, which raises "No locations loaded yet" on an empty
+// list — a red error under a rule install that had in fact worked.
+function connectAfterSudoRule(retrying, active, locationCount) {
+  return retrying !== true && active !== true && num(locationCount, 0) > 0
+}
+
+// Whether the cached account has been outlived by the snapshot beside it.
+// The login runs in a terminal, which takes focus and closes the panel, and
+// the ordinary poll only ever fetches a snapshot — so the account cached
+// when the CLI last answered "logged out" stayed on the account tab, signed
+// out, over a location list that same login had just filled. A snapshot
+// that names any real tunnel state proves the CLI is signed in; "unknown"
+// is output the helper could not parse and proves nothing either way.
+function accountStale(snapState, accountLoaded, loggedIn) {
+  if (accountLoaded !== true || loggedIn !== false) return false
+  var s = str(snapState)
+  return s !== "" && s !== "logged_out" && s !== "unknown"
+}
+
+// Whether the hero's status line adds anything the rest of the hero isn't
+// already saying. The meta line under "Aegis" names the state ("adguardvpn-
+// cli not found", "Signed out") and the setup prompt beneath it names the
+// fix, so echoing the same error in red stated one fact a third time — and
+// painted an ordinary first run as a failure. What an action is doing right
+// now always shows, and so does a sudo prompt: that one explains a connect
+// that really did fail, which nothing else on the hero accounts for.
+function showsStatus(actionStatus, errorCode, step) {
+  if (str(actionStatus) !== "") return true
+  var code = str(errorCode)
+  var s = str(step)
+  if (code === "cli_missing" && s === "install") return false
+  if (code === "logged_out" && s === "login") return false
+  return true
+}
+
+// The steps that leave the whole panel with nothing to do: without a binary
+// or a login there are no locations, no exclusions, no account and no
+// settings the CLI can answer for. The card shows the hero and its one
+// button until one of them is dealt with. The sudo rule is not one of these
+// — it blocks connecting through the tunnel, not reading anything.
+function setupBlocks(step) {
+  var s = str(step)
+  return s === "install" || s === "login"
+}
+
+// What the locations list says when it has no rows to show. Blocked, it can
+// never have any, and the hero above already says which step is missing and
+// offers the button — so the list keeps quiet instead of repeating it, or
+// claiming to be "Loading locations" for a login that hasn't happened yet.
+function locationsEmptyText(hasLocations, step) {
+  if (hasLocations === true) return "No match"
+  return setupBlocks(step) ? "" : "Loading locations"
+}
+
+// The one action the account tab offers: "logout", "login", or "" for none.
+// The hero's setup prompt sits above every tab and already carries a Log in
+// whenever setupStep is "login", so the tab drawing its own put two
+// identical buttons on the same screen. Logging out is offered nowhere else,
+// so that one always stands.
+function accountAction(state, step) {
+  if (str(state) === "in") return "logout"
+  if (str(state) === "out" && str(step) !== "login") return "login"
+  return ""
 }
 
 function setupStep(installed, vpnState, sudoRule, mode) {
@@ -1544,6 +1682,16 @@ if (typeof module !== "undefined") {
     pingTier: pingTier,
     dotTints: dotTints,
     linkState: linkState,
+    provesInstalled: provesInstalled,
+    connectAfterSudoRule: connectAfterSudoRule,
+    accountStale: accountStale,
+    accountState: accountState,
+    accountAction: accountAction,
+    showsStatus: showsStatus,
+    setupBlocks: setupBlocks,
+    locationsEmptyText: locationsEmptyText,
+    SETUP_INTRO: SETUP_INTRO,
+    setupPlan: setupPlan,
     setupStep: setupStep,
     setupPrompt: setupPrompt,
     CLI_INSTALL_COMMAND: CLI_INSTALL_COMMAND,

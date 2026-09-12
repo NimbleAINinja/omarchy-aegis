@@ -122,7 +122,15 @@ Panel {
   // way to fix it, shown under the status line until nothing is in the way.
   readonly property string setupStep: Model.setupStep(vpn.installed, vpn.vpnState, vpn.sudoRule, vpn.mode)
   readonly property var setupPrompt: Model.setupPrompt(setupStep)
+  // The three steps and where the user is in them, for the banner over the
+  // map. Empty once nothing is in the way, which takes the banner away.
+  readonly property var setupPlan: Model.setupPlan(setupStep)
   readonly property bool setupBusy: setupStep === "sudo" && vpn.sudoRuleBusy
+  // No CLI or no login: the card is the hero and its one button. Every tab
+  // below it is a question only the CLI can answer, and the icon bar only
+  // leads between them — so both stand down rather than offering a dead
+  // search field over an empty list and six tabs that say the same thing.
+  readonly property bool setupOnly: Model.setupBlocks(setupStep)
   function runSetup() {
     if (setupStep === "install") vpn.installCli()
     else if (setupStep === "login") vpn.login()
@@ -167,6 +175,9 @@ Panel {
   readonly property int listCount: root.viewItem ? root.viewItem.count : 0
 
   function ensureCursor() {
+    // Setup-only: the hero's button is the only control on the card, so the
+    // cursor has nowhere else to go and j/k/arrows leave it there.
+    if (setupOnly) { focusSection = "header"; cursorIndex = 0; footerIndex = 0; return }
     if (focusSection === "list" && listCount === 0) focusSection = "header"
     if (cursorIndex >= listCount) cursorIndex = Math.max(0, listCount - 1)
     if (cursorIndex < 0) cursorIndex = 0
@@ -197,7 +208,9 @@ Panel {
 
   function activateCursor() {
     ensureCursor()
-    if (focusSection === "header") vpn.toggleVpn()
+    // The hero's switch is hidden until the prerequisites are met; while it
+    // is, Enter on the header runs the step the prompt is offering.
+    if (focusSection === "header") { if (setupOnly) runSetup(); else vpn.toggleVpn() }
     else if (focusSection === "list" && root.viewItem) root.viewItem.activate(cursorIndex)
     else if (focusSection === "footer") footerAction(footerIndex)
   }
@@ -279,11 +292,15 @@ Panel {
   // on the map, or connecting from the settings tab, used to yank the panel
   // back to the location list the moment the tunnel came up, hiding the very
   // view the click came from. The only state change that still forces a view is
-  // being signed out, where nothing else is usable.
+  // being signed out, where nothing else is usable — and the one connect
+  // nobody asked for: the tunnel that comes up by itself when the sudo rule
+  // finishes first-run setup. That one has no view it came from to hide, so
+  // it lands on the traffic tab to show what was just set up working.
   Connections {
     target: vpn
     function onPersist(values) { root.persistSettings(values) }
     function onVpnStateChanged() { if (vpn.vpnState === "logged_out") root.view = "account" }
+    function onSetupConnected() { root.view = "traffic" }
   }
 
   // Views take the service through a differently named alias: a `vpn: vpn`
@@ -469,7 +486,7 @@ Panel {
         Loader {
           id: contentLoader
           width: panelFlick.width
-          active: root.popupReady
+          active: root.popupReady && !root.setupOnly
           sourceComponent: popupContent
         }
       }
@@ -485,7 +502,7 @@ Panel {
         anchors.left: parent.left
         anchors.right: parent.right
         anchors.bottom: parent.bottom
-        active: root.popupReady
+        active: root.popupReady && !root.setupOnly
         sourceComponent: popupFooter
       }
     }
@@ -501,8 +518,13 @@ Panel {
   // up to the cap, so a short tab is still a short card. 0 before the first
   // open, when fittedContentHeight falls back to the card's own insets and
   // nothing is drawn anyway.
-  readonly property real popupContentHeight: popupColumnHeight > 0
-    ? popupHeaderHeight + Style.space(10) + popupColumnHeight + Style.space(10) + popupFooterHeight : 0
+  // Setup-only, the view and the footer are both inactive and zero-high, so
+  // the card is the header plus the gap under it — not the 0 that means
+  // "never opened" and draws nothing at all.
+  readonly property real popupContentHeight: root.setupOnly
+    ? (popupHeaderHeight > 0 ? popupHeaderHeight + Style.space(10) : 0)
+    : (popupColumnHeight > 0
+      ? popupHeaderHeight + Style.space(10) + popupColumnHeight + Style.space(10) + popupFooterHeight : 0)
   // The current view's item, or null before the popup has ever been built.
   // This is the only way into the deferred content — the view Loader's id
   // lives inside the Component — and every use of it above checks for null
@@ -549,6 +571,77 @@ Panel {
         onCandidateClicked: function(location) { root.connectTo(location) }
         linkState: vpn.linkState
         animate: root.opened
+
+        // First run, over the map it has nothing to show on yet: what the
+        // three steps are, which one is live, and that each one hands the
+        // panel back. No MouseArea, so a map with cities on it (the sudo
+        // step, where the list is already loaded) stays clickable around it.
+        Rectangle {
+          id: setupBanner
+          visible: root.setupPlan.length > 0
+          anchors.centerIn: parent
+          width: Math.min(parent.width - Style.space(48), Style.space(320))
+          height: planColumn.implicitHeight + Style.space(28)
+          radius: Style.cornerRadius
+          // The halo the map already puts behind its own city labels, so the
+          // banner reads as part of the map rather than a card dropped on it.
+          color: Util.alpha(Color.popups.background, 0.92)
+          border.width: 1
+          border.color: Util.alpha(root.foreground, 0.14)
+
+          Column {
+            id: planColumn
+            anchors.centerIn: parent
+            width: parent.width - Style.space(28)
+            spacing: Style.space(10)
+
+            Text {
+              textFormat: Text.PlainText
+              width: parent.width
+              text: Model.SETUP_INTRO
+              wrapMode: Text.WordWrap
+              color: root.foreground
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.bodySmall
+            }
+
+            Column {
+              width: parent.width
+              spacing: Style.space(4)
+
+              Repeater {
+                model: root.setupPlan
+
+                Row {
+                  required property var modelData
+                  spacing: Style.space(8)
+                  // The step the user is on is the only bright line; a step
+                  // already behind them trades its number for a tick.
+                  readonly property bool live: modelData.state === "current"
+                  readonly property color tone: live ? root.foreground : root.dim
+
+                  Text {
+                    textFormat: Text.PlainText
+                    width: Style.space(10)
+                    horizontalAlignment: Text.AlignHCenter
+                    text: modelData.state === "done" ? "\u{F012C}" : modelData.n
+                    color: parent.tone
+                    font.family: root.fontFamily
+                    font.pixelSize: Style.font.caption
+                  }
+
+                  Text {
+                    textFormat: Text.PlainText
+                    text: modelData.label
+                    color: parent.tone
+                    font.family: root.fontFamily
+                    font.pixelSize: Style.font.bodySmall
+                  }
+                }
+              }
+            }
+          }
+        }
       }
 
       Item {
@@ -598,7 +691,7 @@ Panel {
 
       Text {
         textFormat: Text.PlainText
-        visible: root.statusLine !== ""
+        visible: root.statusLine !== "" && Model.showsStatus(vpn.actionStatus, vpn.errorCode, root.setupStep)
         width: parent.width
         text: root.statusLine
         color: root.statusColor
@@ -627,6 +720,8 @@ Panel {
         Button {
           id: setupButton
           anchors.verticalCenter: parent.verticalCenter
+          // The only control on a setup-only card, so it wears the cursor.
+          hasCursor: root.setupOnly && root.headerHasCursor
           text: root.setupPrompt.button
           iconText: root.setupPrompt.icon
           iconSpinning: root.setupBusy
@@ -638,7 +733,9 @@ Panel {
         }
       }
 
-      PanelSeparator { foreground: root.foreground }
+      // The rule that divides the hero from the tab below it. Setup-only
+      // there is no tab, so it would hang under the prompt dividing nothing.
+      PanelSeparator { foreground: root.foreground; visible: !root.setupOnly }
     }
   }
 

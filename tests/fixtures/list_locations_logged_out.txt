@@ -1,0 +1,2 @@
+Please log in to get the list of available locations
+You can log in by running `adguardvpn-cli login`
