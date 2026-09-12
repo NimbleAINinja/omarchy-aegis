@@ -1331,6 +1331,28 @@ var LOGIN_POLL_SLOW_MS = 10000
 var LOGIN_POLL_FAST_TICKS = 10
 var LOGIN_POLL_MAX_TICKS = 40
 
+// How often Service re-asks `sudo-check` while the CLI is installed, so a
+// rule the user installs (or removes) by hand is noticed without a shell
+// restart: every SUDO_RECHECK_MS, and every SUDO_RECHECK_FAST_MS for the
+// SUDO_HELP_WINDOW_MS after the README button was clicked, when the user
+// is most likely at a terminal writing the rule. A `sudo -n -k -l` is the
+// whole cost of a check.
+var SUDO_RECHECK_MS = 300000
+var SUDO_RECHECK_FAST_MS = 10000
+var SUDO_HELP_WINDOW_MS = 1800000
+
+// Whether `now` still falls inside the fast window that opened at `helpAt`
+// (a Date.now() value; 0 or anything non-numeric means never clicked).
+function sudoHelpRecent(helpAt, now) {
+  var at = num(helpAt, 0)
+  return at > 0 && num(now, 0) - at < SUDO_HELP_WINDOW_MS
+}
+
+// The recheck interval for that state.
+function sudoRecheckIntervalMs(helpAt, now) {
+  return sudoHelpRecent(helpAt, now) ? SUDO_RECHECK_FAST_MS : SUDO_RECHECK_MS
+}
+
 // The interval to use after `tick` ticks have run (0 before the first).
 function loginPollIntervalMs(tick) {
   return num(tick, 0) < LOGIN_POLL_FAST_TICKS ? LOGIN_POLL_FAST_MS : LOGIN_POLL_SLOW_MS
@@ -1794,6 +1816,11 @@ if (typeof module !== "undefined") {
     LOGIN_POLL_SLOW_MS: LOGIN_POLL_SLOW_MS,
     LOGIN_POLL_FAST_TICKS: LOGIN_POLL_FAST_TICKS,
     LOGIN_POLL_MAX_TICKS: LOGIN_POLL_MAX_TICKS,
+    SUDO_RECHECK_MS: SUDO_RECHECK_MS,
+    SUDO_RECHECK_FAST_MS: SUDO_RECHECK_FAST_MS,
+    SUDO_HELP_WINDOW_MS: SUDO_HELP_WINDOW_MS,
+    sudoHelpRecent: sudoHelpRecent,
+    sudoRecheckIntervalMs: sudoRecheckIntervalMs,
     loginPollIntervalMs: loginPollIntervalMs,
     tunnelLogPath: tunnelLogPath,
     TUNNEL_TAIL_BYTES: TUNNEL_TAIL_BYTES,

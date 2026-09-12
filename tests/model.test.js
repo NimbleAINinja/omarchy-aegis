@@ -2157,3 +2157,29 @@ test("Service.qml runs the login and update terminals through Model.cliCommand, 
   const installed = src.slice(src.indexOf("onInstalledChanged:"))
   assert.ok(installed.slice(0, 200).includes("checkCliPath()"), "the new CLI gets asked where it is")
 })
+
+test("the sudo rule is rechecked: every 5 minutes, every 10 s for 30 minutes after the README button", () => {
+  assert.equal(Model.SUDO_RECHECK_MS, 300000)
+  assert.equal(Model.SUDO_RECHECK_FAST_MS, 10000)
+  assert.equal(Model.SUDO_HELP_WINDOW_MS, 1800000)
+  const t = 1700000000000
+  assert.equal(Model.sudoHelpRecent(0, t), false)
+  assert.equal(Model.sudoHelpRecent(undefined, t), false)
+  assert.equal(Model.sudoHelpRecent(t, t), true)
+  assert.equal(Model.sudoHelpRecent(t, t + 1800000 - 1), true)
+  assert.equal(Model.sudoHelpRecent(t, t + 1800000), false)
+  assert.equal(Model.sudoRecheckIntervalMs(t, t + 60000), 10000)
+  assert.equal(Model.sudoRecheckIntervalMs(t, t + 3600000), 300000)
+  assert.equal(Model.sudoRecheckIntervalMs(0, t), 300000)
+
+  const src = require("node:fs").readFileSync(require("node:path").join(__dirname, "..", "Service.qml"), "utf8")
+  const timer = src.slice(src.indexOf("id: sudoRecheck"), src.indexOf("id: rateTimer"))
+  assert.match(timer, /interval: root\.sudoHelpAt > 0 \? Model\.SUDO_RECHECK_FAST_MS : Model\.SUDO_RECHECK_MS/)
+  assert.match(timer, /repeat: true/)
+  assert.match(timer, /running: root\.installed/)
+  assert.match(timer, /if \(root\.sudoHelpAt > 0 && !Model\.sudoHelpRecent\(root\.sudoHelpAt, Date\.now\(\)\)\) root\.sudoHelpAt = 0/)
+  assert.match(timer, /root\.checkSudoRule\(\)/)
+  // The README button opens the window; nothing else does.
+  assert.match(src, /function openSudoHelp\(\) \{\s*\n\s*Qt\.openUrlExternally\(Model\.README_URL\)\s*\n\s*sudoHelpAt = Date\.now\(\)/)
+  assert.equal((src.match(/sudoHelpAt = Date\.now\(\)/g) || []).length, 1)
+})

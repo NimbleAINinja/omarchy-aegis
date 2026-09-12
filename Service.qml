@@ -61,6 +61,12 @@ Item {
   // into the hero's notice, and Model.connectNeedsTerminal sends a TUN
   // connect to a terminal while it is missing.
   property string sudoRule: "unknown"
+  // Date.now() of the last README-button click (openSudoHelp), 0 for none:
+  // for Model.SUDO_HELP_WINDOW_MS after it, sudoRecheck runs every
+  // SUDO_RECHECK_FAST_MS instead of SUDO_RECHECK_MS, so a rule written by
+  // hand from those instructions is noticed within seconds. Cleared by the
+  // recheck itself once the window has passed.
+  property double sudoHelpAt: 0
   // Where the adguardvpn-cli binary is, from the side channel's `cli-path`
   // (checkCliPath), or "" until it has answered. Only the commands that go
   // to a terminal need it: everything in here reaches the CLI through the
@@ -263,6 +269,7 @@ Item {
   // plugin runs as root, so the rule is the user's to install.
   function openSudoHelp() {
     Qt.openUrlExternally(Model.README_URL)
+    sudoHelpAt = Date.now()
   }
 
   // A snapshot that runs next: ahead of every queued job (a `locations`
@@ -983,6 +990,23 @@ Item {
     id: actionStatusTimer
     interval: 2200
     onTriggered: root.actionStatus = ""
+  }
+
+  Timer {
+    id: sudoRecheck
+    // The rule is the user's to install or remove by hand, and the first
+    // check (refreshAll, onInstalledChanged) would otherwise stand until the
+    // next shell restart: re-asked every SUDO_RECHECK_MS while the CLI is
+    // there, and every SUDO_RECHECK_FAST_MS inside the README window. The
+    // interval binding restarts the timer when the window opens; the
+    // trigger closes it, dropping back to the slow cadence.
+    interval: root.sudoHelpAt > 0 ? Model.SUDO_RECHECK_FAST_MS : Model.SUDO_RECHECK_MS
+    repeat: true
+    running: root.installed
+    onTriggered: {
+      if (root.sudoHelpAt > 0 && !Model.sudoHelpRecent(root.sudoHelpAt, Date.now())) root.sudoHelpAt = 0
+      root.checkSudoRule()
+    }
   }
 
   Timer {
