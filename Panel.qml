@@ -306,8 +306,6 @@ Panel {
     id: vpn
     settings: root.settings
     panelOpen: root.opened
-    // The graph wants a sample a second, and only while it is on screen.
-    trafficVisible: root.opened && root.view === "traffic"
   }
 
   Timer {

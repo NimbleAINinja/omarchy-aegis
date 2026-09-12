@@ -12,10 +12,6 @@ Item {
 
   property var settings: ({})
   property bool panelOpen: false
-  // The traffic tab is the view on screen. It is the only consumer that wants
-  // a rate per second rather than one every two, so it says so itself instead
-  // of making every open pay for the faster sampler (see rateTimer).
-  property bool trafficVisible: false
 
   // --- state ------------------------------------------------------------------
   property bool installed: true
@@ -991,15 +987,16 @@ Item {
 
   Timer {
     id: rateTimer
-    // 1 s while the traffic tab is on screen, where every sample is a column
-    // of the graph; 2 s while the panel is merely open, where the hero shows a
-    // live rate; 5 s when only the bar's "rate" label needs it, which is the
-    // round-the-clock case. Changing the interval restarts the countdown, but
-    // both inputs are a panel open/close or a tab switch, so that happens on a
-    // user action and nowhere else.
-    interval: root.trafficVisible ? 1000 : (root.panelOpen ? 2000 : 5000)
+    // A sample a second for as long as the tunnel is up, whether or not
+    // anything is looking: every sample is a column of the traffic graph,
+    // and the graph is meant to have its history the moment the tab opens,
+    // not to start from empty because the panel was closed. One cadence
+    // throughout, so a column is always one second — a slower one while
+    // unwatched would squeeze that history into columns of different widths.
+    // Two sysfs reads through `cat` a second is the whole cost.
+    interval: 1000
     repeat: true
-    running: root.connected && root.iface !== "" && (root.panelOpen || root.trafficVisible || root.barMode === "rate")
+    running: root.connected && root.iface !== ""
     triggeredOnStart: true
     onTriggered: {
       if (countersProcess.running) return

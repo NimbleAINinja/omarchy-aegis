@@ -469,9 +469,6 @@ test("the traffic tab is reachable from the footer, the keyboard and IPC, and on
   assert.match(panel, /root\.view === "traffic" \? trafficView : locationView/)
   assert.match(panel, /Component \{ id: trafficView; TrafficView \{ panel: root; vpn: root\.service \} \}/)
   assert.match(panel, /\["list", "exclusions", "account", "settings", "killswitch", "traffic"\]\.indexOf\(v\) === -1/)
-  // The faster sampler costs a process spawn a second, so it is tied to the
-  // tab being on screen — not merely to the panel being open.
-  assert.match(panel, /trafficVisible: root\.opened && root\.view === "traffic"/)
   // No rows of its own: the cursor has to step header → footer without
   // landing anywhere, and nothing in the view swallows keys.
   const view = fs.readFileSync(path.join(dir, "TrafficView.qml"), "utf8")
@@ -766,9 +763,8 @@ test("trafficColumns puts the newest sample at the right edge and scales each ha
   assert.deepEqual(spike.up, [12])
 })
 
-test("Service.qml samples the counters into the traffic history, faster while the tab is up", () => {
+test("Service.qml samples the counters into the traffic history for as long as the tunnel is up", () => {
   const src = require("node:fs").readFileSync(require("node:path").join(__dirname, "..", "Service.qml"), "utf8")
-  assert.match(src, /property bool trafficVisible: false/)
   assert.match(src, /property var trafficHistory: \[\]/)
   // A column per computed rate, inside the `_prev` branch: the first counter
   // read of a sampling run has nothing to compare against.
@@ -779,8 +775,11 @@ test("Service.qml samples the counters into the traffic history, faster while th
   // there is something to clear.
   assert.match(src, /if \(snap\.state !== "connected" && trafficHistory\.length > 0\) trafficHistory = \[\]/)
   const rateTimer = src.slice(src.lastIndexOf("Timer {", src.indexOf("id: rateTimer")), src.indexOf("\n  }", src.indexOf("id: rateTimer")))
-  assert.match(rateTimer, /interval: root\.trafficVisible \? 1000 : \(root\.panelOpen \? 2000 : 5000\)/)
-  assert.match(rateTimer, /running: root\.connected && root\.iface !== "" && \(root\.panelOpen \|\| root\.trafficVisible \|\| root\.barMode === "rate"\)/)
+  // One cadence, watched or not: the graph has its history the moment the
+  // tab opens, and every column is the same second wide.
+  assert.match(rateTimer, /interval: 1000\n/)
+  assert.match(rateTimer, /running: root\.connected && root\.iface !== ""\n/)
+  assert.doesNotMatch(src, /trafficVisible/)
 })
 
 test("barLabel renders per mode only while connected", () => {
@@ -1736,9 +1735,9 @@ test("Service.qml gates the situational timers on what they are waiting for", ()
   assert.match(timer("loginPoll"), /ticks >= Model\.LOGIN_POLL_MAX_TICKS/)
   // The ramp is a shell-startup catch-up; a missing CLI ends it.
   assert.match(timer("startupRamp"), /running: root\.installed/)
-  // 1 s for the traffic tab's graph, 2 s for the hero's live rate, 5 s for
-  // the bar label alone.
-  assert.match(timer("rateTimer"), /interval: root\.trafficVisible \? 1000 : \(root\.panelOpen \? 2000 : 5000\)/)
+  // The sampler runs on the tunnel alone, so the graph's history is there
+  // before the tab is.
+  assert.match(timer("rateTimer"), /running: root\.connected && root\.iface !== ""\n/)
   assert.match(timer("refreshTimer"), /installed: root\.installed/)
   // Closing the panel never stops this poll. Both things it waits for —
   // the install done from AdGuard's guide, `adguardvpn-cli login` — happen
