@@ -24,9 +24,13 @@ Column {
   readonly property string updateText: !vpn ? "" : (vpn.updateChecking ? "Checking"
     : (vpn.update.checkedAt === 0 ? "" : (vpn.update.upToDate ? "Up to date" : vpn.update.latest + " available")))
   readonly property bool updateReady: vpn ? !vpn.update.upToDate && !!vpn.update.latest : false
-  readonly property bool loggedIn: vpn ? vpn.account.loggedIn : true
-  readonly property string sudoText: !vpn ? "" : (vpn.sudoRuleBusy ? "Authenticating"
-    : (vpn.sudoRule === "ok" ? "Installed" : (vpn.sudoRule === "missing" ? "Missing" : "Not checked")))
+  // "in" / "out" / "unknown" — not a bool, because with no CLI the account
+  // call never lands and the placeholder would read as signed in.
+  readonly property string accountState: Model.accountState(vpn ? vpn.account : null, vpn ? vpn.accountLoaded : false)
+  // Missing is not a fault: connects still work, in a terminal that asks
+  // for the password. The README says how to do without that.
+  readonly property string sudoText: !vpn ? ""
+    : (vpn.sudoRule === "ok" ? "Set up" : (vpn.sudoRule === "missing" ? "None, TUN connects ask for a password" : "Not checked"))
 
   spacing: Style.space(8)
 
@@ -43,9 +47,9 @@ Column {
     else if (name === "autoConnect") panel.persistSettings({ autoConnect: !vpn.autoConnect })
     else if (name === "locateHome") vpn.setLocateHome(!vpn.locateHome)
     else if (name === "pingDots") panel.persistSettings({ pingDots: !vpn.pingDots })
-    else if (name === "cli") { if (!vpn.installed) vpn.installCli(); else if (updateReady) vpn.runUpdate(); else vpn.checkUpdate(false) }
-    else if (name === "account") { if (!loggedIn) vpn.login() }
-    else if (name === "sudoRule") vpn.installSudoRule()
+    else if (name === "cli") { if (!vpn.installed) vpn.openInstallGuide(); else if (updateReady) vpn.runUpdate(); else vpn.checkUpdate(false) }
+    else if (name === "account") { if (root.accountState === "out") vpn.login() }
+    else if (name === "sudoRule") { if (vpn.sudoRule !== "ok") vpn.openSudoHelp() }
   }
 
   function moveHorizontal(dx) {
@@ -76,7 +80,7 @@ Column {
     label: "AdGuard VPN CLI" + (vpn && vpn.installed && vpn.update.current ? " " + vpn.update.current : "")
     status: vpn && !vpn.installed ? "Not installed" : root.updateText
     statusHot: vpn ? vpn.installed && root.updateReady && vpn.update.checkedAt !== 0 : false
-    buttonText: vpn && !vpn.installed ? "Install" : (root.updateReady ? "Update" : "Check")
+    buttonText: vpn && !vpn.installed ? "Guide" : (root.updateReady ? "Update" : "Check")
     buttonIcon: vpn && !vpn.installed ? Model.setupPrompt("install").icon : (root.updateReady ? "󰚰" : "󰑐")
     spinning: vpn ? vpn.updateChecking : false
   }
@@ -84,8 +88,10 @@ Column {
   SetupRow {
     name: "account"
     label: "Account"
-    status: root.loggedIn ? (vpn && vpn.account.email ? vpn.account.email : "Signed in") : "Signed out"
-    buttonVisible: !root.loggedIn
+    status: root.accountState === "unknown" ? "Not checked"
+      : (root.accountState === "out" ? "Signed out"
+      : (vpn && vpn.account.email ? vpn.account.email : "Signed in"))
+    buttonVisible: root.accountState === "out"
     buttonText: "Log in"
     buttonIcon: Model.setupPrompt("login").icon
   }
@@ -95,9 +101,9 @@ Column {
     label: "Sudo rule"
     status: root.sudoText
     statusHot: vpn ? vpn.sudoRule === "missing" : false
-    buttonText: vpn && vpn.sudoRule === "ok" ? "Reinstall" : "Install"
+    buttonText: "README"
     buttonIcon: Model.setupPrompt("sudo").icon
-    spinning: vpn ? vpn.sudoRuleBusy : false
+    buttonVisible: vpn ? vpn.sudoRule !== "ok" : true
   }
 
   PanelSectionHeader {
@@ -314,7 +320,9 @@ Column {
         font.family: panel.fontFamily
         font.pixelSize: Style.font.caption
         elide: Text.ElideMiddle
-        Layout.maximumWidth: setupRow.width * 0.45
+        // The labels are a word or two, so the status gets most of the row:
+        // "None, TUN connects ask for a password" was clipped at 45%.
+        Layout.maximumWidth: setupRow.width * 0.62
       }
 
       Button {

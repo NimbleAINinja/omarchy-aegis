@@ -477,28 +477,206 @@ function linkState(vpnState, pendingLocation) {
 
 // The one thing standing between the user and a tunnel, for the panel's
 // setup prompt: "install" (no adguardvpn-cli), "login" (the CLI is signed
-// out), "sudo" (sudo would ask for a password, so a TUN connect cannot
-// start its service — SOCKS mode never goes through sudo, so it is not
-// held up by a missing rule), or "" when nothing is in the way. sudoRule is
-// Service's verdict: "ok", "missing", or "unknown" while unchecked.
-// AdGuard's own installer, run in a terminal the user can watch: it fetches
-// the release for this machine into /opt/adguardvpn_cli and asks about a
-// /usr/local/bin link. -v so the terminal shows what it does.
-var CLI_INSTALL_COMMAND = "curl -fsSL https://raw.githubusercontent.com/AdguardTeam/AdGuardVPNCLI/master/scripts/release/install.sh | sh -s -- -v"
+// out), "sudo" (sudo would ask for a password, so a TUN connect runs in a
+// terminal where the user can type it — SOCKS mode never goes through
+// sudo, so it is not affected), or "" when nothing is in the way. sudoRule
+// is Service's verdict: "ok", "missing", or "unknown" while unchecked. The
+// first two block the panel (setupBlocks) and sit in the setup plan; the
+// third is a notice, and its button opens the README (README_URL).
+// Where the panel sends the user to install the CLI: AdGuard's own
+// instructions. The plugin never fetches or runs an installer itself — the
+// button opens this page in the browser, the user follows it in a terminal
+// of their own, and the setup poll notices the CLI once it exists.
+var CLI_INSTALL_URL = "https://github.com/AdguardTeam/AdGuardVPNCLI#installation"
+
+// Where the sudo notice sends the user: the README's own account of the
+// rule that makes TUN connects passwordless. The plugin never writes that
+// rule (nothing in it runs as root); whoever wants it installs it by hand.
+var README_URL = "https://github.com/NimbleAINinja/omarchy-aegis#requirements"
+
+// A command for one of those terminals: the binary's own path once the
+// cli-path verb has answered with it, the bare name until then and for
+// anyone whose install did make the /usr/local/bin link. The installer's
+// link question defaults to no, and the name alone resolves to nothing in
+// the user's shell after that — while the panel itself carries on fine,
+// because agvpn.cli_path() falls back to /opt/adguardvpn_cli. The result is
+// a shell command string, so the path is quoted.
+function cliCommand(path, args) {
+  var binary = shellQuote(str(path) !== "" ? path : "adguardvpn-cli")
+  var rest = str(args)
+  return rest === "" ? binary : binary + " " + rest
+}
+
+// Bare when the shell would read it as one word, single-quoted when not.
+function shellQuote(text) {
+  var value = str(text)
+  if (/^[A-Za-z0-9_@%+=:,.\/-]+$/.test(value)) return value
+  return "'" + value.replace(/'/g, "'\\''") + "'"
+}
+
+// Verbs that answer by running adguardvpn-cli. "home"/"homeCache" (a web
+// lookup and its cache file), "procs" and "sudoCheck" never touch the
+// binary, so what they return says nothing about whether it is installed.
+var CLI_VERBS = ["snapshot", "locations", "account", "exclusions", "config",
+                 "update", "connect", "disconnect", "logout"]
+
+// Errors only adguardvpn-cli itself can raise: the CLI printed "not logged
+// in", or sudo refused to start its service. Both prove the binary ran. A
+// "parse" or "timeout" is not on this list — those are equally the helper
+// printing nothing usable or being killed, which prove nothing either way.
+var PROVING_CODES = ["logged_out", "sudo_password"]
+
+// Whether a helper answer proves adguardvpn-cli is on the machine. A real
+// answer does, and so does an error only the CLI could have produced —
+// "Not logged in" above all, which is the only thing a freshly installed
+// CLI says until the user signs in. `installed` was set from a *successful*
+// snapshot alone, and that snapshot cannot succeed before the login, so a
+// CLI the user had just installed left the panel still offering Install
+// with the login step it should have moved on to out of reach.
+function provesInstalled(verb, obj) {
+  if (CLI_VERBS.indexOf(str(verb)) === -1) return false
+  if (!obj || typeof obj !== "object") return false
+  if (obj.ok !== false) return true
+  return PROVING_CODES.indexOf(str(obj.code)) !== -1
+}
+
+// "in", "out", or "unknown" for an account nothing has answered for yet.
+// Service.account starts at loggedIn:true so the panel doesn't flicker
+// "signed out" while the first account call is in flight, and accountLoaded
+// is what turns that placeholder into an answer. A machine without the CLI
+// never gets one — the account call fails cli_missing — so a view that
+// reads the flag alone tells a fresh install it is already signed in.
+function accountState(account, loaded) {
+  if (!loaded) return "unknown"
+  return account && account.loggedIn === true ? "in" : "out"
+}
+
+// The banner over the map on a first run. Each step hands the user to a
+// terminal, a browser or a polkit prompt, which takes focus and closes the
+// panel behind them — so the one thing they need to know, beyond what is
+// coming, is that they come back here between them.
+var SETUP_INTRO = "First, some setup: I'll walk you through these steps. Come back here after each to continue."
+
+// The two prerequisites in the order setupStep walks them, named as
+// briefly as they can be: the hero's own prompt explains each one when the
+// user reaches it, so the banner is a map of the route, not a second set of
+// instructions. The sudo rule is not a step: without it a TUN connect still
+// works, in a terminal that asks for the password, so it is a notice under
+// the hero (setupPrompt("sudo")) and never part of the plan.
+var SETUP_PLAN = [
+  { step: "install", label: "Install adguardvpn-cli" },
+  { step: "login", label: "Sign in \u2014 opens a terminal" }
+]
+
+// SETUP_PLAN marked up for the step the user is on: everything before it is
+// done, everything after is still to come. Empty once setupStep is "",
+// which is what takes the banner off the map.
+function setupPlan(step) {
+  var at = -1
+  for (var i = 0; i < SETUP_PLAN.length; i++) if (SETUP_PLAN[i].step === str(step)) at = i
+  if (at === -1) return []
+  var rows = []
+  for (var j = 0; j < SETUP_PLAN.length; j++)
+    rows.push({ n: String(j + 1), label: SETUP_PLAN[j].label,
+      state: j < at ? "done" : (j === at ? "current" : "todo") })
+  return rows
+}
 
 // The line and button the panel shows for a setupStep; "" for none.
 function setupPrompt(step) {
-  if (step === "install") return { text: "Install adguardvpn-cli to get started", button: "Install", icon: "\uDB80\uDDDA" }
+  if (step === "install") return { text: "Install adguardvpn-cli to get started", button: "Guide", icon: "\uDB80\uDDDA" }
   if (step === "login") return { text: "Sign in to your AdGuard VPN account", button: "Log in", icon: "\uDB80\uDF42" }
-  if (step === "sudo") return { text: "Let the VPN start without a password prompt", button: "Set up", icon: "\uDB80\uDF06" }
+  if (step === "sudo") return { text: "No sudo rule: connecting asks for your password in a terminal", button: "README", icon: "\uDB80\uDF06" }
   return { text: "", button: "", icon: "" }
+}
+
+// Whether the cached account has been outlived by the snapshot beside it.
+// The login runs in a terminal, which takes focus and closes the panel, and
+// the ordinary poll only ever fetches a snapshot — so the account cached
+// when the CLI last answered "logged out" stayed on the account tab, signed
+// out, over a location list that same login had just filled. A snapshot
+// that names any real tunnel state proves the CLI is signed in; "unknown"
+// is output the helper could not parse and proves nothing either way.
+function accountStale(snapState, accountLoaded, loggedIn) {
+  if (accountLoaded !== true || loggedIn !== false) return false
+  var s = str(snapState)
+  return s !== "" && s !== "logged_out" && s !== "unknown"
+}
+
+// Whether the hero's status line adds anything the rest of the hero isn't
+// already saying. The meta line under "Aegis" names the state ("adguardvpn-
+// cli not found", "Signed out") and the setup prompt beneath it names the
+// fix, so echoing the same error in red stated one fact a third time — and
+// painted an ordinary first run as a failure. What an action is doing right
+// now always shows, and so does a sudo prompt: that one explains a connect
+// that really did fail, which nothing else on the hero accounts for.
+function showsStatus(actionStatus, errorCode, step) {
+  if (str(actionStatus) !== "") return true
+  var code = str(errorCode)
+  var s = str(step)
+  if (code === "cli_missing" && s === "install") return false
+  if (code === "logged_out" && s === "login") return false
+  return true
+}
+
+// The steps that leave the whole panel with nothing to do: without a binary
+// or a login there are no locations, no exclusions, no account and no
+// settings the CLI can answer for. The card shows the hero and its one
+// button until one of them is dealt with. The sudo rule is not one of these
+// — it blocks connecting through the tunnel, not reading anything.
+function setupBlocks(step) {
+  var s = str(step)
+  return s === "install" || s === "login"
+}
+
+// What the locations list says when it has no rows to show. Blocked, it can
+// never have any, and the hero above already says which step is missing and
+// offers the button — so the list keeps quiet instead of repeating it, or
+// claiming to be "Loading locations" for a login that hasn't happened yet.
+function locationsEmptyText(hasLocations, step) {
+  if (hasLocations === true) return "No match"
+  return setupBlocks(step) ? "" : "Loading locations"
+}
+
+// The one action the account tab offers: "logout", "login", or "" for none.
+// The hero's setup prompt sits above every tab and already carries a Log in
+// whenever setupStep is "login", so the tab drawing its own put two
+// identical buttons on the same screen. Logging out is offered nowhere else,
+// so that one always stands.
+function accountAction(state, step) {
+  if (str(state) === "in") return "logout"
+  if (str(state) === "out" && str(step) !== "login") return "login"
+  return ""
 }
 
 function setupStep(installed, vpnState, sudoRule, mode) {
   if (!installed) return "install"
   if (str(vpnState) === "logged_out") return "login"
-  if (str(sudoRule) === "missing" && str(mode) !== "socks") return "sudo"
+  // The notice is about the next connect, so it goes with the terminal:
+  // while the tunnel is up a city switch needs none, and it comes back once
+  // the tunnel is down.
+  if (connectNeedsTerminal(sudoRule, mode, vpnState)) return "sudo"
   return ""
+}
+
+// Whether a connect has to run in a terminal the user can type a sudo
+// password into: the CLI starts its TUN service through sudo, and without
+// the README's rule sudo asks. The helper has no terminal to offer, so the
+// connect goes to a floating one instead (Service.connectInTerminal). SOCKS
+// mode never touches sudo, and neither does a switch of city while the
+// tunnel is up: the service sudo started is already running as root, and
+// the CLI only hands it the new location. "unknown" (the probe has not
+// answered) counts as fine: a connect that then runs into the prompt is
+// handed to a terminal by the job's exit handler, and the verdict is
+// remembered as "missing".
+function connectNeedsTerminal(sudoRule, mode, vpnState) {
+  return str(sudoRule) === "missing" && str(mode) !== "socks" && str(vpnState) !== "connected"
+}
+
+// The connect that terminal runs: the same call agvpn.py makes (-y answers
+// the CLI's own questions), minus --no-progress so the user sees it work.
+function connectCommand(path, cliName) {
+  return cliCommand(path, "connect -l " + shellQuote(str(cliName)) + " -y")
 }
 
 function formatRate(bytesPerSec) {
@@ -980,10 +1158,13 @@ function needsFollowUpRefresh(verb, ok, state) {
   return !(s === "connected" || s === "disconnected")
 }
 
+// needsTerminal (Model.connectNeedsTerminal): a connect that would open a
+// terminal for a sudo password never fires on its own at login.
 function shouldAutoConnect(ctx) {
   if (!ctx || typeof ctx !== "object") return false
   return ctx.autoConnect === true && ctx.wasConnected === true && !ctx.attempted
     && ctx.installed === true && ctx.loggedIn !== false && ctx.state === "disconnected"
+    && ctx.needsTerminal !== true
 }
 
 // Whether a home-location lookup (ipinfo.io, run by agvpn.py's `home` verb)
@@ -1495,7 +1676,8 @@ function findExclusionDomain(domains, needle) {
 // against agvpn.py, so change both together.
 var HELPER_BUDGET_SEC = {
   "snapshot": 24, "locations": 24, "connect": 84, "disconnect": 36, "account": 24, "logout": 24,
-  "exclusions": 48, "home": 35, "config": 39, "update-check": 36, "procs": 17, "sudo-check": 17
+  "exclusions": 48, "home": 35, "config": 39, "update-check": 36, "procs": 17, "sudo-check": 17,
+  "cli-path": 12
 }
 // On top of a budget: python start-up, reaping a timed-out CLI, the answer.
 var WATCHDOG_SLACK_MS = 5000
@@ -1544,9 +1726,23 @@ if (typeof module !== "undefined") {
     pingTier: pingTier,
     dotTints: dotTints,
     linkState: linkState,
+    provesInstalled: provesInstalled,
+    connectNeedsTerminal: connectNeedsTerminal,
+    connectCommand: connectCommand,
+    accountStale: accountStale,
+    accountState: accountState,
+    accountAction: accountAction,
+    showsStatus: showsStatus,
+    setupBlocks: setupBlocks,
+    locationsEmptyText: locationsEmptyText,
+    SETUP_INTRO: SETUP_INTRO,
+    setupPlan: setupPlan,
     setupStep: setupStep,
     setupPrompt: setupPrompt,
-    CLI_INSTALL_COMMAND: CLI_INSTALL_COMMAND,
+    CLI_INSTALL_URL: CLI_INSTALL_URL,
+    README_URL: README_URL,
+    cliCommand: cliCommand,
+    shellQuote: shellQuote,
     formatRate: formatRate,
     formatUptime: formatUptime,
     rateFrom: rateFrom,

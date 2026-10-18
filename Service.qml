@@ -12,10 +12,6 @@ Item {
 
   property var settings: ({})
   property bool panelOpen: false
-  // The traffic tab is the view on screen. It is the only consumer that wants
-  // a rate per second rather than one every two, so it says so itself instead
-  // of making every open pay for the faster sampler (see rateTimer).
-  property bool trafficVisible: false
 
   // --- state ------------------------------------------------------------------
   property bool installed: true
@@ -62,13 +58,14 @@ Item {
   // "missing", or "unknown" until the side channel's `sudo-check` has
   // answered (checkSudoRule). A sudo_password error settles it as missing,
   // a connect that went through settles it as ok. Model.setupStep turns it
-  // into the panel's setup prompt.
+  // into the hero's notice, and Model.connectNeedsTerminal sends a TUN
+  // connect to a terminal while it is missing.
   property string sudoRule: "unknown"
-  // True from installSudoRule() until its pkexec run has exited.
-  property bool sudoRuleBusy: false
-  // The city a connect was after when sudo asked for a password, so the
-  // connect can be repeated the moment the rule is in place.
-  property string _sudoRetry: ""
+  // Where the adguardvpn-cli binary is, from the side channel's `cli-path`
+  // (checkCliPath), or "" until it has answered. Only the commands that go
+  // to a terminal need it: everything in here reaches the CLI through the
+  // helper, which resolves the path itself. See Model.cliCommand.
+  property string cliPath: ""
 
   // Optimistic switch state: -1 follows reality, 0/1 while an action is in flight.
   property int _desired: -1
@@ -95,6 +92,12 @@ Item {
   readonly property var exclusionRows: Model.mergeExclusions(exclusions.domains, pausedExclusions[exclusions.mode] || [])
   property var config: Model.normalizeConfig(null)
   property bool configLoaded: false
+  // The mode the next connect will use: the CLI's configured one once
+  // `config show` has answered, the status's until then. A disconnected
+  // status names no mode (it reads "tun"), so the configured one is what
+  // decides whether a connect needs a terminal for sudo — and whether the
+  // hero's notice about that applies at all. See Model.connectNeedsTerminal.
+  readonly property string nextMode: configLoaded ? config.mode : mode
   property var update: Model.normalizeUpdate(null)
   // Epoch ms after which a failed background update check may retry; 0 means
   // no failure is pending. Not persisted — a fresh shell start always gets
@@ -154,6 +157,9 @@ Item {
   signal actionFinished(string verb, bool ok)
   // Ask the panel (which owns the shell.json entry) to persist inline settings.
   signal persist(var values)
+  // First run just finished and the tunnel is on its way up by itself:
+  // Panel jumps to the traffic tab once so the user watches it fill. The
+  // only connect that moves anyone — see Panel's Connections block.
 
   function setting(name, fallback) {
     var value = settings ? settings[name] : undefined
@@ -230,6 +236,9 @@ Item {
     // runs rather than waiting on that.
     if (locateHome && home === null) refreshHomeCache()
     if (sudoRule === "unknown") checkSudoRule()
+    // Once: the configured mode is what nextMode reads, and it changes only
+    // through setConfig, which refreshes it itself.
+    if (!configLoaded) refreshConfig()
   }
 
   // --- the sudo rule ------------------------------------------------------------
@@ -242,18 +251,18 @@ Item {
     sideEnqueue(["sudo-check"], "sudoCheck", false)
   }
 
-  // Writes the README's rule for this user through pkexec (the shell's own
-  // polkit agent puts up the prompt). aegis-sudo-rule reads the user from
-  // PKEXEC_UID, checks the file with visudo and only then moves it into
-  // /etc/sudoers.d — see the script. Run through sh so a checkout that lost
-  // the executable bit still works.
-  function installSudoRule() {
-    if (sudoRuleBusy) return
-    sudoRuleBusy = true
-    actionStatus = "Authenticate to install the sudo rule"
-    sudoRuleProcess.errors = ""
-    sudoRuleProcess.command = ["pkexec", "/bin/sh", pluginFile("aegis-sudo-rule")]
-    sudoRuleProcess.running = true
+  // Asked once, when the CLI first turns up: the answer cannot change while
+  // the binary stays put, and a missing one has no path to report.
+  function checkCliPath() {
+    if (!installed) return
+    sideEnqueue(["cli-path"], "cliPath", false)
+  }
+
+  // Where the hero's sudo notice sends the user: the README's own account
+  // of the rule, for whoever wants passwordless connects. Nothing in this
+  // plugin runs as root, so the rule is the user's to install.
+  function openSudoHelp() {
+    Qt.openUrlExternally(Model.README_URL)
   }
 
   // A snapshot that runs next: ahead of every queued job (a `locations`
@@ -376,9 +385,11 @@ Item {
     // not answer with a location a lookup has already replaced, and a forget
     // must not be overtaken by a lookup that writes the file back. So a home
     // job here waits for any `home` job on the main queue (jobProcess.onExited
-    // pumps this channel again). `procs` and `sudoCheck` touch nothing
-    // shared and never wait.
-    if (next.verb !== "procs" && next.verb !== "sudoCheck" && ((jobProcess.running && jobProcess.verb === "home") || queued("home"))) return
+    // pumps this channel again). Named the other way round — the jobs that
+    // wait, not the ones that don't — so that a side verb added later, which
+    // by definition touches nothing the CLI queue writes, cannot be forgotten
+    // into waiting on a lookup it has nothing to do with.
+    if ((next.verb === "home" || next.verb === "homeCache") && ((jobProcess.running && jobProcess.verb === "home") || queued("home"))) return
     _sideQueue = _sideQueue.slice(1)
     sideProcess.verb = next.verb
     sideProcess.mutate = next.mutate === true
@@ -428,7 +439,7 @@ Item {
   }
 
   function runUpdate() {
-    Quickshell.execDetached(["omarchy-launch-floating-terminal-with-presentation", "adguardvpn-cli update"])
+    Quickshell.execDetached(["omarchy-launch-floating-terminal-with-presentation", Model.cliCommand(root.cliPath, "update")])
     actionStatus = "Updating from the terminal"
   }
 
@@ -454,7 +465,10 @@ Item {
   }
 
   // --- actions ------------------------------------------------------------------
-  function connectTo(cliName, city) {
+  // `inTerminal`: run it in a terminal whatever the state says — for a
+  // connect the helper just ran that sudo turned away (retryInTerminal),
+  // where the state that said "no terminal needed" was the one that lied.
+  function connectTo(cliName, city, inTerminal) {
     var target = String(cliName || "")
     if (target === "" || !installed) return
     _desired = 1
@@ -464,7 +478,31 @@ Item {
     // home lookup held since an earlier unexpected drop no longer needs to
     // wait; see dropHold / Model.mayLocateHome.
     dropHold = false
+    if (inTerminal === true || Model.connectNeedsTerminal(sudoRule, nextMode, vpnState)) { connectInTerminal(target); return }
     enqueue(["connect", target], "connect")
+  }
+
+  // A TUN connect without the sudo rule: the CLI's own `connect`, in a
+  // floating terminal where sudo can ask for the password (the helper has
+  // no terminal to offer it). The same poll as login's watches the tunnel
+  // come up — the terminal takes focus and closes the panel, so nothing
+  // else would notice — and the snapshot that sees it connected clears
+  // pendingLocation, as after any connect.
+  function connectInTerminal(cliName) {
+    Quickshell.execDetached(["omarchy-launch-floating-terminal-with-presentation", Model.connectCommand(root.cliPath, cliName)])
+    actionStatus = "Enter your password in the terminal"
+    loginPoll.waitFor = "connect"
+    loginPoll.ticks = 0
+    loginPoll.start()
+  }
+
+  // A connect the helper ran that sudo turned away for a password (the
+  // probe had not answered yet, or was wrong): the same connect again, by
+  // city, which now goes to a terminal because noteError has just settled
+  // sudoRule as missing.
+  function retryInTerminal(city) {
+    var loc = Model.findLocation(locations, city)
+    if (loc) connectTo(loc.cliName, loc.city, true)
   }
 
   function down() {
@@ -473,9 +511,6 @@ Item {
     pendingLocation = ""
     clearError()
     dropHold = false
-    // A disconnect asked for by hand is the user changing their mind: a
-    // connect that sudo turned away is not repeated once the rule lands.
-    _sudoRetry = ""
     if (wasConnected) persist({ wasConnected: false })
     enqueue(["disconnect"], "disconnect")
   }
@@ -517,7 +552,8 @@ Item {
   // when it died without a clean disconnect (the flag outlives crashes).
   function maybeAutoConnect(state) {
     var ok = Model.shouldAutoConnect({ autoConnect: autoConnect, wasConnected: wasConnected, state: state,
-      installed: installed, loggedIn: accountLoaded ? account.loggedIn : true, attempted: autoConnectAttempted })
+      installed: installed, loggedIn: accountLoaded ? account.loggedIn : true, attempted: autoConnectAttempted,
+      needsTerminal: Model.connectNeedsTerminal(sudoRule, nextMode, state) })
     if (!ok) return
     autoConnectAttempted = true
     if (lastLocation === "") return
@@ -542,19 +578,21 @@ Item {
   }
 
   function login() {
-    Quickshell.execDetached(["omarchy-launch-floating-terminal-with-presentation", "adguardvpn-cli login"])
+    Quickshell.execDetached(["omarchy-launch-floating-terminal-with-presentation", Model.cliCommand(root.cliPath, "login")])
     actionStatus = "Log in from the terminal"
     loginPoll.waitFor = "login"
     loginPoll.ticks = 0
     loginPoll.start()
   }
 
-  // AdGuard's installer in a terminal the user can watch and answer
-  // (Model.CLI_INSTALL_COMMAND). The same poll as login's watches for the
-  // CLI: the snapshot stops answering cli_missing once the binary is there.
-  function installCli() {
-    Quickshell.execDetached(["omarchy-launch-floating-terminal-with-presentation", Model.CLI_INSTALL_COMMAND])
-    actionStatus = "Install from the terminal"
+  // AdGuard's install instructions in the user's browser
+  // (Model.CLI_INSTALL_URL). The plugin runs no installer: the user follows
+  // the guide in a terminal of their own. The same poll as login's watches
+  // for the CLI: the snapshot stops answering cli_missing once the binary
+  // is there.
+  function openInstallGuide() {
+    Qt.openUrlExternally(Model.CLI_INSTALL_URL)
+    actionStatus = "Install guide opened in your browser"
     loginPoll.waitFor = "install"
     loginPoll.ticks = 0
     loginPoll.start()
@@ -621,6 +659,7 @@ Item {
     else if (verb === "update") applyUpdate(obj, _notifyUpdate)
     else if (verb === "procs") applyProcs(obj)
     else if (verb === "sudoCheck") sudoRule = obj.allowed === true ? "ok" : "missing"
+    else if (verb === "cliPath") cliPath = typeof obj.path === "string" ? obj.path : ""
     else if (verb === "connect" || verb === "disconnect") applySnapshot(obj, verb === "disconnect", verb)
     else if (verb === "logout") {
       // Logging out takes the tunnel down on request: an intentional
@@ -671,7 +710,6 @@ Item {
     if (errorCode === "sudo_password") {
       lastError = "sudo needs a password to start the VPN service"
       sudoRule = "missing"
-      _sudoRetry = intent && intent.verb === "connect" ? String(intent.target || "") : ""
     }
   }
 
@@ -719,6 +757,11 @@ Item {
       account = Model.loggedOutAccount()
       accountLoaded = true
     }
+    // The other direction: this snapshot proves a login the cached account
+    // predates, so go and get the real one. See Model.accountStale — the
+    // account tab read "Not signed in" over a full location list until the
+    // user happened to switch to it. `dedupe` keeps repeat polls to one call.
+    else if (Model.accountStale(snap.state, accountLoaded, account.loggedIn)) refreshAccount()
     // Already zero: assigning a fresh { 0, 0 } would signal the bar's rate
     // label and every binding on it for no change at all.
     if (snap.state !== "connected" && (rates.down !== 0 || rates.up !== 0)) rates = { down: 0, up: 0 }
@@ -944,15 +987,16 @@ Item {
 
   Timer {
     id: rateTimer
-    // 1 s while the traffic tab is on screen, where every sample is a column
-    // of the graph; 2 s while the panel is merely open, where the hero shows a
-    // live rate; 5 s when only the bar's "rate" label needs it, which is the
-    // round-the-clock case. Changing the interval restarts the countdown, but
-    // both inputs are a panel open/close or a tab switch, so that happens on a
-    // user action and nowhere else.
-    interval: root.trafficVisible ? 1000 : (root.panelOpen ? 2000 : 5000)
+    // A sample a second for as long as the tunnel is up, whether or not
+    // anything is looking: every sample is a column of the traffic graph,
+    // and the graph is meant to have its history the moment the tab opens,
+    // not to start from empty because the panel was closed. One cadence
+    // throughout, so a column is always one second — a slower one while
+    // unwatched would squeeze that history into columns of different widths.
+    // Two sysfs reads through `cat` a second is the whole cost.
+    interval: 1000
     repeat: true
-    running: root.connected && root.iface !== "" && (root.panelOpen || root.trafficVisible || root.barMode === "rate")
+    running: root.connected && root.iface !== ""
     triggeredOnStart: true
     onTriggered: {
       if (countersProcess.running) return
@@ -967,7 +1011,8 @@ Item {
     id: loginPoll
     property int ticks: 0
     // "login": waiting for the account (refreshAccount); "install": waiting
-    // for the CLI itself (a plain snapshot, which is what says cli_missing).
+    // for the CLI itself (a plain snapshot, which is what says cli_missing);
+    // "connect": waiting for the tunnel a terminal connect is bringing up.
     property string waitFor: "login"
     // Fast while the user is plausibly still typing in the login terminal,
     // then slower (Model.loginPollIntervalMs). The interval change restarts
@@ -982,6 +1027,15 @@ Item {
         if (root.installed || ticks >= Model.LOGIN_POLL_MAX_TICKS) { loginPoll.stop(); if (root.installed) root.refreshAll(true) }
         return
       }
+      if (waitFor === "connect") {
+        root.refresh()
+        if (root.connected || ticks >= Model.LOGIN_POLL_MAX_TICKS) {
+          loginPoll.stop()
+          // Gave up: the terminal was closed or the password never came.
+          if (!root.connected) { root._desired = -1; root.pendingLocation = "" }
+        }
+        return
+      }
       root.refreshAccount()
       if (root.account.loggedIn || ticks >= Model.LOGIN_POLL_MAX_TICKS) { loginPoll.stop(); root.refresh() }
     }
@@ -989,14 +1043,23 @@ Item {
 
   onPanelOpenChanged: {
     if (panelOpen) { refreshAll(); return }
-    // Waiting for a login nobody can be watching: the Log in button that
-    // started this poll lives in the panel, and the ordinary status poll
-    // notices a login on its own once the panel comes back.
-    if (loginPoll.running) loginPoll.stop()
+    // The poll stays. Everything it waits for — the install the user does
+    // from AdGuard's guide, `adguardvpn-cli login`, a connect typing its
+    // sudo password — happens in a window that takes focus (a browser, a
+    // terminal), so the panel closes the moment it starts, and none is
+    // noticed by
+    // the ordinary poll: a missing CLI slows that to POLL_MISSING_MS, and a
+    // finished login never reaches it at all, because it only ever fetches
+    // a snapshot. Stopping here left the panel offering Install ten minutes
+    // after the install, and "Not signed in" after the login. It is bounded
+    // by LOGIN_POLL_MAX_TICKS on its own.
   }
-  // A CLI that has just appeared (the setup prompt's installer, a package
-  // manager) gets the sudo probe the missing one was spared.
-  onInstalledChanged: if (installed && sudoRule === "unknown") checkSudoRule()
+  // A CLI that has just appeared (the install the setup prompt points to, a
+  // package manager) gets the sudo probe the missing one was spared.
+  onInstalledChanged: {
+    if (installed && sudoRule === "unknown") checkSudoRule()
+    if (installed && cliPath === "") checkCliPath()
+  }
   // Every path that sets vpnState (snapshots, logout, noteError, account)
   // moves the loss base with it.
   onVpnStateChanged: _lossBase = Model.lossBase(_lossBase, vpnState)
@@ -1049,33 +1112,6 @@ Item {
 
   Process {
     id: killProcess
-  }
-
-  // pkexec answers 126 when the prompt is dismissed and 127 when the user is
-  // not authorised (or pkexec itself failed); anything else is the script's
-  // own exit, explained on its stderr.
-  Process {
-    id: sudoRuleProcess
-    property string errors: ""
-    stderr: StdioCollector { waitForEnd: true; onStreamFinished: sudoRuleProcess.errors = text }
-    onExited: function(exitCode) {
-      root.sudoRuleBusy = false
-      var errors = String(sudoRuleProcess.errors || "").trim()
-      sudoRuleProcess.errors = ""
-      if (exitCode === 0) {
-        root.sudoRule = "ok"
-        if (root.errorCode === "sudo_password") root.clearError()
-        root.actionStatus = "sudo rule installed"
-        var retry = root._sudoRetry
-        root._sudoRetry = ""
-        var again = retry !== "" ? Model.findLocation(root.locations, retry) : null
-        if (again) root.connectTo(again.cliName, again.city)
-        return
-      }
-      if (exitCode === 126) { root.actionStatus = "Authentication cancelled"; return }
-      if (exitCode === 127) { root.actionStatus = "Not authorised to install the sudo rule"; return }
-      root.noteError({ error: errors !== "" ? errors.split("\n").pop() : "aegis-sudo-rule exited " + exitCode, code: "sudo_rule" }, "action", null)
-    }
   }
 
   // A change trigger only. With preload: false, FileView reads a file only
@@ -1182,12 +1218,19 @@ Item {
         obj = { ok: false, error: "Timed out waiting for adguardvpn-cli", code: "timeout" }
       jobWatchdog.stopping = false
       jobProcess.output = ""
+      // Before the split below, because a failure proves the CLI is there
+      // just as well as a success: "Not logged in" is the only thing a
+      // freshly installed CLI says, and everything that fails goes to
+      // noteError without ever reaching applyJob. See Model.provesInstalled.
+      // (sideProcess needs none of this: its verbs never run the binary.)
+      if (Model.provesInstalled(verb, obj)) root.installed = true
       var ok = obj.ok !== false && exitCode === 0
       var isAction = root._refreshVerbs.indexOf(verb) === -1
       // Whatever connect job this was (auto-connect's own or a manual one
       // queued behind it — the queue never runs two at once), it has now
       // finished or failed either way: a home lookup held for
       // autoConnectPending is free to run again on the next snapshot.
+      var wasAuto = root.autoConnectPending
       if (verb === "connect") root.autoConnectPending = false
       // A tunnel that came up went through sudo without a prompt: whatever
       // the probe said (or has not said yet), the rule is in place.
@@ -1203,6 +1246,10 @@ Item {
           root.noteError(obj.ok === false ? obj : { error: "AdGuard VPN helper exited " + exitCode, code: "unknown" },
             (isAction || mutate) ? "action" : "", intent)
         if (isAction) { root._desired = -1; root.pendingLocation = "" }
+        // A connect that sudo turned away for a password goes to a terminal
+        // that can answer it (Model.connectNeedsTerminal) — unless it was
+        // startup auto-connect, which never opens anything on its own.
+        if (verb === "connect" && obj.code === "sudo_password" && !wasAuto) root.retryInTerminal(intent.target)
         if (verb === "config" && mutate) root._configHintPending = false
         // A failed/indeterminate background update check stays quiet (no
         // noteError above, no lastUpdateCheck persisted in applyUpdate,

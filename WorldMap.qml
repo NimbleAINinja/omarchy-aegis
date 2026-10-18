@@ -77,6 +77,7 @@ Item {
   property color markerColor: "white"
   property color accent: "white"
   property color textColor: "white"
+  property color dimTextColor: "gray"    // the hovered city's ping, after its name
   property color haloColor: "black"
   property string fontFamily: "monospace"
   property real labelPixelSize: 10
@@ -514,6 +515,15 @@ Item {
     return text.length > 14 ? text.substring(0, 13) + "…" : text
   }
 
+  // What follows the hovered city's name: its ping, in the quieter colour,
+  // so the map answers what the list's ping column does without a trip to
+  // the list. Nothing for a city that has no ping yet.
+  function pingSuffix(loc) {
+    if (!loc || loc.pingMs === null || loc.pingMs === undefined) return ""
+    var ms = Number(loc.pingMs)
+    return isFinite(ms) && ms >= 0 ? " | " + Math.round(ms) + "ms" : ""
+  }
+
   function rectsOverlap(a, b) {
     return a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y
   }
@@ -572,7 +582,7 @@ Item {
       if (focus === hoverCandidate) {
         var ring = dotPitch * 1.6
         placed.push({ x: vx - ring, y: vy - ring, w: ring * 2, h: ring * 2 })
-        labels.unshift({ text: shortLabel(String(focus.city || focus.label || "")), x: vx, y: vy, reach: ring + gap })
+        labels.unshift({ text: shortLabel(String(focus.city || focus.label || "")), suffix: pingSuffix(focus), x: vx, y: vy, reach: ring + gap })
       }
       ctx.beginPath()
       ctx.arc(vx, vy, dotPitch * 1.6, 0, Math.PI * 2)
@@ -595,7 +605,9 @@ Item {
       var px = labels[j].x
       var py = labels[j].y
       var reach = labels[j].reach
-      var textWidth = labelWidth(ctx, label)
+      var suffix = labels[j].suffix || ""
+      var labelW = labelWidth(ctx, label)
+      var textWidth = labelW + (suffix !== "" ? labelWidth(ctx, suffix) : 0)
       var candidates = [
         { x: px + reach, y: py - textHeight / 2, align: "left", baseline: "middle", tx: px + reach, ty: py },
         { x: px - reach - textWidth, y: py - textHeight / 2, align: "right", baseline: "middle", tx: px - reach, ty: py },
@@ -617,10 +629,16 @@ Item {
         placed.push(backing)
         ctx.fillStyle = haloColor
         ctx.fillRect(Math.round(backing.x), Math.round(backing.y), Math.round(backing.w), Math.round(backing.h))
-        ctx.textAlign = candidates[c].align
+        // Drawn from the box's left edge, which the placement above already
+        // put where the alignment wanted it, so a two-tone label lines up.
+        ctx.textAlign = "left"
         ctx.textBaseline = candidates[c].baseline
         ctx.fillStyle = textColor
-        ctx.fillText(label, candidates[c].tx, candidates[c].ty)
+        ctx.fillText(label, box.x, candidates[c].ty)
+        if (suffix !== "") {
+          ctx.fillStyle = dimTextColor
+          ctx.fillText(suffix, box.x + labelW, candidates[c].ty)
+        }
         break
       }
     }

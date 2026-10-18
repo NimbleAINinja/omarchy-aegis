@@ -240,6 +240,34 @@ TestCase {
     }
   }
 
+  function test_a_hovered_city_shows_its_ping_after_its_name() {
+    var map = tintMap([{ lat: 0, lon: 90, tier: "good" }])
+    map.candidates = [{ city: "Cellville", lat: 0, lon: 90, pingMs: 600 }]
+    map.hoverCandidate = map.candidates[0]
+    var ctx = fakeContext()
+    map.paintMarkers(ctx)
+    compare(ctx.record.texts.length, 2, "the name, then the ping")
+    compare(ctx.record.texts[0].text, "Cellville")
+    compare(ctx.record.texts[1].text, " | 600ms")
+    // Right after the name (the fake context measures 6px a character), on
+    // the same line, in the quieter colour.
+    fuzzyCompare(ctx.record.texts[1].x, ctx.record.texts[0].x + "Cellville".length * 6, 1e-6)
+    fuzzyCompare(ctx.record.texts[1].y, ctx.record.texts[0].y, 1e-6)
+    var styles = ctx.record.fillStyles
+    verify(String(styles[styles.length - 1]) !== String(styles[styles.length - 2]), "the ping is not in the name's colour")
+    // The halo behind the label covers both.
+    var backing = ctx.record.rects[ctx.record.rects.length - 1]
+    verify(backing.w >= "Cellville | 600ms".length * 6, "the halo spans name and ping")
+
+    // No ping yet: the name alone.
+    map.candidates = [{ city: "Cellville", lat: 0, lon: 90, pingMs: null }]
+    map.hoverCandidate = map.candidates[0]
+    var ctx2 = fakeContext()
+    map.paintMarkers(ctx2)
+    compare(ctx2.record.texts.length, 1)
+    compare(ctx2.record.texts[0].text, "Cellville")
+  }
+
   function test_a_hovered_dot_without_a_tint_keeps_its_centre_dot() {
     // Tinting on, but the hovered city has no ping tint on its dot (the only
     // tint is for a city on the far side of the map — with one land cell it

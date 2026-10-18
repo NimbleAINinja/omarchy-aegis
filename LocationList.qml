@@ -105,7 +105,7 @@ Column {
   Text {
     visible: root.count === 0
     width: parent.width
-    text: !vpn || vpn.locations.length === 0 ? (!vpn || vpn.installed ? "Loading locations" : "adguardvpn-cli not found") : "No match"
+    text: Model.locationsEmptyText(!!vpn && vpn.locations.length > 0, panel ? panel.setupStep : "")
     color: panel.dim
     font.family: panel.fontFamily
     font.pixelSize: Style.font.bodySmall

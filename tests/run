@@ -6,7 +6,6 @@ cd "$dir"
 
 bash tests/manifest.test.sh
 bash tests/sudoers.test.sh
-bash tests/sudo_rule.test.sh
 
 node_tests=()
 for t in tests/model.test.js tests/link.test.js; do
