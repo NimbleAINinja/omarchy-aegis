@@ -1,0 +1,7 @@
+Exclusions for GENERAL mode:
+example.com
+*.bank.example
+10.0.0.0/8
+
+> AdGuard VPN v1.8.2 is now available
+You can update to the latest version by running `/opt/adguardvpn_cli/adguardvpn-cli update`
