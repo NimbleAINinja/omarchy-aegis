@@ -166,6 +166,10 @@ class ParseExclusions(unittest.TestCase):
         self.assertEqual(e, {"mode": "selective", "domains": ["example.com", "*.bank.example"]})
         self.assertEqual(agvpn.parse_exclusions(legacy)["mode"], "general")
 
+    def test_update_banner_lines_are_not_domains(self):
+        e = agvpn.parse_exclusions(fixture("exclusions_show_update_banner.txt"))
+        self.assertEqual(e["domains"], ["example.com", "*.bank.example", "10.0.0.0/8"])
+
 
 class ParseTunnelTail(unittest.TestCase):
     def test_last_state_and_endpoint(self):

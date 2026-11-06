@@ -196,7 +196,10 @@ def parse_exclusions(show_text, mode_text=None):
     domains = []
     for line in strip_ansi(show_text).splitlines()[1:]:
         line = line.strip()
-        if line:
+        # A real entry (domain, wildcard, IP, CIDR) never contains whitespace;
+        # the CLI's trailing update banner always does ("AdGuard VPN vX is
+        # now available", "You can update ... by running ...").
+        if line and not any(ch.isspace() for ch in line):
             domains.append(line)
     return {"mode": mode, "domains": domains}
 
